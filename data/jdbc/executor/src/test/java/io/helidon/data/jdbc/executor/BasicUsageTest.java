@@ -48,8 +48,8 @@ final class BasicUsageTest {
 
     @Test
     void testUsage() throws SQLException {
-        try (JdbcResults jrss = JdbcPlan.execute(ds::getConnection, "SELECT * FROM INFORMATION_SCHEMA.TABLES;")) {
-            jrss.forOnlyRemaining(JdbcResultSet.class, BasicUsageTest::printResultSet);
+        try (var jrss = JdbcPlan.execute(ds, "SELECT * FROM INFORMATION_SCHEMA.TABLES")) {
+            jrss.forOnly(JdbcResultSet.class, BasicUsageTest::printResultSet);
         }
     }
 

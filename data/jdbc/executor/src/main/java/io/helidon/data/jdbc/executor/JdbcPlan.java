@@ -20,6 +20,8 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.function.Consumer;
 
+import javax.sql.DataSource;
+
 import io.helidon.builder.api.RuntimeType;
 import io.helidon.data.jdbc.JdbcResults;
 import io.helidon.data.jdbc.function.JdbcConsumer;
@@ -120,6 +122,35 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
      */
     static JdbcResults execute(JdbcSupplier<? extends Connection> cs, String statement) throws SQLException {
         return builder().statement(statement).build().execute(cs);
+    }
+
+        /**
+     * A convenience method that arranges for the supplied {@code statement}, requiring no arguments, to be {@linkplain
+     * #execute(JdbcSupplier)} executed.
+     *
+     * <p>This method:</p>
+     *
+     * <ol>
+     * <li>Invokes the {@link #builder()} method</li>
+     * <li>Invokes its {@link JdbcPlanConfig.Builder#statement(String)} method with the supplied {@code statement}</li>
+     * <li>Invokes the {@link JdbcPlanConfig.Builder#build()} method to build a minimally-configured {@link JdbcPlan}</li>
+     * <li>Invokes the {@link #execute(JdbcSupplier)} method with {@link DataSource#getConnection() ds::getConnection}</li>
+     * <li>Returns the results</li>
+     * </ol>
+     *
+     * @param ds a non-{@code null} {@link DataSource}
+     * @param statement a non-{@code null} SQL statement
+     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
+     * when finished</strong>
+     * @throws SQLException if a database error occurs
+     * @see #builder()
+     * @see JdbcPlanConfig.Builder#statement(String)
+     * @see JdbcPlanConfig.Builder#build()
+     * @see #execute(JdbcSupplier)
+     * @see JdbcResults
+     */
+    static JdbcResults execute(DataSource ds, String statement) throws SQLException {
+        return builder().statement(statement).build().execute(ds::getConnection);
     }
 
 }
