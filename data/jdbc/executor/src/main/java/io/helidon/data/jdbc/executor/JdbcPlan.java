@@ -46,6 +46,19 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
         throws SQLException;
 
     /**
+     * Executes this plan, returning a {@link JdbcResults}.
+     *
+     * @param cs a non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
+     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
+     * when finished</strong>
+     * @throws SQLException if a database error occurs
+     * @see #execute(JdbcSupplier, JdbcConsumer)
+     */
+    default JdbcResults execute(JdbcSupplier<? extends Connection> cs) throws SQLException {
+        return this.execute(cs, JdbcPlanImpl::doNothing);
+    }
+
+    /**
      * Returns a builder for this interface.
      *
      * @return a non-{@code null} {@link JdbcPlanConfig.Builder}
@@ -78,6 +91,35 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
      */
     static JdbcPlan create(Consumer<JdbcPlanConfig.Builder> builderCustomizer) {
         return builder().update(builderCustomizer).build();
+    }
+
+    /**
+     * A convenience method that arranges for the supplied {@code statement}, requiring no arguments, to be {@linkplain
+     * #execute(JdbcSupplier)} executed.
+     *
+     * <p>This method:</p>
+     *
+     * <ol>
+     * <li>Invokes the {@link #builder()} method</li>
+     * <li>Invokes its {@link JdbcPlanConfig.Builder#statement(String)} method with the supplied {@code statement}</li>
+     * <li>Invokes the {@link JdbcPlanConfig.Builder#build()} method to build a minimally-configured {@link JdbcPlan}</li>
+     * <li>Invokes the {@link #execute(JdbcSupplier)} method with the supplied {@link JdbcSupplier}</li>
+     * <li>Returns the results</li>
+     * </ol>
+     *
+     * @param cs a non-{@code null} {@link JdbcSupplier} of {@link Connection} instances
+     * @param statement a non-{@code null} SQL statement
+     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
+     * when finished</strong>
+     * @throws SQLException if a database error occurs
+     * @see #builder()
+     * @see JdbcPlanConfig.Builder#statement(String)
+     * @see JdbcPlanConfig.Builder#build()
+     * @see #execute(JdbcSupplier)
+     * @see JdbcResults
+     */
+    static JdbcResults execute(JdbcSupplier<? extends Connection> cs, String statement) throws SQLException {
+        return builder().statement(statement).build().execute(cs);
     }
 
 }

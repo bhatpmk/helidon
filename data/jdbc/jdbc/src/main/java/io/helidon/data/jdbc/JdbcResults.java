@@ -30,7 +30,6 @@ import io.helidon.data.jdbc.function.JdbcConsumer;
 import io.helidon.data.jdbc.function.JdbcFunction;
 import io.helidon.data.jdbc.function.JdbcRunnable;
 
-import static io.helidon.data.jdbc.function.JdbcRunnable.runnable;
 import static java.sql.Statement.CLOSE_CURRENT_RESULT;
 
 /**
@@ -104,22 +103,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
     JdbcResults onClose(JdbcRunnable closeAction) throws SQLException;
 
     /**
-     * A convenience method that performs an action for each remaining {@link JdbcResult}.
-     *
-     * @param c a non-{@code null} {@link JdbcConsumer} accepting a {@link JdbcResult}
-     * @throws NullPointerException if {@code c} is {@code null}
-     * @throws IllegalStateException if this {@link JdbcResults} is {@linkplain #closed() closed}
-     * @throws SQLException if a database error occurs
-     */
-    default void forEachRemaining(JdbcConsumer<? super JdbcResult> c) throws SQLException {
-        while (this.advance()) {
-            // If advance returns true, get() returns a present Optional
-            c.accept(this.get().orElseThrow(AssertionError::new));
-        }
-    }
-
-    /**
-     * A convenience method thta performs an action for each remaining {@link JdbcResult} of a particular type.
+     * A convenience method that performs an action for each remaining {@link JdbcResult} of a particular type.
      *
      * @param <JR> a {@link JdbcResult} subtype
      * @param type a non-{@code null} {@link Class} identifying a {@link JdbcResult} subtype
@@ -163,6 +147,30 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
 
     /**
      * A convenience method that adapts the supplied {@link JdbcConsumer} to a void-returning {@link JdbcFunction} and
+     * calls the {@link #mapOnly(Class, JdbcFunction)} method with the supplied {@link Class} and the adapted {@link
+     * JdbcConsumer}.
+     *
+     * <p><strong>This method (indirectly) attempts two additional {@linkplain #advance() advancements}</strong> and
+     * throws an {@link IllegalStateException} if the second is successful.</p>
+     *
+     * @param <JR> a {@link JdbcResult} subtype
+     * @param type a non-{@code null} {@link Class} identifying a {@link JdbcResult} subtype
+     * @param c a non-{@code null} {@link JdbcConsumer} accepting a specific type of {@link JdbcResult}
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalStateException if there is not exactly one {@link JdbcResult} of the appropriate type, or if this
+     * {@link JdbcResults} is {@linkplain #closed() closed}
+     * @throws SQLException if a database error occurs
+     * @see #mapOnly(Class, JdbcFunction)
+     */
+    default <JR extends JdbcResult> void forOnly(Class<JR> type, JdbcConsumer<? super JR> c) throws SQLException {
+        this.mapOnly(type, jr -> {
+                c.accept(jr);
+                return null;
+            });
+    }
+
+    /**
+     * A convenience method that adapts the supplied {@link JdbcConsumer} to a void-returning {@link JdbcFunction} and
      * calls the {@link #mapOnlyRemaining(Class, JdbcFunction)} with the supplied {@link Class} and the adapted {@link
      * JdbcConsumer}.
      *
@@ -183,6 +191,34 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                 c.accept(jr);
                 return null;
             });
+    }
+
+    /**
+     * A convenience method that returns the result of invoking the {@link #get()} method as an instance of the supplied
+     * {@code type}, if that condition can be satisfied.
+     *
+     * <p>The default implementation:</p>
+     *
+     * <ol>
+     * <li>Invokes the {@link #get()} method</li>
+     * <li>Invokes the {@link Optional#filter(java.util.function.Predicate)} method with {@link Class#isInstance(Object)
+     * type::isInstance} as the predicate</li>
+     * <li>Invokes the {@link Optional#map(java.util.function.Function)} method on the resulting {@link Optional} with
+     * {@link Class#cast(Object) type::cast} as the mapping function</li>
+     * <li>Returns the result</li>
+     * </ol>
+     *
+     * @param <JR> a {@link JdbcResult} subtype
+     * @param type a non-{@code null} {@link Class}
+     * @return a non-{@code null} {@link Optional}
+     * @throws NullPointerException if {@code type} is {@code null}
+     * @throws SQLException if a database error occurs
+     * @see #get()
+     */
+    default <JR extends JdbcResult> Optional<JR> getAs(Class<JR> type) throws SQLException {
+        return this.get()
+            .filter(type::isInstance)
+            .map(type::cast);
     }
 
     /**
@@ -211,6 +247,36 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                                             + ", got " + (result == null ? "no result" : result.getClass().getSimpleName()));
         }
         return f.apply(type.cast(result));
+    }
+
+    /**
+     * A convenience method that checks to see if the return value from an invocation of the {@link #get()} method
+     * {@linkplain Optional#isEmpty() is empty}, and, if so, invokes the {@link #mapOnlyRemaining(Class, JdbcFunction)}
+     * method and returns its results.
+     *
+     * <p><strong>This method (indirectly) attempts two additional {@linkplain #advance() advancements}</strong> and
+     * throws an {@link IllegalStateException} if the second is successful.</p>
+     *
+     * @param <JR> a {@link JdbcResult} subtype
+     * @param <R> the mapped type
+     * @param type a non-{@code null} {@link Class} identifying a {@link JdbcResult} subtype
+     * @param f a non-{@code null} {@link JdbcFunction} accepting a specific type of {@link JdbcResult} responsible for
+     * mapping it
+     * @return the mapping result
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalStateException if there is not exactly one {@link JdbcResult} of the appropriate type, or if this
+     * {@link JdbcResults} is {@linkplain #closed() closed}
+     * @throws SQLException if a database error occurs
+     * @see #mapOnlyRemaining(Class, JdbcFunction)
+     * @see #get()
+     */
+    default <JR extends JdbcResult, R> R mapOnly(Class<JR> type, JdbcFunction<? super JR, ? extends R> f) throws SQLException {
+        if (this.get().isEmpty()) {
+            return this.mapOnlyRemaining(type, f);
+        } else {
+            throw new IllegalStateException("Expected exactly one " + type.getSimpleName()
+                                            + ", but there were additional results");
+        }
     }
 
     /**
@@ -306,7 +372,9 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * @see Stream#close()
      */
     default Stream<JdbcResult> stream() {
-        return StreamSupport.stream(this.spliterator(), false /* deliberately not parallel */).onClose(runnable(this::close));
+        return StreamSupport.stream(this.spliterator(),
+                                    false /* deliberately not parallel */)
+            .onClose(((JdbcRunnable) this::close).toRunnable());
     }
 
 

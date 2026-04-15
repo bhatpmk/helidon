@@ -59,7 +59,7 @@ final class JdbcPlanImpl implements JdbcPlan {
 
     JdbcPlanImpl(JdbcPlanConfig prototype) {
         super();
-        this.sql = prototype.sql();
+        this.sql = prototype.statement();
         this.connectionState = prototype.connectionState().map(ConnectionState::new).orElse(ConnectionState.EMPTY);
         this.statementState = prototype.statementState().map(StatementState::new).orElse(StatementState.EMPTY);
         this.executionState = prototype.executionState().map(ExecutionState::new).orElse(ExecutionState.EMPTY);
@@ -80,8 +80,15 @@ final class JdbcPlanImpl implements JdbcPlan {
             ps = s;
             final StatementState initialStatementState = new StatementState(s);
             this.statementState.install(s);
-            argsBinder.accept(ps);
-            return JdbcResults.of(ps, this.resultsAdvancementBehavior.value())
+            argsBinder.accept(s);
+            int[] outParameterIndices = this.executionState.outParameterIndices();
+            JdbcResults jr;
+            if (s instanceof CallableStatement callableStatement) {
+                jr = JdbcResults.of(callableStatement, this.resultsAdvancementBehavior.value(), outParameterIndices);
+            } else {
+                jr = JdbcResults.of(s, this.resultsAdvancementBehavior.value());
+            }
+            return jr
                 .onClose((JdbcRunnable) () -> this.restoreStatementStateAndClose(s, initialStatementState))
                 .onClose((JdbcRunnable) () -> this.restoreConnectionStateAndClose(c, initialConnectionState));
         } catch (RuntimeException | SQLException e) {
@@ -156,7 +163,7 @@ final class JdbcPlanImpl implements JdbcPlan {
         }
     }
 
-    private static <T> void doNothing(T ignored) {
+    static <T> void doNothing(T ignored) {
     }
 
     private record ConnectionState(Catalog catalog,

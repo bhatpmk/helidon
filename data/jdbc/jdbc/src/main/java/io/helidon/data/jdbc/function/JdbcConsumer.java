@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.Consumer;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents an operation that throws {@link SQLException}s that accepts a single input argument and returns no result.
@@ -39,5 +42,35 @@ public interface JdbcConsumer<T> {
      * @throws SQLException if a database error occurs
      */
     void accept(T t) throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link Consumer} equivalent to this {@link JdbcConsumer} that wraps any
+     * thrown {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link Consumer}
+     * @see Consumer
+     * @see UncheckedSQLException
+     */
+    default Consumer<T> toConsumer() {
+        return t -> {
+            try {
+                this.accept(t);
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcConsumer} equivalent to the supplied {@link Consumer}..
+     *
+     * @param <T> the type of the input to the operation
+     * @param c a non-{@code null} {@link Consumer}
+     * @return a non-{@code null} {@link JdbcConsumer}
+     * @throws NullPointerException if {@code c} is {@code null}
+     */
+    static <T> JdbcConsumer<T> of(Consumer<T> c) {
+        return c::accept;
+    }
 
 }

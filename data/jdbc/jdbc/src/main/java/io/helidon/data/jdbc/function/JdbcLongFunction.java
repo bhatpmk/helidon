@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.LongFunction;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents a function that throws {@link SQLException}s and accepts an {@code long}-valued argument and produces a
@@ -41,5 +44,35 @@ public interface JdbcLongFunction<R> {
      * @throws SQLException if a database error occurs
      */
     R apply(long value) throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link LongFunction} equivalent to this {@link JdbcLongFunction} that wraps any
+     * thrown {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link LongFunction}
+     * @see LongFunction
+     * @see UncheckedSQLException
+     */
+    default LongFunction<R> toLongFunction() {
+        return l -> {
+            try {
+                return this.apply(l);
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcLongFunction} equivalent to the supplied {@link LongFunction}..
+     *
+     * @param <R> the return type
+     * @param lf a non-{@code null} {@link LongFunction}
+     * @return a non-{@code null} {@link JdbcLongFunction}
+     * @throws NullPointerException if {@code lf} is {@code null}
+     */
+    static <R> JdbcLongFunction<R> of(LongFunction<R> lf) {
+        return lf::apply;
+    }
 
 }

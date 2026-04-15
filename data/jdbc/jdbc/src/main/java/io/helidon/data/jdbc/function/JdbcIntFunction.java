@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.IntFunction;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents a function that throws {@link SQLException}s and accepts an {@code int}-valued argument and produces a
@@ -41,5 +44,36 @@ public interface JdbcIntFunction<R> {
      * @throws SQLException if a database error occurs
      */
     R apply(int value) throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link IntFunction} equivalent to this {@link JdbcIntFunction} that wraps any thrown
+     * {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link IntFunction}
+     * @see IntFunction
+     * @see UncheckedSQLException
+     */
+    default IntFunction<R> toIntFunction() {
+        return i -> {
+            try {
+                return this.apply(i);
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcIntFunction} equivalent to the supplied {@link IntFunction}..
+     *
+     * @param <R> the return type
+     * @param f a non-{@code null} {@link IntFunction}
+     * @return a non-{@code null} {@link JdbcIntFunction}
+     * @throws NullPointerException if {@code lf} is {@code null}
+     */
+    static <R> JdbcIntFunction<R> of(IntFunction<R> f) {
+        return f::apply;
+    }
+
 
 }

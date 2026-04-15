@@ -24,7 +24,7 @@ import io.helidon.data.jdbc.ResultsAdvancementBehavior;
 @Prototype.Blueprint
 interface JdbcPlanConfigBlueprint extends Prototype.Factory<JdbcPlan> {
 
-    String sql();
+    String statement();
 
     Optional<ConnectionStateConfig> connectionState();
 

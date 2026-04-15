@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.Supplier;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents a supplier of results that throws {@link SQLException}s.
@@ -38,5 +41,36 @@ public interface JdbcSupplier<T> {
      * @throws SQLException if a database error occurs
      */
     T get() throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link Supplier} equivalent to this {@link JdbcSupplier} that wraps any
+     * thrown {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link Supplier}
+     * @see Supplier
+     * @see UncheckedSQLException
+     */
+    default Supplier<T> toSupplier() {
+        return () -> {
+            try {
+                return this.get();
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcSupplier} equivalent to the supplied {@link Supplier}.
+     *
+     * @param <T> the supplied type
+     * @param s a non-{@code null} {@link Supplier}
+     * @return a non-{@code null} {@link JdbcSupplier}
+     * @throws NullPointerException if {@code s} is {@code null}
+     */
+    static <T> JdbcSupplier<T> of(Supplier<T> s) {
+        return s::get;
+    }
+
 
 }

@@ -113,9 +113,9 @@ final class JdbcResultsImpl implements JdbcResults {
     public boolean advance() throws SQLException {
         ensureOpen();
         if (this.advancer.getAsBoolean()) {
-            JdbcResultSetImpl jr = new JdbcResultSetImpl(this.s.getResultSet());
-            this.closers.push(jr::close);
-            this.jr = jr;
+            JdbcResultSetImpl jrsi = new JdbcResultSetImpl(this.s.getResultSet());
+            this.closers.push(jrsi::close);
+            this.jr = jrsi;
         } else {
             long updateCount;
             try {
@@ -126,7 +126,7 @@ final class JdbcResultsImpl implements JdbcResults {
             if (updateCount >= 0L) {
                 this.jr = new JdbcUpdateCountImpl(updateCount);
             } else if (this.outParameterIndices.length > 0) {
-                this.jr = new JdbcOutValuesImpl((CallableStatement) this.s, outParameterIndices);
+                this.jr = new JdbcOutValuesImpl((CallableStatement) this.s, this.outParameterIndices);
                 this.outParameterIndices = EMPTY_INT_ARRAY;
             } else {
                 this.jr = null;

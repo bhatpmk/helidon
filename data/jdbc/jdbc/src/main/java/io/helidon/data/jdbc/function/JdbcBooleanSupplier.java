@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.BooleanSupplier;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents a supplier of {@code boolean}-valued results that throws {@link SQLException}s.
@@ -41,5 +44,35 @@ public interface JdbcBooleanSupplier {
      * @throws SQLException if a database error occurs
      */
     boolean getAsBoolean() throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link BooleanSupplier} equivalent to this {@link JdbcBooleanSupplier} that wraps any
+     * thrown {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link BooleanSupplier}
+     * @see BooleanSupplier
+     * @see UncheckedSQLException
+     */
+    default BooleanSupplier toBooleanSupplier() {
+        return () -> {
+            try {
+                return this.getAsBoolean();
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcBooleanSupplier} equivalent to the supplied {@link BooleanSupplier}..
+     *
+     * @param bs a non-{@code null} {@link BooleanSupplier}
+     * @return a non-{@code null} {@link JdbcBooleanSupplier}
+     * @throws NullPointerException if {@code bs} is {@code null}
+     */
+    static JdbcBooleanSupplier of(BooleanSupplier bs) {
+        return bs::getAsBoolean;
+    }
+
 
 }

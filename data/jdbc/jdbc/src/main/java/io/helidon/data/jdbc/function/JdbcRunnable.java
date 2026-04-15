@@ -19,8 +19,6 @@ import java.sql.SQLException;
 
 import io.helidon.data.jdbc.UncheckedSQLException;
 
-import static java.util.Objects.requireNonNull;
-
 /**
  * Represents an operation that does not return a result and that throws {@link SQLException}s.
  *
@@ -41,25 +39,32 @@ public interface JdbcRunnable {
     void run() throws SQLException;
 
     /**
-     * Returns the supplied {@link JdbcRunnable} as a {@link Runnable}.
+     * Returns a non-{@code null} {@link Runnable} equivalent to this {@link JdbcRunnable} that wraps any thrown {@link
+     * SQLException}s in {@link UncheckedSQLException}s.
      *
-     * <p>The returned {@link Runnable} may throw {@link UncheckedSQLException}s in addition to any other exceptions it
-     * may throw.</p>
-     *
-     * @param jr a non-{@code null} {@link JdbcRunnable}
      * @return a non-{@code null} {@link Runnable}
-     * @throws NullPointerException if {@code r} is {@code null}
+     * @see Runnable
      * @see UncheckedSQLException
      */
-    static Runnable runnable(JdbcRunnable jr) {
-        requireNonNull(jr, "jr");
+    default Runnable toRunnable() {
         return () -> {
             try {
-                jr.run();
+                this.run();
             } catch (SQLException e) {
                 throw new UncheckedSQLException(e);
             }
         };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcRunnable} equivalent to the supplied {@link Runnable}.
+     *
+     * @param r a non-{@code null} {@link Runnable}
+     * @return a non-{@code null} {@link JdbcRunnable}
+     * @throws NullPointerException if {@code r} is {@code null}
+     */
+    static JdbcRunnable of(Runnable r) {
+        return r::run;
     }
 
 }

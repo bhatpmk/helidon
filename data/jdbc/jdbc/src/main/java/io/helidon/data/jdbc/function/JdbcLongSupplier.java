@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.LongSupplier;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents a supplier of {@code long}-valued results that throws {@link SQLException}s.
@@ -41,5 +44,35 @@ public interface JdbcLongSupplier {
      * @throws SQLException if a database error occurs
      */
     long getAsLong() throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link LongSupplier} equivalent to this {@link JdbcLongSupplier} that wraps any
+     * thrown {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link LongSupplier}
+     * @see LongSupplier
+     * @see UncheckedSQLException
+     */
+    default LongSupplier toLongSupplier() {
+        return () -> {
+            try {
+                return this.getAsLong();
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcLongSupplier} equivalent to the supplied {@link LongSupplier}..
+     *
+     * @param ls a non-{@code null} {@link LongSupplier}
+     * @return a non-{@code null} {@link JdbcLongSupplier}
+     * @throws NullPointerException if {@code ls} is {@code null}
+     */
+    static JdbcLongSupplier of(LongSupplier ls) {
+        return ls::getAsLong;
+    }
+
 
 }

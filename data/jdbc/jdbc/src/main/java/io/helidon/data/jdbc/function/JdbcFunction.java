@@ -16,6 +16,9 @@
 package io.helidon.data.jdbc.function;
 
 import java.sql.SQLException;
+import java.util.function.Function;
+
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 /**
  * Represents a function that throws {@link SQLException}s that accepts one argument and produces a result.
@@ -38,5 +41,37 @@ public interface JdbcFunction<T, R> {
      * @throws SQLException if a database error occurs
      */
     R apply(T t) throws SQLException;
+
+    /**
+     * Returns a non-{@code null} {@link Function} equivalent to this {@link JdbcFunction} that wraps any
+     * thrown {@link SQLException}s in {@link UncheckedSQLException}s.
+     *
+     * @return a non-{@code null} {@link Function}
+     * @see Function
+     * @see UncheckedSQLException
+     */
+    default Function<T, R> toFunction() {
+        return t -> {
+            try {
+                return this.apply(t);
+            } catch (SQLException e) {
+                throw new UncheckedSQLException(e);
+            }
+        };
+    }
+
+    /**
+     * Returns a non-{@code null} {@link JdbcFunction} equivalent to the supplied {@link Function}..
+     *
+     * @param <T> the type of the input to the function*
+     * @param <R> the type of the result of the function
+     * @param f a non-{@code null} {@link Function}
+     * @return a non-{@code null} {@link JdbcFunction}
+     * @throws NullPointerException if {@code f} is {@code null}
+     */
+    static <T, R> JdbcFunction<T, R> of(Function<T, R> f) {
+        return f::apply;
+    }
+
 
 }
