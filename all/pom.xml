@@ -339,6 +339,10 @@
             <artifactId>helidon-data</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.helidon.data</groupId>
+            <artifactId>helidon-data-runtime</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.helidon.data.jakarta.persistence</groupId>
             <artifactId>helidon-data-jakarta-persistence</artifactId>
         </dependency>
@@ -357,6 +361,14 @@
         <dependency>
             <groupId>io.helidon.data.codegen</groupId>
             <artifactId>helidon-data-codegen-query</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc-executor</artifactId>
         </dependency>
         <dependency>
             <groupId>io.helidon.data.sql</groupId>

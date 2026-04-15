@@ -1,0 +1,83 @@
+/*
+ * Copyright (c) 2026 Oracle and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.helidon.data.jdbc.executor;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.function.Consumer;
+
+import io.helidon.builder.api.RuntimeType;
+import io.helidon.data.jdbc.JdbcResults;
+import io.helidon.data.jdbc.function.JdbcConsumer;
+import io.helidon.data.jdbc.function.JdbcSupplier;
+
+/**
+ * An executable plan for the presumed execution of a statement using JDBC constructs.
+ *
+ * @see #execute(JdbcSupplier, JdbcConsumer)
+ */
+public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
+
+    /**
+     * Executes this plan, returning a {@link JdbcResults}.
+     *
+     * @param cs a non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
+     * @param argsBinder a non-{@code null} {@link JdbcConsumer} of a non-{@code null} {@link PreparedStatement} that is
+     * expected to install argument values
+     * @return a non-{@code null} {@link JdbcResults}
+     * @throws SQLException if a database error occurs
+     */
+    JdbcResults execute(JdbcSupplier<? extends Connection> cs,
+                        JdbcConsumer<? super PreparedStatement> argsBinder)
+        throws SQLException;
+
+    /**
+     * Returns a builder for this interface.
+     *
+     * @return a non-{@code null} {@link JdbcPlanConfig.Builder}
+     */
+    static JdbcPlanConfig.Builder builder() {
+        return JdbcPlanConfig.builder();
+    }
+
+    /**
+     * Returns a new {@link JdbcPlan} implementation.
+     *
+     * @param prototype the prototype
+     * @return a new {@link JdbcPlan}
+     * @throws NullPointerException if {@code prototype} is {@code null}
+     * @throws IllegalArgumentException if the prototype is somehow badly assembled
+     */
+    static JdbcPlan create(JdbcPlanConfig prototype) {
+        return new JdbcPlanImpl(prototype);
+    }
+
+    /**
+     * Customizes the {@link JdbcPlanConfig.Builder} returned by the {@link #builder()} method, and uses it to
+     * {@linkplain JdbcPlanConfig.Builder#build() build} a new {@link JdbcPlan}, which is then returned.
+     *
+     * @param builderCustomizer a non-{@code null} {@link Consumer} of {@link JdbcPlanConfig.Builder} instances that is
+     * intended to customize them
+     * @return a new {@link JdbcPlan}
+     * @throws NullPointerException if {@code builderCustomizer} is {@code null}
+     * @see #builder()
+     */
+    static JdbcPlan create(Consumer<JdbcPlanConfig.Builder> builderCustomizer) {
+        return builder().update(builderCustomizer).build();
+    }
+
+}
