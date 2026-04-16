@@ -368,7 +368,11 @@
         </dependency>
         <dependency>
             <groupId>io.helidon.data.jdbc</groupId>
-            <artifactId>helidon-data-jdbc-executor</artifactId>
+            <artifactId>helidon-data-jdbc-named-parameters</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-plan-jdbc</artifactId>
         </dependency>
         <dependency>
             <groupId>io.helidon.data.sql</groupId>

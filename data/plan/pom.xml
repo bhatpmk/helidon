@@ -25,14 +25,13 @@
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <artifactId>helidon-data-jdbc-project</artifactId>
-    <groupId>io.helidon.data.jdbc</groupId>
-    <name>Helidon Data JDBC Project</name>
+    <artifactId>helidon-data-plan-project</artifactId>
+    <groupId>io.helidon.data.plan</groupId>
+    <name>Helidon Data Plan Project</name>
     <packaging>pom</packaging>
 
     <modules>
         <module>jdbc</module>
-        <module>named-parameters</module>
     </modules>
 
     <build>
