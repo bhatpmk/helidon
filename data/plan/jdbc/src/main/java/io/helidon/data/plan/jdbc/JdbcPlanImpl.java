@@ -21,6 +21,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
 
@@ -179,16 +180,22 @@ final class JdbcPlanImpl implements JdbcPlan {
 
 
 
+    // Deliberately omitted, because it is not restorable:
+    // - networkTimeout
+    // - shardingKey
+    // Deliberately omitted, because it is handled by ExecutionState:
+    // - holdability
     private record ConnectionState(Catalog catalog,
                                    Properties clientInfo,
                                    boolean readOnly,
                                    Schema schema,
-                                   TransactionIsolation transactionIsolation) {
+                                   TransactionIsolation transactionIsolation,
+                                   Map<String, Class<?>> typeMap) {
 
         private static final ConnectionState EMPTY = new ConnectionState();
 
         private ConnectionState() {
-            this(null, null, false, null, TransactionIsolation.NONE);
+            this(null, null, false, null, TransactionIsolation.NONE, null);
         }
 
         private ConnectionState(ConnectionStateConfig prototype) {
@@ -196,7 +203,8 @@ final class JdbcPlanImpl implements JdbcPlan {
                  prototype.clientInfo().orElse(null),
                  prototype.readOnly(),
                  prototype.schema().map(s -> new Schema(s.value().orElse(null))).orElse(null),
-                 prototype.transactionIsolation().orElse(TransactionIsolation.NONE));
+                 prototype.transactionIsolation().orElse(TransactionIsolation.NONE),
+                 prototype.typeMap().orElse(null));
         }
 
         private ConnectionState(Connection c) throws SQLException {
@@ -204,7 +212,8 @@ final class JdbcPlanImpl implements JdbcPlan {
                  c.getClientInfo(),
                  c.isReadOnly(),
                  new Schema(c.getSchema()),
-                 TransactionIsolation.of(c.getTransactionIsolation()));
+                 TransactionIsolation.of(c.getTransactionIsolation()),
+                 c.getTypeMap());
         }
 
         private ConnectionState {
@@ -231,6 +240,9 @@ final class JdbcPlanImpl implements JdbcPlan {
                 && this.transactionIsolation != TransactionIsolation.of(c.getTransactionIsolation())) {
                 c.setTransactionIsolation(this.transactionIsolation.value());
             }
+            if (this.typeMap != null && !this.typeMap.equals(c.getTypeMap())) {
+                c.setTypeMap(this.typeMap);
+            }
             return c;
         }
 
@@ -256,6 +268,9 @@ final class JdbcPlanImpl implements JdbcPlan {
 
     }
 
+    // Deliberately omitted, because it is not restorable:
+    // - cursorName // (there is no accessor, only a mutator; what happens if statement is pooled?)
+    // - escapeProcessing // (there is no accessor)
     private record StatementState(boolean closeOnCompletion,
                                   ResultSetFetchDirection fetchDirection,
                                   int fetchSize,

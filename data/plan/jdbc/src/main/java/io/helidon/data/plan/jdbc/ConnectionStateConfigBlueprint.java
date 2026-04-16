@@ -15,6 +15,7 @@
  */
 package io.helidon.data.plan.jdbc;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 
@@ -33,5 +34,7 @@ interface ConnectionStateConfigBlueprint {
     Optional<SchemaConfig> schema();
 
     Optional<TransactionIsolation> transactionIsolation();
+
+    Optional<Map<String, Class<?>>> typeMap();
 
 }
