@@ -218,6 +218,9 @@ final class JdbcPlanImpl implements JdbcPlan {
 
         private ConnectionState {
             requireNonNull(transactionIsolation, "transactionIsolation");
+            if (typeMap != null) {
+                typeMap = Map.copyOf(typeMap);
+            }
         }
 
         private Connection install(Connection c) throws SQLException {
