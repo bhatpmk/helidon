@@ -335,6 +335,10 @@
             <artifactId>helidon-transaction</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.helidon.transaction</groupId>
+            <artifactId>helidon-transaction-jdbc</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.helidon.data</groupId>
             <artifactId>helidon-data</artifactId>
         </dependency>

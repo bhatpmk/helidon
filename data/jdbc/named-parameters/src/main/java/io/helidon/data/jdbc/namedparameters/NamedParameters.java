@@ -53,16 +53,18 @@ public final class NamedParameters {
     }
 
     /**
-     * Converts a pseudo-SQL statement featuring colon-prefixed named parameter markers (<i>e.g.</i> {@code :name}) into
-     * a JDBC-compatible pseudo-SQL statement featuring only valid JDBC (positional) parameter markers (`?`), passing
-     * any encountered parameter markers to the supplied {@link Consumer}, and returns the rewritten statement.
+     * Converts a pseudo-JDBC statement featuring colon-prefixed <dfn>named parameter markers</dfn> (<i>e.g.</i> {@code
+     * :name}) into a valid JDBC statement featuring only valid JDBC (positional) parameter markers (`?`), passing any
+     * encountered parameter markers, named or positional, to the supplied {@link Consumer}, and returns the rewritten
+     * statement.
      *
-     * <p>If no colon-prefixed name parameter markers are found, the supplied statement itself is returned.</p>
+     * <p>If no colon-prefixed named parameter markers are found, a statement equal to the supplied statement is
+     * returned.</p>
      *
-     * @param pseudoSql a non-{@code null} pseudo-SQL statement possibly featuring colon-prefixed named parameter markers
-     * (<i>e.g.</i> {@code :name})
-     * @param parameterMarkers a non-{@code null} {@link Consumer} that is notified of each parameter marker
-     * encountered; must be able to accept {@code null} values to indicate positional parameter markers
+     * @param pseudoStatement a non-{@code null} pseudo-JDBC statement possibly featuring colon-prefixed named parameter
+     * markers (<i>e.g.</i> {@code :name})
+     * @param parameterMarkers a non-{@code null} {@link Consumer} that is notified of each named or positional
+     * parameter marker encountered; the marker itself is supplied verbatim
      * @return a JDBC-compatible pseudo-SQL statement suitable for supplying to {@link
      * java.sql.Connection#prepareStatement(String)} and all analogous methods
      * @see java.sql.Connection#prepareCall(String)
@@ -74,22 +76,21 @@ public final class NamedParameters {
      * @see java.sql.Connection#prepareStatement(String, int, int, int)
      * @see java.sql.Connection#prepareStatement(String, int[])
      * @see java.sql.Connection#prepareStatement(String, String[])
-     * @see ColonPrefixedNamedParameterLexer
      */
-    public static String rewrite(String pseudoSql, Consumer<? super String> parameterMarkers) {
+    public static String rewrite(String pseudoStatement, Consumer<? super String> parameterMarkers) {
         requireNonNull(parameterMarkers, "parameterMarkers");
         StringBuilder sb = new StringBuilder();
-        ColonPrefixedNamedParameterLexer lexer = new ColonPrefixedNamedParameterLexer(fromString(pseudoSql));
+        ColonPrefixedNamedParameterLexer lexer = new ColonPrefixedNamedParameterLexer(fromString(pseudoStatement));
         Token t = lexer.nextToken();
         while (t.getType() != EOF) {
             switch (t.getType()) {
             case PARAMETER_NAME -> {
-                parameterMarkers.accept(t.getText().substring(1));
+                parameterMarkers.accept(t.getText());
                 sb.append('?');
             }
             case PARAMETER_MARKER -> {
-                parameterMarkers.accept(null); // yes, null
-                sb.append(t.getText()); // will be JDBC "parameter marker", i.e. ?
+                parameterMarkers.accept(t.getText()); // "?"
+                sb.append(t.getText()); // "?"
             }
             case
                 BACKTICK_QUOTED_STRING,
