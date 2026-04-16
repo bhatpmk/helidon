@@ -16,13 +16,13 @@
 package io.helidon.data.plan.jdbc;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.function.Consumer;
 
 import javax.sql.DataSource;
 
 import io.helidon.builder.api.RuntimeType;
+import io.helidon.data.jdbc.JdbcPreparedStatementBindingView;
 import io.helidon.data.jdbc.JdbcResults;
 import io.helidon.data.jdbc.function.JdbcConsumer;
 import io.helidon.data.jdbc.function.JdbcSupplier;
@@ -38,13 +38,13 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
      * Executes this plan, returning a {@link JdbcResults}.
      *
      * @param cs a non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
-     * @param argsBinder a non-{@code null} {@link JdbcConsumer} of a non-{@code null} {@link PreparedStatement} that is
-     * expected to install argument values
+     * @param argsBinder a non-{@code null} {@link JdbcConsumer} of a non-{@code null} {@link
+     * JdbcPreparedStatementBindingView} that is expected to install argument values
      * @return a non-{@code null} {@link JdbcResults}
      * @throws SQLException if a database error occurs
      */
     JdbcResults execute(JdbcSupplier<? extends Connection> cs,
-                        JdbcConsumer<? super PreparedStatement> argsBinder)
+                        JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder)
         throws SQLException;
 
     /**

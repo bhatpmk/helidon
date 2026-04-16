@@ -711,4 +711,16 @@ public interface JdbcPreparedStatementBindingView {
      */
     ParameterMetaData getParameterMetaData() throws SQLException;
 
+    /**
+     * Returns a non-{@code null} {@link JdbcPreparedStatementBindingView} representing the supplied {@link
+     * PreparedStatement}.
+     *
+     * @param ps a non-{@code null} {@link PreparedStatement}
+     * @return a non-{@code null} {@link JdbcPreparedStatementBindingView}
+     * @exception NullPointerException if {@code ps} is {@code null}
+     */
+    static JdbcPreparedStatementBindingView of(PreparedStatement ps) {
+        return new JdbcPreparedStatementBindingViewImpl(ps);
+    }
+
 }

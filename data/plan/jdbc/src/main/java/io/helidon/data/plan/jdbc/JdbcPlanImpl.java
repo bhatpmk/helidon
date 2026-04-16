@@ -26,6 +26,7 @@ import java.util.Objects;
 import java.util.Properties;
 
 import io.helidon.data.jdbc.GeneratedKeysBehavior;
+import io.helidon.data.jdbc.JdbcPreparedStatementBindingView;
 import io.helidon.data.jdbc.JdbcResults;
 import io.helidon.data.jdbc.ResultSetConcurrency;
 import io.helidon.data.jdbc.ResultSetFetchDirection;
@@ -70,7 +71,7 @@ final class JdbcPlanImpl implements JdbcPlan {
 
     @Override // JdbcPlan
     public JdbcResults execute(JdbcSupplier<? extends Connection> cs,
-                               JdbcConsumer<? super PreparedStatement> argsBinder) throws SQLException {
+                               JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder) throws SQLException {
         requireNonNull(argsBinder, "argsBinder");
         Connection c = cs.get();
         PreparedStatement ps = null;
@@ -81,7 +82,7 @@ final class JdbcPlanImpl implements JdbcPlan {
             ps = s;
             final StatementState initialStatementState = new StatementState(s);
             this.statementState.install(s);
-            argsBinder.accept(s);
+            argsBinder.accept(bindingView(s));
             int[] outParameterIndices = this.executionState.outParameterIndices();
             JdbcResults jr;
             if (s instanceof CallableStatement callableStatement) {
@@ -173,6 +174,9 @@ final class JdbcPlanImpl implements JdbcPlan {
     static <T> void doNothing(T ignored) {
     }
 
+    private static JdbcPreparedStatementBindingView bindingView(PreparedStatement s) {
+        return JdbcPreparedStatementBindingView.of(s);
+    }
 
     /*
      * Inner and nested classes.
