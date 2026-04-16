@@ -217,6 +217,9 @@ final class JdbcPlanImpl implements JdbcPlan {
         }
 
         private ConnectionState {
+            if (clientInfo != null) {
+                clientInfo = copy(clientInfo);
+            }
             requireNonNull(transactionIsolation, "transactionIsolation");
             if (typeMap != null) {
                 typeMap = Map.copyOf(typeMap);
@@ -247,6 +250,14 @@ final class JdbcPlanImpl implements JdbcPlan {
                 c.setTypeMap(this.typeMap);
             }
             return c;
+        }
+
+        private static Properties copy(Properties p0) {
+            Properties p1 = new Properties();
+            for (String pn : p0.stringPropertyNames()) {
+                p1.setProperty(pn, p0.getProperty(pn));
+            }
+            return p1;
         }
 
         private static boolean equals(Properties p0, Properties p1) {
