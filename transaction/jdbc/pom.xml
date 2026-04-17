@@ -30,10 +30,18 @@
     <artifactId>helidon-transaction-jdbc</artifactId>
     <name>Helidon Transaction JDBC</name>
 
+    <properties>
+        <spotbugs.exclude>etc/spotbugs/exclude.xml</spotbugs.exclude>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>io.helidon.common</groupId>
             <artifactId>helidon-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc</artifactId>
         </dependency>
         <dependency>
             <groupId>io.helidon.service</groupId>

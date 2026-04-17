@@ -34,7 +34,7 @@ import io.helidon.transaction.spi.TxSupport;
 import static java.util.Objects.requireNonNull;
 
 @Singleton
-@Weight(Weighted.DEFAULT_WEIGHT - 20)
+@Weight(Weighted.DEFAULT_WEIGHT - 20) // ...in case there are more sophisticated TxSupport implementations
 final class JdbcTxSupport implements TxSupport {
 
     private final ThreadLocal<Deque<Transaction>> transactions;
@@ -81,7 +81,7 @@ final class JdbcTxSupport implements TxSupport {
         return currentActiveTransaction().map(Transaction::id);
     }
 
-    boolean currentTransactionRollbackOnly() {
+    boolean currentActiveTransactionRollbackOnly() {
         return currentActiveTransaction()
             .map(Transaction::rollbackOnly)
             .orElse(false);
@@ -192,7 +192,7 @@ final class JdbcTxSupport implements TxSupport {
         if (!isCurrentActiveTransaction(txid)) {
             throw new TxException("No current transaction to complete: " + txid);
         }
-        if (currentTransactionRollbackOnly()) {
+        if (currentActiveTransactionRollbackOnly()) {
             rollback(txid);
             throw new TxException("Transaction is marked rollback only: " + txid);
         }
@@ -259,7 +259,7 @@ final class JdbcTxSupport implements TxSupport {
     private void markCurrentActiveTransactionForRollback() {
         currentActiveTransaction()
             .orElseThrow(() -> new IllegalStateException("Cannot mark rollback only: no current active transaction"))
-            .rollbackOnly(true);
+            .setRollbackOnly();
     }
 
     private void rollbackActiveTransaction(String txid) {
@@ -354,8 +354,8 @@ final class JdbcTxSupport implements TxSupport {
             return this.rollbackOnly;
         }
 
-        private void rollbackOnly(boolean rollbackOnly) {
-            this.rollbackOnly = rollbackOnly;
+        private void setRollbackOnly() {
+            this.rollbackOnly = true;
         }
 
     }

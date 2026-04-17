@@ -216,7 +216,7 @@ class JdbcTxSupportTest {
                                                                               }));
                                              assertThat(t.currentTransactionId().orElseThrow(AssertionError::new),
                                                         is(currentId.get()));
-                                             assertThat(t.currentTransactionRollbackOnly(),
+                                             assertThat(t.currentActiveTransactionRollbackOnly(),
                                                         is(true));
                                              return null;
                                          }));
