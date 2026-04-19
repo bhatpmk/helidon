@@ -13,17 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package io.helidon.transaction.jdbc;
 
-/**
- * Helidon Transaction support for JDBC.
- */
-module io.helidon.transaction.jdbc {
+import java.sql.Connection;
+import java.sql.SQLException;
 
-    requires transitive java.sql;
-    requires io.helidon.data.jdbc;
-    requires transitive io.helidon.service.registry; // transitive needed only for testing
-    requires transitive io.helidon.transaction;
+import javax.sql.DataSource;
 
-    exports io.helidon.transaction.jdbc;
+interface ConnectionResolver {
+
+    Connection connection(DataSource ds) throws SQLException;
+
+    Connection connection(DataSource ds, String username, String password) throws SQLException;
 
 }

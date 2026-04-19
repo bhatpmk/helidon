@@ -13,17 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package io.helidon.transaction.jdbc;
 
-/**
- * Helidon Transaction support for JDBC.
- */
-module io.helidon.transaction.jdbc {
+import io.helidon.service.registry.Service.Named;
+import io.helidon.service.registry.Service.Singleton;
 
-    requires transitive java.sql;
-    requires io.helidon.data.jdbc;
-    requires transitive io.helidon.service.registry; // transitive needed only for testing
-    requires transitive io.helidon.transaction;
+@Singleton
+@Named("test")
+final class TestDataSourceStub extends DataSourceStub {
 
-    exports io.helidon.transaction.jdbc;
+    TestDataSourceStub() {
+        super();
+    }
 
 }

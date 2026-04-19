@@ -15,22 +15,16 @@
  */
 package io.helidon.transaction.jdbc;
 
-import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.sql.DataSource;
 
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static io.helidon.transaction.Tx.Type.NEW;
-import static io.helidon.transaction.Tx.Type.REQUIRED;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.hamcrest.Matchers.sameInstance;
 
 class TransactionalDataSourceTest {
 
@@ -38,291 +32,73 @@ class TransactionalDataSourceTest {
         super();
     }
 
-    @DisplayName("A REQUIRED transaction reuses one physical connection")
     @Test
-    void requiredTransactionReusesOneConnection() throws SQLException {
-        RecordingConnection physicalConnection = new RecordingConnection();
-        RecordingDataSource delegate = new RecordingDataSource(physicalConnection);
-
-        TransactionalDataSource transactionalDataSource = new TransactionalDataSource(delegate);
-        JdbcTxSupport txSupport = new JdbcTxSupport(transactionalDataSource);
-
-        txSupport.transaction(REQUIRED, () -> {
-            Connection first = transactionalDataSource.getConnection();
-            Connection second = transactionalDataSource.getConnection();
-
-            assertThat(first, instanceOf(TransactionScopedConnection.class));
-            assertThat(second, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(1));
-            assertThat(physicalConnection.isClosed(), is(false));
-
-            first.close();
-            second.close();
-
-            assertThat(physicalConnection.isClosed(), is(false));
-            return null;
-        });
-
-        assertThat(delegate.connectionRequestCount(), is(1));
-        assertThat(physicalConnection.committed(), is(true));
-        assertThat(physicalConnection.isClosed(), is(true));
-        assertThat(physicalConnection.getAutoCommit(), is(true));
+    void getConnectionDelegatesToConnectionResolver() throws SQLException {
+        Connection expectedConnection = new ConnectionStub();
+        RecordingConnectionResolver connectionResolver = new RecordingConnectionResolver(expectedConnection);
+        DataSource delegate = new DataSourceStub();
+        TransactionalDataSource dataSource = new TransactionalDataSource(connectionResolver, delegate);
+        Connection actualConnection = dataSource.getConnection();
+        assertThat(actualConnection, sameInstance(expectedConnection));
+        assertThat(connectionResolver.dataSource(), sameInstance(delegate));
+        assertThat(connectionResolver.username(), is((String) null));
+        assertThat(connectionResolver.password(), is((String) null));
     }
 
-    @DisplayName("An UNSUPPORTED block bypasses the transaction-bound connection")
     @Test
-    void unsupportedTransactionDoesNotReuseTransactionBoundConnection() throws SQLException {
-        RecordingConnection outerPhysicalConnection = new RecordingConnection();
-        RecordingConnection unsupportedPhysicalConnection = new RecordingConnection();
-        RecordingDataSource delegate = new RecordingDataSource(outerPhysicalConnection, unsupportedPhysicalConnection);
-
-        TransactionalDataSource transactionalDataSource = new TransactionalDataSource(delegate);
-        JdbcTxSupport txSupport = new JdbcTxSupport(transactionalDataSource);
-
-        txSupport.transaction(REQUIRED, () -> {
-
-            Connection outerFirst = transactionalDataSource.getConnection();
-            assertThat(outerFirst, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(1));
-
-            Connection unsupported = txSupport.transaction(io.helidon.transaction.Tx.Type.UNSUPPORTED,
-                                                           transactionalDataSource::getConnection);
-            assertThat(unsupported, is((Connection) unsupportedPhysicalConnection));
-            assertThat(delegate.connectionRequestCount(), is(2));
-
-            unsupported.close();
-            assertThat(unsupportedPhysicalConnection.isClosed(), is(true));
-            assertThat(unsupportedPhysicalConnection.committed(), is(false));
-
-            Connection outerSecond = transactionalDataSource.getConnection();
-            assertThat(outerSecond, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(2)); // note
-            outerSecond.close();
-
-            outerFirst.close();
-            assertThat(outerPhysicalConnection.isClosed(), is(false));
-
-            return null;
-        });
-
-        assertThat(delegate.connectionRequestCount(), is(2));
-        assertThat(outerPhysicalConnection.committed(), is(true));
-        assertThat(outerPhysicalConnection.isClosed(), is(true));
-        assertThat(unsupportedPhysicalConnection.committed(), is(false));
+    void credentialedGetConnectionDelegatesToConnectionResolver() throws SQLException {
+        Connection expectedConnection = new ConnectionStub();
+        RecordingConnectionResolver connectionResolver = new RecordingConnectionResolver(expectedConnection);
+        DataSource delegate = new DataSourceStub();
+        TransactionalDataSource dataSource = new TransactionalDataSource(connectionResolver, delegate);
+        Connection actualConnection = dataSource.getConnection("scott", "tiger");
+        assertThat(actualConnection, sameInstance(expectedConnection));
+        assertThat(connectionResolver.dataSource(), sameInstance(delegate));
+        assertThat(connectionResolver.username(), is("scott"));
+        assertThat(connectionResolver.password(), is("tiger"));
     }
 
-    @DisplayName("A NEW transaction uses its own connection and then restores the outer one")
-    @Test
-    void newTransactionUsesInnerConnectionAndRestoresOuterConnection() throws SQLException {
-        RecordingConnection outerPhysicalConnection = new RecordingConnection();
-        RecordingConnection innerPhysicalConnection = new RecordingConnection();
-        RecordingDataSource delegate = new RecordingDataSource(outerPhysicalConnection, innerPhysicalConnection);
+    private static final class RecordingConnectionResolver implements ConnectionResolver {
 
-        TransactionalDataSource transactionalDataSource = new TransactionalDataSource(delegate);
-        JdbcTxSupport txSupport = new JdbcTxSupport(transactionalDataSource);
+        private final Connection connection;
 
-        txSupport.transaction(REQUIRED, () -> {
-            Connection outerFirst = transactionalDataSource.getConnection();
+        private DataSource dataSource;
 
-            assertThat(outerFirst, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(1));
+        private String username;
 
-            txSupport.transaction(NEW, () -> {
-                Connection inner = transactionalDataSource.getConnection();
+        private String password;
 
-                assertThat(inner, instanceOf(TransactionScopedConnection.class));
-                assertThat(delegate.connectionRequestCount(), is(2));
-
-                inner.close();
-                assertThat(innerPhysicalConnection.isClosed(), is(false));
-                return null;
-            });
-
-            assertThat(innerPhysicalConnection.committed(), is(true));
-            assertThat(innerPhysicalConnection.isClosed(), is(true));
-            assertThat(outerPhysicalConnection.isClosed(), is(false));
-
-            Connection outerSecond = transactionalDataSource.getConnection();
-
-            assertThat(outerSecond, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(2));
-
-            outerFirst.close();
-            outerSecond.close();
-            return null;
-        });
-
-        assertThat(delegate.connectionRequestCount(), is(2));
-        assertThat(outerPhysicalConnection.committed(), is(true));
-        assertThat(outerPhysicalConnection.isClosed(), is(true));
-    }
-
-    @DisplayName("A credentialed transaction reuses one physical connection")
-    @Test
-    void credentialedConnectionIsReusedWithinTransaction() throws SQLException {
-        RecordingConnection physicalConnection = new RecordingConnection();
-        RecordingDataSource delegate = new RecordingDataSource(physicalConnection);
-
-        TransactionalDataSource transactionalDataSource = new TransactionalDataSource(delegate);
-        JdbcTxSupport txSupport = new JdbcTxSupport(transactionalDataSource);
-
-        txSupport.transaction(REQUIRED, () -> {
-            Connection first = transactionalDataSource.getConnection("scott", "tiger");
-            Connection second = transactionalDataSource.getConnection("scott", "tiger");
-
-            assertThat(first, instanceOf(TransactionScopedConnection.class));
-            assertThat(second, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(1));
-
-            first.close();
-            second.close();
-
-            assertThat(physicalConnection.isClosed(), is(false));
-            return null;
-        });
-
-        assertThat(delegate.connectionRequestCount(), is(1));
-        assertThat(physicalConnection.committed(), is(true));
-        assertThat(physicalConnection.isClosed(), is(true));
-    }
-
-    @DisplayName("Mixed credential modes in one transaction fail")
-    @Test
-    void mixingCredentialModesInOneTransactionFails() throws SQLException {
-        RecordingConnection physicalConnection = new RecordingConnection();
-        RecordingDataSource delegate = new RecordingDataSource(physicalConnection);
-
-        TransactionalDataSource transactionalDataSource = new TransactionalDataSource(delegate);
-        JdbcTxSupport txSupport = new JdbcTxSupport(transactionalDataSource);
-
-        txSupport.transaction(REQUIRED, () -> {
-            Connection first = transactionalDataSource.getConnection();
-
-            assertThat(first, instanceOf(TransactionScopedConnection.class));
-            assertThat(delegate.connectionRequestCount(), is(1));
-
-            assertThrows(IllegalStateException.class,
-                         () -> transactionalDataSource.getConnection("scott", "tiger"));
-
-            assertThat(delegate.connectionRequestCount(), is(1));
-
-            first.close();
-            return null;
-        });
-
-        assertThat(physicalConnection.committed(), is(true));
-        assertThat(physicalConnection.isClosed(), is(true));
-    }
-
-    @DisplayName("A transaction with no datasource use still completes")
-    @Test
-    void transactionWithoutDatasourceUseStillCompletes() {
-        RecordingConnection physicalConnection = new RecordingConnection();
-        RecordingDataSource delegate = new RecordingDataSource(physicalConnection);
-
-        TransactionalDataSource transactionalDataSource = new TransactionalDataSource(delegate);
-        JdbcTxSupport txSupport = new JdbcTxSupport(transactionalDataSource);
-
-        txSupport.transaction(REQUIRED, () -> null);
-
-        assertThat(delegate.connectionRequestCount(), is(0));
-        assertThat(physicalConnection.committed(), is(false));
-        assertThat(physicalConnection.rolledBack(), is(false));
-        assertThat(physicalConnection.isClosed(), is(false));
-    }
-
-
-    /*
-     * Inner and nested classes.
-     */
-
-
-    private static final class RecordingDataSource extends DataSourceStub {
-
-        private final RecordingConnection[] connections;
-
-        private final AtomicInteger connectionRequestCount;
-
-        private RecordingDataSource(RecordingConnection... connections) {
+        private RecordingConnectionResolver(Connection connection) {
             super();
-            this.connections = connections.clone();
-            this.connectionRequestCount = new AtomicInteger();
+            this.connection = connection;
         }
 
         @Override
-        public Connection getConnection() throws SQLException {
-            int index = this.connectionRequestCount.getAndIncrement();
-            if (index >= this.connections.length) {
-                throw new SQLException("No connection configured for request index " + index);
-            }
-            return this.connections[index];
+        public Connection connection(DataSource dataSource) {
+            this.dataSource = dataSource;
+            this.username = null;
+            this.password = null;
+            return this.connection;
         }
 
         @Override
-        public Connection getConnection(String username, String password) throws SQLException {
-            return this.getConnection();
+        public Connection connection(DataSource dataSource, String username, String password) {
+            this.dataSource = dataSource;
+            this.username = username;
+            this.password = password;
+            return this.connection;
         }
 
-        int connectionRequestCount() {
-            return this.connectionRequestCount.get();
+        private DataSource dataSource() {
+            return this.dataSource;
         }
 
-    }
-
-    private static final class RecordingConnection extends ConnectionStub {
-
-        private boolean autoCommit;
-
-        private boolean committed;
-
-        private boolean rolledBack;
-
-        private boolean closed;
-
-        private RecordingConnection() {
-            super();
-            this.autoCommit = true;
-            this.committed = false;
-            this.rolledBack = false;
-            this.closed = false;
+        private String username() {
+            return this.username;
         }
 
-        @Override
-        public boolean getAutoCommit() {
-            return this.autoCommit;
-        }
-
-        @Override
-        public void setAutoCommit(boolean autoCommit) {
-            this.autoCommit = autoCommit;
-        }
-
-        @Override
-        public void commit() {
-            this.committed = true;
-        }
-
-        @Override
-        public void rollback() {
-            this.rolledBack = true;
-        }
-
-        @Override
-        public void close() {
-            this.closed = true;
-        }
-
-        @Override
-        public boolean isClosed() {
-            return this.closed;
-        }
-
-        boolean committed() {
-            return this.committed;
-        }
-
-        boolean rolledBack() {
-            return this.rolledBack;
+        private String password() {
+            return this.password;
         }
 
     }
