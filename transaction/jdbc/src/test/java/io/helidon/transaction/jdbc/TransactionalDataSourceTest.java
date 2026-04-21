@@ -16,12 +16,18 @@
 package io.helidon.transaction.jdbc;
 
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 
 import javax.sql.DataSource;
 
+import io.helidon.service.registry.Services;
+import io.helidon.transaction.Tx;
+
 import org.junit.jupiter.api.Test;
 
+import static io.helidon.transaction.Tx.Type.REQUIRED;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.sameInstance;
@@ -33,7 +39,7 @@ class TransactionalDataSourceTest {
     }
 
     @Test
-    void getConnectionDelegatesToConnectionResolver() throws SQLException {
+    void testGetConnectionDelegatesToConnectionResolver() throws SQLException {
         Connection expectedConnection = new ConnectionStub();
         RecordingConnectionResolver connectionResolver = new RecordingConnectionResolver(expectedConnection);
         DataSource delegate = new DataSourceStub();
@@ -46,7 +52,7 @@ class TransactionalDataSourceTest {
     }
 
     @Test
-    void credentialedGetConnectionDelegatesToConnectionResolver() throws SQLException {
+    void testGetConnectionWithUsernamePasswordUsesConnectionResolver() throws SQLException {
         Connection expectedConnection = new ConnectionStub();
         RecordingConnectionResolver connectionResolver = new RecordingConnectionResolver(expectedConnection);
         DataSource delegate = new DataSourceStub();
@@ -56,6 +62,31 @@ class TransactionalDataSourceTest {
         assertThat(connectionResolver.dataSource(), sameInstance(delegate));
         assertThat(connectionResolver.username(), is("scott"));
         assertThat(connectionResolver.password(), is("tiger"));
+    }
+
+    @Test
+    void testLightweightIntegrationScenario() throws SQLException {
+        DataSource ds = Services.get(DataSource.class);
+        Tx.transaction(REQUIRED, () -> {
+            try (Connection c = ds.getConnection();
+                 Statement statement = c.createStatement()) {
+                // autoCommit is false if we're "in" a transaction, i.e. helidon-transaction-jdbc is in effect
+                assertThat(c.getAutoCommit(), is(false));
+                statement.executeUpdate("CREATE TABLE IF NOT EXISTS EXAMPLE (ID INT PRIMARY KEY)");
+                statement.executeUpdate("INSERT INTO EXAMPLE (ID) VALUES (1)");
+            }
+            return null;
+            });
+        
+        try (Connection c = ds.getConnection();
+             Statement statement = c.createStatement();
+             ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM EXAMPLE")) {
+            // autoCommit is true if we're *not* "in" a transaction
+            assertThat(c.getAutoCommit(), is(true));
+            assertThat(rs.next(), is(true));
+            assertThat(rs.getInt(1), is(1));
+            assertThat(rs.next(), is(false));
+        }
     }
 
     private static final class RecordingConnectionResolver implements ConnectionResolver {
