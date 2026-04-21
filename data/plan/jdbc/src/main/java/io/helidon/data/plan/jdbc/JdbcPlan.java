@@ -30,49 +30,36 @@ import io.helidon.data.jdbc.function.JdbcSupplier;
 import static java.util.Arrays.asList;
 
 /**
- * An executable plan for the presumed execution of a statement using JDBC constructs.
+ * An execution plan for the execution of a statement using JDBC constructs.
  *
+ * @param <T> the results type
  * @see #execute(JdbcSupplier, JdbcConsumer)
  */
-public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
+public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
 
     /**
-     * Executes this plan, returning a {@link JdbcResults}.
+     * Executes this plan and returns the results.
      *
      * @param cs a non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
      * @param argsBinder a non-{@code null} {@link JdbcConsumer} of a non-{@code null} {@link
      * JdbcPreparedStatementBindingView} that is expected to install argument values
-     * @return a non-{@code null} {@link JdbcResults}
+     * @return the non-{@code null} results
      * @throws SQLException if a database error occurs
      */
-    JdbcResults execute(JdbcSupplier<? extends Connection> cs,
-                        JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder)
+    T execute(JdbcSupplier<? extends Connection> cs,
+              JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder)
         throws SQLException;
 
-    /*
-     * Executes this plan, returning a {@link JdbcResults}.
-     *
-     * @param cs a non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
-     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
-     * when finished</strong>
-     * @throws SQLException if a database error occurs
-     * @see #execute(JdbcSupplier, JdbcConsumer)
-     */
-    // default JdbcResults execute(JdbcSupplier<? extends Connection> cs) throws SQLException {
-    //     return this.execute(cs, JdbcPlanImpl::doNothing);
-    // }
-
     /**
-     * Executes this plan, returning a {@link JdbcResults}.
+     * Executes this plan and returns the results.
      *
      * @param cs aa non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
      * @param args arguments
-     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
-     * when finished</strong>
+     * @return the non-{@code null} results
      * @throws SQLException if a database error occurs
      * @see #execute(JdbcSupplier, JdbcConsumer)
      */
-    default JdbcResults execute(JdbcSupplier<? extends Connection> cs, Object... args) throws SQLException {
+    default T execute(JdbcSupplier<? extends Connection> cs, Object... args) throws SQLException {
         if (args == null || args.length == 0) {
             return this.execute(cs, JdbcPlanImpl::doNothing);
         }
@@ -80,44 +67,57 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
         return this.execute(cs, psView -> b.bind(psView, asList(args)));
     }
 
+
+    /*
+     * Static methods.
+     */
+
+
     /**
      * Returns a builder for this interface.
      *
+     * @param <T> the results type
      * @return a non-{@code null} {@link JdbcPlanConfig.Builder}
      */
-    static JdbcPlanConfig.Builder builder() {
+    static <T> JdbcPlanConfig.Builder<T> builder() {
         return JdbcPlanConfig.builder();
     }
 
     /**
      * Returns a new {@link JdbcPlan} implementation.
      *
+     * @param <T> the results type
      * @param prototype the prototype
      * @return a new {@link JdbcPlan}
      * @throws NullPointerException if {@code prototype} is {@code null}
      * @throws IllegalArgumentException if the prototype is somehow badly assembled
      */
-    static JdbcPlan create(JdbcPlanConfig prototype) {
-        return new JdbcPlanImpl(prototype);
+    static <T> JdbcPlan<T> create(JdbcPlanConfig<T> prototype) {
+        return new JdbcPlanImpl<>(prototype);
     }
 
     /**
      * Customizes the {@link JdbcPlanConfig.Builder} returned by the {@link #builder()} method, and uses it to
      * {@linkplain JdbcPlanConfig.Builder#build() build} a new {@link JdbcPlan}, which is then returned.
      *
+     * @param <T> the results type
      * @param builderCustomizer a non-{@code null} {@link Consumer} of {@link JdbcPlanConfig.Builder} instances that is
      * intended to customize them
      * @return a new {@link JdbcPlan}
      * @throws NullPointerException if {@code builderCustomizer} is {@code null}
      * @see #builder()
      */
-    static JdbcPlan create(Consumer<JdbcPlanConfig.Builder> builderCustomizer) {
-        return builder().update(builderCustomizer).build();
+    static <T> JdbcPlan<T> create(Consumer<JdbcPlanConfig.Builder<T>> builderCustomizer) {
+        return JdbcPlanConfig.<T>builder().update(builderCustomizer).build();
     }
+
+    /*
+     * Static convenience methods.
+     */
 
     /**
      * A convenience method that arranges for the supplied {@code statement}, requiring no arguments, to be {@linkplain
-     * #execute(JdbcSupplier, Object...)} executed.
+     * #execute(JdbcSupplier, Object...)} executed without results transformation.
      *
      * <p>This method:</p>
      *
@@ -141,12 +141,16 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
      * @see JdbcResults
      */
     static JdbcResults execute(JdbcSupplier<? extends Connection> cs, String statement) throws SQLException {
-        return builder().statement(statement).build().execute(cs);
+        return JdbcPlanConfig.<JdbcResults>builder()
+            .statement(statement)
+            .transformer(jr -> jr)
+            .build()
+            .execute(cs);
     }
 
     /**
      * A convenience method that arranges for the supplied {@code statement}, requiring no arguments, to be {@linkplain
-     * #execute(JdbcSupplier, Object...)} executed.
+     * #execute(JdbcSupplier, Object...)} executed without results transformation.
      *
      * <p>This method:</p>
      *
@@ -171,7 +175,11 @@ public interface JdbcPlan extends RuntimeType.Api<JdbcPlanConfig> {
      * @see JdbcResults
      */
     static JdbcResults execute(DataSource ds, String statement) throws SQLException {
-        return builder().statement(statement).build().execute(ds::getConnection);
+        return JdbcPlanConfig.<JdbcResults>builder()
+            .statement(statement)
+            .transformer(jr -> jr)
+            .build()
+            .execute(ds::getConnection);
     }
 
 }

@@ -35,19 +35,20 @@ import io.helidon.data.jdbc.ResultSetType;
 import io.helidon.data.jdbc.ResultsAdvancementBehavior;
 import io.helidon.data.jdbc.TransactionIsolation;
 import io.helidon.data.jdbc.function.JdbcConsumer;
+import io.helidon.data.jdbc.function.JdbcFunction;
 import io.helidon.data.jdbc.function.JdbcRunnable;
 import io.helidon.data.jdbc.function.JdbcSupplier;
 
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
 
-final class JdbcPlanImpl implements JdbcPlan {
+final class JdbcPlanImpl<T> implements JdbcPlan<T> {
 
     private static final int[] EMPTY_INT_ARRAY = new int[0];
 
     private static final String[] EMPTY_STRING_ARRAY = new String[0];
 
-    private final JdbcPlanConfig prototype;
+    private final JdbcPlanConfig<T> prototype;
 
     private final String jdbcStatementText;
 
@@ -59,22 +60,26 @@ final class JdbcPlanImpl implements JdbcPlan {
 
     private final ResultsAdvancementBehavior resultsAdvancementBehavior;
 
-    JdbcPlanImpl(JdbcPlanConfig prototype) {
+    private final JdbcFunction<? super JdbcResults, ? extends T> transformer;
+
+    JdbcPlanImpl(JdbcPlanConfig<T> prototype) {
         super();
         this.jdbcStatementText = prototype.statement();
         this.connectionState = prototype.connectionState().map(ConnectionState::new).orElse(ConnectionState.EMPTY);
         this.statementState = prototype.statementState().map(StatementState::new).orElse(StatementState.EMPTY);
         this.executionState = prototype.executionState().map(ExecutionState::new).orElse(ExecutionState.EMPTY);
         this.resultsAdvancementBehavior = prototype.resultsAdvancementBehavior();
+        this.transformer = prototype.transformer();
         this.prototype = prototype;
     }
 
     @Override // JdbcPlan
-    public JdbcResults execute(JdbcSupplier<? extends Connection> cs,
-                               JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder) throws SQLException {
+    public T execute(JdbcSupplier<? extends Connection> cs,
+                     JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder) throws SQLException {
         requireNonNull(argsBinder, "argsBinder");
         Connection c = cs.get();
         PreparedStatement ps = null;
+        JdbcResults jr = null;
         try {
             ConnectionState initialConnectionState = new ConnectionState(c);
             this.connectionState.install(c);
@@ -84,16 +89,23 @@ final class JdbcPlanImpl implements JdbcPlan {
             this.statementState.install(s);
             argsBinder.accept(bindingView(s));
             int[] outParameterIndices = this.executionState.outParameterIndices();
-            JdbcResults jr;
             if (s instanceof CallableStatement callableStatement) {
                 jr = JdbcResults.of(callableStatement, this.resultsAdvancementBehavior.value(), outParameterIndices);
             } else {
                 jr = JdbcResults.of(s, this.resultsAdvancementBehavior.value());
             }
-            return jr
+            jr = jr
                 .onClose((JdbcRunnable) () -> this.restoreStatementStateAndClose(s, initialStatementState))
                 .onClose((JdbcRunnable) () -> this.restoreConnectionStateAndClose(c, initialConnectionState));
+            return this.transformer.apply(jr);
         } catch (RuntimeException | SQLException e) {
+            if (jr != null) {
+                try {
+                    jr.close();
+                } catch (RuntimeException | SQLException closeFailure) {
+                    e.addSuppressed(closeFailure);
+                }
+            }
             if (ps != null) {
                 try {
                     ps.close();
@@ -111,7 +123,7 @@ final class JdbcPlanImpl implements JdbcPlan {
     }
 
     @Override // JdbcPlan (RuntimeType.Api)
-    public JdbcPlanConfig prototype() {
+    public JdbcPlanConfig<T> prototype() {
         return this.prototype;
     }
 
@@ -286,7 +298,7 @@ final class JdbcPlanImpl implements JdbcPlan {
 
     }
 
-    // Deliberately omitted, because it is not restorable:
+    // Deliberately omitted, because they are not restorable:
     // - cursorName // (there is no accessor, only a mutator; what happens if statement is pooled?)
     // - escapeProcessing // (there is no accessor)
     private record StatementState(boolean closeOnCompletion,
@@ -422,18 +434,14 @@ final class JdbcPlanImpl implements JdbcPlan {
             } else if (CallableStatement.class.isAssignableFrom(type)) {
                 throw new IllegalArgumentException("CallableStatements and generated keys don't work together");
             } else {
-                int[] a = new int[columnIndexes.length];
-                System.arraycopy(columnIndexes, 0, a, 0, columnIndexes.length);
-                columnIndexes = a;
+                columnIndexes = columnIndexes.clone();
             }
             if (columnNames == null || columnNames.length == 0) {
                 columnNames = EMPTY_STRING_ARRAY;
             } else if (CallableStatement.class.isAssignableFrom(type)) {
                 throw new IllegalArgumentException("CallableStatements and generated keys don't work together");
             } else if (columnIndexes.length == 0) {
-                String[] a = new String[columnNames.length];
-                System.arraycopy(columnNames, 0, a, 0, columnNames.length);
-                columnNames = a;
+                columnNames = columnNames.clone();
             } else {
                 throw new IllegalArgumentException("columnNames and columnIndexes cannot coexist");
             }
@@ -451,9 +459,7 @@ final class JdbcPlanImpl implements JdbcPlan {
             } else if (!CallableStatement.class.isAssignableFrom(type)) {
                 throw new IllegalArgumentException("outParameterIndices: " + asList(outParameterIndices));
             } else {
-                int[] a = new int[outParameterIndices.length];
-                System.arraycopy(outParameterIndices, 0, a, 0, outParameterIndices.length);
-                outParameterIndices = a;
+                outParameterIndices = outParameterIndices.clone();
             }
         }
 
