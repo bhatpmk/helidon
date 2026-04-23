@@ -22,8 +22,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 
 /**
- * A <dfn>view</dfn> of a {@link Connection}, representing it as a <dfn>factory</dfn> for JDBC {@link Statement}, {@link
- * PreparedStatement}, and {@link CallableStatement} instances.
+ * A <dfn>view</dfn> of a {@link Connection}, representing it only as a <dfn>factory</dfn> for JDBC {@link Statement},
+ * {@link PreparedStatement}, and {@link CallableStatement} instances.
  *
  * <p>Each method in this interface corresponds to a {@link Statement}-creating <dfn>factory method</dfn> in the <a
  * href="https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/package-summary.html">JDBC 4.5</a> version

@@ -36,7 +36,7 @@ import java.util.Calendar;
 import java.util.Map;
 
 /**
- * A <dfn>view</dfn> of a {@link ResultSet}, representing it as an <dfn>unmodifiable row</dfn>.
+ * A <dfn>view</dfn> of a {@link ResultSet}, representing it only as an <dfn>unmodifiable row</dfn>.
  *
  * <p>Each method in this interface corresponds to a row-related <dfn>accessor method</dfn> in the <a
  * href="https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/package-summary.html">JDBC 4.5</a> version

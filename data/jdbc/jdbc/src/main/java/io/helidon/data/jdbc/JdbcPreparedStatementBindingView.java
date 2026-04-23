@@ -37,7 +37,7 @@ import java.sql.Timestamp;
 import java.util.Calendar;
 
 /**
- * A <dfn>view</dfn> of a {@link PreparedStatement}, representing it as a target for argument binding.
+ * A <dfn>view</dfn> of a {@link PreparedStatement}, representing it only as a target for argument binding.
  *
  * <p>Each method in this interface corresponds to a binding-related <dfn>mutator method</dfn> in the <a
  * href="https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/package-summary.html">JDBC 4.5</a> version

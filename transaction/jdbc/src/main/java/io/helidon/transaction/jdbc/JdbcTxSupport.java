@@ -23,23 +23,35 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 
 import io.helidon.common.Weight;
-import io.helidon.common.Weighted;
 import io.helidon.service.registry.Service.Inject;
 import io.helidon.service.registry.Service.Singleton;
-import io.helidon.transaction.Tx;
+import io.helidon.transaction.Tx.Type;
 import io.helidon.transaction.TxException;
 import io.helidon.transaction.spi.TxLifeCycle;
 import io.helidon.transaction.spi.TxSupport;
 
+import static io.helidon.common.Weighted.DEFAULT_WEIGHT;
 import static java.util.Objects.requireNonNull;
 
 @Singleton
-@Weight(Weighted.DEFAULT_WEIGHT - 20) // ...in case there are more sophisticated TxSupport implementations
+@Weight(DEFAULT_WEIGHT - 20)
 final class JdbcTxSupport implements TxSupport {
+
+
+    /*
+     * Instance fields.
+     */
+
 
     private final ThreadLocal<Deque<Transaction>> transactions;
 
     private final List<TxLifeCycle> listeners;
+
+
+    /*
+     * Constructors.
+     */
+
 
     @Inject
     JdbcTxSupport(List<TxLifeCycle> listeners) {
@@ -53,16 +65,17 @@ final class JdbcTxSupport implements TxSupport {
         this(List.of(listeners));
     }
 
-    @Override
-    public String type() {
-        return "jdbc";
-    }
 
-    @Override
-    public <T> T transaction(Tx.Type type, Callable<T> task) {
+    /*
+     * Instance methods.
+     */
+
+
+    @Override // TxSupport
+    public <T> T transaction(Type type, Callable<T> task) {
         requireNonNull(type, "type");
         requireNonNull(task, "task");
-        start();
+        this.start();
         try {
             return switch (type) {
                 case MANDATORY -> txMandatory(task);
@@ -73,18 +86,24 @@ final class JdbcTxSupport implements TxSupport {
                 case UNSUPPORTED -> txUnsupported(task);
             };
         } finally {
-            end();
+            this.end();
         }
     }
 
-    Optional<String> currentTransactionId() {
-        return currentActiveTransaction().map(Transaction::id);
+    @Override // TxSupport
+    public String type() {
+        return "jdbc";
     }
 
     boolean currentActiveTransactionRollbackOnly() {
         return currentActiveTransaction()
             .map(Transaction::rollbackOnly)
             .orElse(false);
+    }
+
+
+    Optional<String> currentTransactionId() {
+        return currentActiveTransaction().map(Transaction::id);
     }
 
     int depth() {
@@ -126,7 +145,7 @@ final class JdbcTxSupport implements TxSupport {
         if (transactionActive()) {
             throw new TxException("Never check failed; current active transaction exists");
         }
-        return runOutside(task);
+        return runWithout(task);
     }
 
     private <T> T txRequired(Callable<T> task) {
@@ -134,23 +153,23 @@ final class JdbcTxSupport implements TxSupport {
     }
 
     private <T> T txSupported(Callable<T> task) {
-        return transactionActive() ? runInCurrent(task) : runOutside(task);
+        return transactionActive() ? runInCurrent(task) : runWithout(task);
     }
 
     private <T> T txUnsupported(Callable<T> task) {
         String previousId = currentTransactionId().orElse(null);
         if (previousId == null) {
-            return runOutside(task);
+            return runWithout(task);
         }
         suspend(previousId);
         try {
-            return runOutside(task);
+            return runWithout(task);
         } finally {
             resume(previousId);
         }
     }
 
-    private <T> T runOutside(Callable<T> task) {
+    private <T> T runWithout(Callable<T> task) {
         try {
             return task.call();
         } catch (RuntimeException e) {
@@ -173,30 +192,31 @@ final class JdbcTxSupport implements TxSupport {
     }
 
     private <T> T runInNew(Callable<T> task) {
-        String txid = newTxId();
-        begin(txid);
+        String txId = newTxId();
+        begin(txId);
         try {
             T result = task.call();
-            complete(txid);
+            complete(txId);
             return result;
         } catch (RuntimeException e) {
-            rollbackActiveTransactionIfCurrent(txid);
+            rollbackActiveTransactionIfCurrent(txId);
             throw e;
         } catch (Exception e) {
-            rollbackActiveTransactionIfCurrent(txid);
+            rollbackActiveTransactionIfCurrent(txId);
             throw new TxException(e.getMessage(), e);
         }
     }
 
-    private void complete(String txid) {
-        if (!isCurrentActiveTransaction(txid)) {
-            throw new TxException("No current transaction to complete: " + txid);
+    private void complete(String txId) {
+        Transaction t = currentActiveTransaction()
+            .filter(tx -> tx.id().equals(txId))
+            .orElseThrow(() -> new TxException("No current active transaction to complete: " + txId));
+        if (t.rollbackOnly()) {
+            this.transactions.get().pop();
+            this.listeners.forEach(listener -> listener.rollback(txId));
+            throw new TxException("Current active transaction is marked rollback only: " + txId);
         }
-        if (currentActiveTransactionRollbackOnly()) {
-            rollback(txid);
-            throw new TxException("Transaction is marked rollback only: " + txid);
-        }
-        commit(txid);
+        commit(txId);
     }
 
     private void start() {
@@ -207,53 +227,20 @@ final class JdbcTxSupport implements TxSupport {
         this.listeners.forEach(TxLifeCycle::end);
     }
 
-    private void begin(String txid) {
-        pushNewActiveTransaction(txid);
+    private void begin(String txId) {
+        this.transactions.get().push(new Transaction(txId));
         try {
-            this.listeners.forEach(listener -> listener.begin(txid));
+            this.listeners.forEach(listener -> listener.begin(txId));
         } catch (RuntimeException | Error e) {
-            rollbackActiveTransactionIfCurrent(txid);
+            rollbackActiveTransactionIfCurrent(txId);
             throw e;
         }
     }
 
-    private void commit(String txid) {
-        commitActiveTransaction(txid);
-        this.listeners.forEach(listener -> listener.commit(txid));
-    }
-
-    private void rollback(String txid) {
-        rollbackActiveTransaction(txid);
-        this.listeners.forEach(listener -> listener.rollback(txid));
-    }
-
-    private void suspend(String txid) {
-        suspendActiveTransaction(txid);
-        try {
-            this.listeners.forEach(listener -> listener.suspend(txid));
-        } catch (RuntimeException | Error e) {
-            resumeSuspendedTransaction(txid);
-            throw e;
-        }
-    }
-
-    private void resume(String txid) {
-        resumeSuspendedTransaction(txid);
-        try {
-            this.listeners.forEach(listener -> listener.resume(txid));
-        } catch (RuntimeException | Error e) {
-            suspendActiveTransaction(txid);
-            throw e;
-        }
-    }
-
-    private void pushNewActiveTransaction(String txid) {
-        this.transactions.get().push(new Transaction(txid));
-    }
-
-    private void commitActiveTransaction(String txid) {
-        requireCurrentTransaction(txid, Status.ACTIVE, "commit");
+    private void commit(String txId) {
+        requireCurrentTransaction(txId, Status.ACTIVE, "commit");
         this.transactions.get().pop();
+        this.listeners.forEach(listener -> listener.commit(txId));
     }
 
     private void markCurrentActiveTransactionForRollback() {
@@ -262,61 +249,81 @@ final class JdbcTxSupport implements TxSupport {
             .setRollbackOnly();
     }
 
-    private void rollbackActiveTransaction(String txid) {
-        requireCurrentTransaction(txid, Status.ACTIVE, "rollback");
-        this.transactions.get().pop();
-    }
-
-    private void rollbackActiveTransactionIfCurrent(String txid) {
-        if (isCurrentActiveTransaction(txid)) {
-            rollback(txid);
+    private void rollbackActiveTransactionIfCurrent(String txId) {
+        if (isCurrentActiveTransaction(txId)) {
+            this.transactions.get().pop();
+            this.listeners.forEach(listener -> listener.rollback(txId));
         }
     }
 
-    private void suspendActiveTransaction(String txid) {
-        requireCurrentTransaction(txid, Status.ACTIVE, "suspend").status(Status.SUSPENDED);
+    private void suspend(String txId) {
+        suspendActiveTransaction(txId);
+        try {
+            this.listeners.forEach(listener -> listener.suspend(txId));
+        } catch (RuntimeException | Error e) {
+            resumeSuspendedTransaction(txId);
+            throw e;
+        }
     }
 
-    private void resumeSuspendedTransaction(String txid) {
-        requireCurrentTransaction(txid, Status.SUSPENDED, "resume").status(Status.ACTIVE);
+    private void suspendActiveTransaction(String txId) {
+        requireCurrentTransaction(txId, Status.ACTIVE, "suspend").status(Status.SUSPENDED);
     }
 
-    private boolean isCurrentActiveTransaction(String txid) {
+    private void resume(String txId) {
+        resumeSuspendedTransaction(txId);
+        try {
+            this.listeners.forEach(listener -> listener.resume(txId));
+        } catch (RuntimeException | Error e) {
+            suspendActiveTransaction(txId);
+            throw e;
+        }
+    }
+
+    private void resumeSuspendedTransaction(String txId) {
+        requireCurrentTransaction(txId, Status.SUSPENDED, "resume").status(Status.ACTIVE);
+    }
+
+    private boolean isCurrentActiveTransaction(String txId) {
         return currentActiveTransaction()
-            .map(transaction -> transaction.id().equals(txid))
+            .map(t -> t.id().equals(txId))
             .isPresent();
     }
 
     private Optional<Transaction> currentActiveTransaction() {
-        return currentTransaction(Status.ACTIVE);
+        return Optional.ofNullable(this.transactions.get().peek())
+            .filter(t -> t.status() == Status.ACTIVE);
     }
 
-    private Optional<Transaction> currentTransaction(Status status) {
-        return currentTransaction().filter(transaction -> transaction.status() == status);
-    }
-
-    private Optional<Transaction> currentTransaction() {
-        return Optional.ofNullable(this.transactions.get().peek());
-    }
-
-    private Transaction requireCurrentTransaction(String txid, Status status, String action) {
-        Transaction transaction = currentTransaction()
+    private Transaction requireCurrentTransaction(String txId, Status status, String action) {
+        Transaction t = Optional.ofNullable(this.transactions.get().peek())
             .orElseThrow(() -> new IllegalStateException("Cannot " + action + ": no current transaction"));
-        if (!transaction.id().equals(txid)) {
-            throw new IllegalStateException("Cannot " + action + " transaction " + txid
-                                            + ": current transaction is " + transaction.id());
-        }
-        if (transaction.status() != status) {
-            throw new IllegalStateException("Cannot " + action + " transaction " + txid
-                                            + " while in status " + transaction.status()
+        if (!t.id().equals(txId)) {
+            throw new IllegalStateException("Cannot " + action + " transaction " + txId
+                                            + ": current transaction is " + t.id());
+        } else if (t.status() != status) {
+            throw new IllegalStateException("Cannot " + action + " transaction " + txId
+                                            + " while in status " + t.status()
                                             + ": expected " + status);
         }
-        return transaction;
+        return t;
     }
+
+
+    /*
+     * Static methods.
+     */
+
 
     private static String newTxId() {
         return UUID.randomUUID().toString();
     }
+
+
+    /*
+     * Inner and nested classes.
+     */
+
 
     private enum Status {
         ACTIVE,

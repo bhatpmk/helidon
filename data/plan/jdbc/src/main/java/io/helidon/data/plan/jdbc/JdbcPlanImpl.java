@@ -90,9 +90,9 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
             argsBinder.accept(bindingView(s));
             int[] outParameterIndices = this.executionState.outParameterIndices();
             if (s instanceof CallableStatement callableStatement) {
-                jr = JdbcResults.of(callableStatement, this.resultsAdvancementBehavior.value(), outParameterIndices);
+                jr = JdbcResults.of(callableStatement, this.resultsAdvancementBehavior, outParameterIndices);
             } else {
-                jr = JdbcResults.of(s, this.resultsAdvancementBehavior.value());
+                jr = JdbcResults.of(s, this.resultsAdvancementBehavior);
             }
             jr = jr
                 .onClose((JdbcRunnable) () -> this.restoreStatementStateAndClose(s, initialStatementState))

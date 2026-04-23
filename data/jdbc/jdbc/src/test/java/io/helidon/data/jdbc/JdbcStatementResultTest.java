@@ -17,18 +17,8 @@ package io.helidon.data.jdbc;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
-import java.sql.Statement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Optional;
-
-import io.helidon.data.jdbc.function.JdbcBooleanSupplier;
-import io.helidon.data.jdbc.function.JdbcFunction;
-import io.helidon.data.jdbc.function.JdbcLongFunction;
-import io.helidon.data.jdbc.function.JdbcLongSupplier;
-import io.helidon.data.jdbc.function.JdbcSupplier;
-
-import javax.sql.DataSource;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;

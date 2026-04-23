@@ -30,7 +30,7 @@ import io.helidon.data.jdbc.function.JdbcConsumer;
 import io.helidon.data.jdbc.function.JdbcFunction;
 import io.helidon.data.jdbc.function.JdbcRunnable;
 
-import static java.sql.Statement.CLOSE_CURRENT_RESULT;
+import static java.util.Objects.requireNonNull;
 
 /**
  * An object representing the family of results any {@link Statement} {@linkplain Statement#execute(String) execution},
@@ -50,9 +50,8 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * Advances to the next {@link JdbcResult} in the notional chain of results and returns {@code true} if and only if
      * there is one.
      *
-     * <p>A {@link JdbcResults} is notionally positioned <em>before</em> the notional first result. If {@link
-     * #advance()} is never called, {@link #get()} will always return an {@linkplain Optional#isEmpty() empty} {@link
-     * Optional}.</p>
+     * <p>A {@link JdbcResults} is positioned <em>before</em> the notional first result. If {@link #advance()} is never
+     * called, {@link #get()} will always return an {@linkplain Optional#isEmpty() empty} {@link Optional}.</p>
      *
      * <p>If this method returns {@code true}, then the {@link Optional} returned by {@link #get()} will be {@linkplain
      * Optional#isPresent() present}.</p>
@@ -387,18 +386,18 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
      * supplied {@link CallableStatement}.
      *
-     * @param cs a non-{@link CallableStatement}
+     * @param cs a non-{@code null} {@link CallableStatement}
      * @param outParameterIndices a non-{@code null} array of {@code 1}-based already registered {@code OUT} parameters
      * in the supplied {@link CallableStatement}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
-     * @see #of(CallableStatement, int, int[])
+     * @see #of(CallableStatement, ResultsAdvancementBehavior, int[])
      * @see CallableStatement
      * @see PreparedStatement#execute()
      */
     static JdbcResults of(CallableStatement cs, int[] outParameterIndices) {
         return of(cs,
-                  CLOSE_CURRENT_RESULT,
+                  ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
                   outParameterIndices);
     }
 
@@ -406,22 +405,25 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
      * supplied {@link CallableStatement}.
      *
-     * @param cs a non-{@link CallableStatement}
-     * @param current a constant as must be supplied to invocations of {@link Statement#getMoreResults(int)}
+     * @param cs a non-{@code null} {@link CallableStatement}
+     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
+     * behavior of {@link Statement#getMoreResults(int)}
      * @param outParameterIndices a non-{@code null} array of {@code 1}-based already registered {@code OUT} parameters
      * in the supplied {@link CallableStatement}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
+     * @see ResultsAdvancementBehavior
      * @see CallableStatement
      * @see PreparedStatement#execute()
      * @see Statement#getMoreResults(int)
-     * @see Statement#CLOSE_ALL_RESULTS
-     * @see Statement#CLOSE_CURRENT_RESULT
-     * @see Statement#KEEP_CURRENT_RESULT
      */
-    static JdbcResults of(CallableStatement cs, int current, int[] outParameterIndices) {
+    static JdbcResults of(CallableStatement cs,
+                          ResultsAdvancementBehavior resultsAdvancementBehavior,
+                          int[] outParameterIndices) {
+        requireNonNull(outParameterIndices, "outParameterIndices");
+        int rab = resultsAdvancementBehavior.value();
         return new JdbcResultsImpl(cs,
-                                   () -> cs.getMoreResults(current),
+                                   () -> cs.getMoreResults(rab),
                                    outParameterIndices);
     }
 
@@ -429,7 +431,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
      * supplied {@link PreparedStatement}.
      *
-     * @param ps a non-{@link PreparedStatement}
+     * @param ps a non-{@code null} {@link PreparedStatement}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
      * @see PreparedStatement#execute()
@@ -444,19 +446,19 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
      * supplied {@link PreparedStatement}.
      *
-     * @param ps a non-{@link PreparedStatement}
-     * @param current a constant as must be supplied to invocations of {@link Statement#getMoreResults(int)}
+     * @param ps a non-{@code null} {@link PreparedStatement}
+     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
+     * behavior of {@link Statement#getMoreResults(int)}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
+     * @see ResultsAdvancementBehavior
      * @see PreparedStatement#execute()
      * @see Statement#getMoreResults(int)
-     * @see Statement#CLOSE_ALL_RESULTS
-     * @see Statement#CLOSE_CURRENT_RESULT
-     * @see Statement#KEEP_CURRENT_RESULT
      */
-    static JdbcResults of(PreparedStatement ps, int current) {
+    static JdbcResults of(PreparedStatement ps, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+        int rab = resultsAdvancementBehavior.value();
         return new JdbcResultsImpl(ps,
-                                   () -> ps.getMoreResults(current));
+                                   () -> ps.getMoreResults(rab));
     }
 
     /**
@@ -474,6 +476,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      */
     @Deprecated
     static JdbcResults of(Statement s, String sql) {
+        requireNonNull(sql, "sql");
         return new JdbcResultsImpl(s,
                                    () -> s.execute(sql),
                                    s::getMoreResults);
@@ -485,20 +488,22 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      *
      * @param s a non-{@code null} {@link Statement}
      * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @param autoGeneratedKeys a constant indicating whether auto-generated keys should be made available for retrieval
-     * using the method {@link Statement#getGeneratedKeys()}; one of the following constants: {@link
-     * Statement#RETURN_GENERATED_KEYS} or {@link Statement#NO_GENERATED_KEYS}
+     * @param generatedKeysBehavior a non-{@code null} {@link GeneratedKeysBehavior} indicating whether auto-generated
+     * keys should be made avialable for retrieval using the method {@link Statement#getGeneratedKeys()}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
+     * @see GeneratedKeysBehavior
      * @see Statement#execute(String, int)
      * @see Statement#getMoreResults()
      * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
      * safe
      */
     @Deprecated
-    static JdbcResults of(Statement s, String sql, int autoGeneratedKeys) {
+    static JdbcResults of(Statement s, String sql, GeneratedKeysBehavior generatedKeysBehavior) {
+        requireNonNull(sql, "sql");
+        int agk = generatedKeysBehavior.value();
         return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql, autoGeneratedKeys),
+                                   () -> s.execute(sql, agk),
                                    s::getMoreResults);
     }
 
@@ -508,25 +513,30 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      *
      * @param s a non-{@code null} {@link Statement}
      * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @param autoGeneratedKeys a constant indicating whether auto-generated keys should be made available for retrieval
-     * using the method {@link Statement#getGeneratedKeys()}; one of the following constants: {@link
-     * Statement#RETURN_GENERATED_KEYS} or {@link Statement#NO_GENERATED_KEYS}
-     * @param current a constant as must be supplied to invocations of {@link Statement#getMoreResults(int)}
+     * @param generatedKeysBehavior a non-{@code null} {@link GeneratedKeysBehavior} indicating whether auto-generated
+     * keys should be made avialable for retrieval using the method {@link Statement#getGeneratedKeys()}
+     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
+     * behavior of {@link Statement#getMoreResults(int)}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
+     * @see GeneratedKeysBehavior
+     * @see ResultsAdvancementBehavior
      * @see Statement#execute(String, int)
      * @see Statement#getMoreResults(int)
-     * @see Statement#CLOSE_ALL_RESULTS
-     * @see Statement#CLOSE_CURRENT_RESULT
-     * @see Statement#KEEP_CURRENT_RESULT
      * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
      * safe
      */
     @Deprecated
-    static JdbcResults of(Statement s, String sql, int autoGeneratedKeys, int current) {
+    static JdbcResults of(Statement s,
+                          String sql,
+                          GeneratedKeysBehavior generatedKeysBehavior,
+                          ResultsAdvancementBehavior resultsAdvancementBehavior) {
+        requireNonNull(sql, "sql");
+        int agk = generatedKeysBehavior.value();
+        int rab = resultsAdvancementBehavior.value();
         return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql, autoGeneratedKeys),
-                                   () -> s.getMoreResults(current));
+                                   () -> s.execute(sql, agk),
+                                   () -> s.getMoreResults(rab));
     }
 
     /**
@@ -537,22 +547,24 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * @param sql the non-{@code null} {@code SQL} statement to execute
      * @param columnIndexes an array of the indexes of the columns in the inserted row that should be made available for
      * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
-     * @param current a constant as must be supplied to invocations of {@link Statement#getMoreResults(int)}
+     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
+     * behavior of {@link Statement#getMoreResults(int)}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
+     * @see ResultsAdvancementBehavior
      * @see Statement#execute(String, int[])
      * @see Statement#getMoreResults(int)
-     * @see Statement#CLOSE_ALL_RESULTS
-     * @see Statement#CLOSE_CURRENT_RESULT
-     * @see Statement#KEEP_CURRENT_RESULT
      * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
      * safe
      */
     @Deprecated
-    static JdbcResults of(Statement s, String sql, int[] columnIndexes, int current) {
+    static JdbcResults of(Statement s, String sql, int[] columnIndexes, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+        requireNonNull(sql, "sql");
+        requireNonNull(columnIndexes, "columnIndexes");
+        int rab = resultsAdvancementBehavior.value();
         return new JdbcResultsImpl(s,
                                    () -> s.execute(sql, columnIndexes),
-                                   () -> s.getMoreResults(current));
+                                   () -> s.getMoreResults(rab));
     }
 
     /**
@@ -563,22 +575,24 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      * @param sql the non-{@code null} {@code SQL} statement to execute
      * @param columnNames an array of the names of the columns in the inserted row that should be made available for
      * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
-     * @param current a constant as must be supplied to invocations of {@link Statement#getMoreResults(int)}
+     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
+     * behavior of {@link Statement#getMoreResults(int)}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
      * @throws NullPointerException if any argument is {@code null}
+     * @see ResultsAdvancementBehavior
      * @see Statement#execute(String, String[])
      * @see Statement#getMoreResults(int)
-     * @see Statement#CLOSE_ALL_RESULTS
-     * @see Statement#CLOSE_CURRENT_RESULT
-     * @see Statement#KEEP_CURRENT_RESULT
      * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
      * safe
      */
     @Deprecated
-    static JdbcResults of(Statement s, String sql, String[] columnNames, int current) {
+    static JdbcResults of(Statement s, String sql, String[] columnNames, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+        requireNonNull(sql, "sql");
+        requireNonNull(columnNames, "columnNames");
+        int rab = resultsAdvancementBehavior.value();
         return new JdbcResultsImpl(s,
                                    () -> s.execute(sql, columnNames),
-                                   () -> s.getMoreResults(current));
+                                   () -> s.getMoreResults(rab));
     }
 
 }
