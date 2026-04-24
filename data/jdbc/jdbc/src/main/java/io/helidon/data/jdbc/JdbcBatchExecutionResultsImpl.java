@@ -15,12 +15,6 @@
  */
 package io.helidon.data.jdbc;
 
-import java.sql.CallableStatement;
-import java.sql.SQLException;
-import java.util.NoSuchElementException;
-
-import static java.util.Objects.requireNonNull;
-
 final class JdbcBatchExecutionResultsImpl implements JdbcBatchExecutionResults {
 
     private static final long[] EMPTY_LONG_ARRAY = new long[0];

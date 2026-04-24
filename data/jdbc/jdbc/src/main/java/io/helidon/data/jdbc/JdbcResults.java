@@ -817,7 +817,8 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                     }
                     this.sql = null;
                 } else if (sql == null) {
-                    throw new IllegalArgumentException("sql must be supplied with non-PreparedStatements", new NullPointerException("sql"));
+                    throw new IllegalArgumentException("sql must be supplied with non-PreparedStatements",
+                                                       new NullPointerException("sql"));
                 } else {
                     this.sql = sql;
                 }
@@ -839,8 +840,9 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                 } else {
                     this.columnNames = columnNames.clone();
                 }
-                this.generatedKeysBehavior =
-                    (this.columnIndices.length > 0 || this.columnNames.length > 0) ? GeneratedKeysBehavior.RETURN : generatedKeysBehavior;
+                this.generatedKeysBehavior = (this.columnIndices.length > 0 || this.columnNames.length > 0)
+                    ? GeneratedKeysBehavior.RETURN
+                    : generatedKeysBehavior;
                 if (outParameterIndices.length > 0) {
                     throw new IllegalArgumentException("outParameterIndices may be supplied only for a CallableStatement");
                 }
