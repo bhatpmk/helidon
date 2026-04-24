@@ -31,10 +31,19 @@ import java.util.Optional;
 import io.helidon.data.jdbc.function.JdbcAutoCloseable;
 import io.helidon.data.jdbc.function.JdbcBooleanSupplier;
 import io.helidon.data.jdbc.function.JdbcRunnable;
+import io.helidon.data.jdbc.function.JdbcSupplier;
 
 import static java.util.Objects.requireNonNull;
 
 final class JdbcResultsImpl implements JdbcResults {
+
+
+    /*
+     * Static fields.
+     */
+
+
+    private static final long[] EMPTY_LONG_ARRAY = new long[0];
 
 
     /*
@@ -53,7 +62,9 @@ final class JdbcResultsImpl implements JdbcResults {
     // Self-replacing; treat as final. Never null.
     private JdbcBooleanSupplier advancer;
 
-    private JdbcResult jr;
+    private JdbcSupplier<? extends long[]> batchAdvancer;
+
+    private JdbcResult result;
 
     private boolean closed;
 
@@ -87,25 +98,28 @@ final class JdbcResultsImpl implements JdbcResults {
             return false;
         }
         Statement s = this.p.statement();
-        if (this.advancer.getAsBoolean()) {
-            JdbcResultSetImpl jrsi = new JdbcResultSetImpl(s.getResultSet());
-            this.closers.push(jrsi::close);
-            this.jr = jrsi;
+        if (this.batchAdvancer != null) {
+            this.result = new JdbcBatchExecutionResultsImpl(this.batchAdvancer.get());
+        } else if (this.advancer.getAsBoolean()) {
+            JdbcResultSetImpl result = new JdbcResultSetImpl(s.getResultSet());
+            this.closers.push(result::close);
+            this.result = result;
         } else {
             long updateCount = updateCount(s);
             if (updateCount >= 0L) {
-                this.jr = new JdbcUpdateCountImpl(updateCount);
+                this.result = new JdbcUpdateCountImpl(updateCount);
             } else {
                 int[] outParameterIndices = this.p.outParameterIndices();
                 if (outParameterIndices.length > 0) {
-                    this.jr = new JdbcOutValuesImpl((CallableStatement) s, outParameterIndices);
+                    this.result = new JdbcOutValuesImpl((CallableStatement) s, outParameterIndices);
                 } else {
+                    // Go to the next preparation if there is one and try to keep going.
                     this.configure(++this.preparationIndex);
                     return this.advance(); // recurse
                 }
             }
         }
-        return true; // i.e. this.jr != null; this.get().isPresent() == true
+        return true; // i.e. this.result != null
     }
 
     @Override // JdbcResults (JdbcOpen)
@@ -116,8 +130,9 @@ final class JdbcResultsImpl implements JdbcResults {
         this.closed = true;
         this.preparationIndex = this.preparations.size(); // deliberately out of bounds
         this.p = null;
+        this.batchAdvancer = null;
         this.advancer = JdbcResultsImpl::returnFalse;
-        this.jr = null;
+        this.result = null;
         Throwable t = null;
         Iterator<JdbcRunnable> closers = this.closers.iterator();
         while (closers.hasNext()) {
@@ -155,7 +170,7 @@ final class JdbcResultsImpl implements JdbcResults {
     @Override // JdbcResults
     public Optional<JdbcResult> get() {
         ensureOpen();
-        return Optional.ofNullable(this.jr);
+        return Optional.ofNullable(this.result);
     }
 
     @Override // JdbcResults
@@ -193,8 +208,9 @@ final class JdbcResultsImpl implements JdbcResults {
             this.configure(this.preparations.get(index));
         } else {
             this.p = null;
+            this.batchAdvancer = null;
             this.advancer = JdbcResultsImpl::returnFalse;
-            this.jr = null;
+            this.result = null;
         }
     }
 
@@ -203,19 +219,31 @@ final class JdbcResultsImpl implements JdbcResults {
         Statement s = p.statement();
         int resultsAdvancementBehavior = p.resultsAdvancementBehavior().value();
         JdbcBooleanSupplier subsequentAdvancer = () -> s.getMoreResults(resultsAdvancementBehavior);
-        this.jr = p.initialResult().orElse(null);
-        if (this.jr != null) {
+        this.result = p.initialResult().orElse(null);
+        if (p.batch()) {
+            // Simple and extraordinarily uncommon.
+            this.batchAdvancer = () -> {
+                long[] rv = executeLargeBatch(s);
+                this.batchAdvancer = null;
+                this.advancer = subsequentAdvancer;
+                return rv;
+            };
+            this.advancer = JdbcResultsImpl::returnFalse;
+        } else if (this.result != null) {
+            this.batchAdvancer = null;
             this.advancer = subsequentAdvancer;
-            if (this.jr instanceof JdbcAutoCloseable jac) {
+            if (this.result instanceof JdbcAutoCloseable jac) {
                 this.closers.push(jac::close);
             }
         } else if (s instanceof PreparedStatement ps) {
+            this.batchAdvancer = null;
             this.advancer = () -> {
                 boolean rv = ps.execute();
                 this.advancer = () -> ps.getMoreResults(resultsAdvancementBehavior);
                 return rv;
             };
         } else {
+            this.batchAdvancer = null;
             String sql = p.sql().orElseThrow(() -> new IllegalArgumentException("p; p.sql() == null"));
             int[] columnIndices = p.columnIndices();
             String[] columnNames = p.columnNames();
@@ -247,6 +275,9 @@ final class JdbcResultsImpl implements JdbcResults {
      * Static methods.
      */
 
+    private static long[] executeLargeBatch(Statement s) throws SQLException {
+        return s == null ? EMPTY_LONG_ARRAY : s.executeLargeBatch();
+    }
 
     private static long updateCount(Statement s) throws SQLException {
         try {

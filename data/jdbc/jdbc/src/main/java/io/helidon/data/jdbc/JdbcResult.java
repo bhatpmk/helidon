@@ -26,9 +26,11 @@ package io.helidon.data.jdbc;
  * @see JdbcResultSet
  * @see JdbcUpdateCount
  * @see JdbcOutValues
+ * @see JdbcBatchExecutionResults
  * @see JdbcResults
  * @see java.sql.Statement#execute(String)
  * @see java.sql.PreparedStatement#execute()
+ * @see java.sql.Statement#executeLargeBatch()
  */
-public sealed interface JdbcResult permits JdbcResultSet, JdbcUpdateCount, JdbcOutValues {
+public sealed interface JdbcResult permits JdbcResultSet, JdbcUpdateCount, JdbcOutValues, JdbcBatchExecutionResults {
 }

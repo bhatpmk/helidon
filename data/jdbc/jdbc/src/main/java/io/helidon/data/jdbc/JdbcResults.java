@@ -60,6 +60,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
      *
      * @return {@code true} if and only if advancement was successful
      * @throws IllegalStateException if this {@link JdbcResults} is {@linkplain #close() closed}
+     * @throws java.sql.BatchUpdateException if advancement resulted in a batch execution and it failed
      * @throws SQLException if a database error occurs
      * @see #get()
      */
@@ -423,6 +424,8 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
 
         private final Statement statement;
 
+        private final boolean batch;
+
         private final String sql;
 
         private final GeneratedKeysBehavior generatedKeysBehavior;
@@ -449,6 +452,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(PreparedStatement ps) {
             this(ps,
+                 false,
                  null,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -468,6 +472,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(PreparedStatement ps, ResultsAdvancementBehavior resultsAdvancementBehavior) {
             this(ps,
+                 false,
                  null,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -487,6 +492,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(CallableStatement cs, int[] outParameterIndices) {
             this(cs,
+                 false,
                  null,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -510,6 +516,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                            ResultsAdvancementBehavior resultsAdvancementBehavior,
                            int[] outParameterIndices) {
             this(cs,
+                 false,
                  null,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -523,11 +530,34 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          * Creates a new {@link Preparation}.
          *
          * @param s a non-{@code null} {@link Statement}
+         * @param batchExecution a {@code boolean} which, if {@code true}, indicates that a {@linkplain
+         * Statement#executeLargeBatch() batch execution} is being requested; if {@code false} then {@code s} must be a
+         * {@link PreparedStatement}
+         * @throws NullPointerException if any argument is {@code null}
+         * @throws IllegalArgumentException if {@code batchExecution} is {@code false} and {@code s} is not a {@link PreparedStatement}
+         */
+        public Preparation(Statement s, boolean batchExecution) {
+            this(s,
+                 batchExecution,
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
          * @param sql a non-{@code null} SQL statement to execute
          * @throws NullPointerException if any argument is {@code null}
          */
         public Preparation(Statement s, String sql) {
             this(s,
+                 false,
                  sql,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -548,6 +578,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(Statement s, String sql, ResultsAdvancementBehavior resultsAdvancementBehavior) {
             this(s,
+                 false,
                  sql,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -567,6 +598,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(Statement s, String sql, GeneratedKeysBehavior generatedKeysBehavior) {
             this(s,
+                 false,
                  sql,
                  generatedKeysBehavior,
                  EMPTY_INT_ARRAY,
@@ -591,6 +623,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                            GeneratedKeysBehavior generatedKeysBehavior,
                            ResultsAdvancementBehavior resultsAdvancementBehavior) {
             this(s,
+                 false,
                  sql,
                  generatedKeysBehavior,
                  EMPTY_INT_ARRAY,
@@ -611,6 +644,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(Statement s, String sql, int[] columnIndices) {
             this(s,
+                 false,
                  sql,
                  GeneratedKeysBehavior.RETURN,
                  columnIndices,
@@ -633,6 +667,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(Statement s, String sql, int[] columnIndices, ResultsAdvancementBehavior resultsAdvancementBehavior) {
             this(s,
+                 false,
                  sql,
                  GeneratedKeysBehavior.RETURN,
                  columnIndices,
@@ -653,6 +688,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(Statement s, String sql, String[] columnNames) {
             this(s,
+                 false,
                  sql,
                  GeneratedKeysBehavior.RETURN,
                  EMPTY_INT_ARRAY,
@@ -675,6 +711,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(Statement s, String sql, String[] columnNames, ResultsAdvancementBehavior resultsAdvancementBehavior) {
             this(s,
+                 false,
                  sql,
                  GeneratedKeysBehavior.RETURN,
                  EMPTY_INT_ARRAY,
@@ -693,6 +730,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(ResultSet rs) throws SQLException {
             this(rs.getStatement(),
+                 false,
                  null,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -713,6 +751,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
          */
         public Preparation(ResultSet rs, ResultsAdvancementBehavior resultsAdvancementBehavior) throws SQLException {
             this(rs.getStatement(),
+                 false,
                  null,
                  GeneratedKeysBehavior.NONE,
                  EMPTY_INT_ARRAY,
@@ -723,6 +762,7 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
         }
 
         private Preparation(Statement statement,
+                            boolean batch,
                             String sql,
                             GeneratedKeysBehavior generatedKeysBehavior,
                             int[] columnIndices,
@@ -731,6 +771,9 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                             ResultsAdvancementBehavior resultsAdvancementBehavior,
                             int[] outParameterIndices) {
             this.statement = requireNonNull(statement, "statement");
+            if (batch && jdbcResult != null) {
+                throw new IllegalArgumentException("jdbcResult may not be supplied when a batch execution has been requested");
+            }
             if (statement instanceof PreparedStatement ps) {
                 // PreparedStatement or CallableStatement
                 if (sql != null) {
@@ -749,12 +792,15 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                     throw new IllegalArgumentException("columnNames cannot be supplied with a PreparedStatement");
                 }
                 this.columnNames = EMPTY_STRING_ARRAY;
-                if (ps instanceof CallableStatement) {
-                    this.outParameterIndices = outParameterIndices.length > 0 ? outParameterIndices.clone() : EMPTY_INT_ARRAY;
-                } else if (outParameterIndices.length > 0) {
-                    throw new IllegalArgumentException("outParameterIndices may be supplied only for a CallableStatement");
-                } else {
+                if (outParameterIndices.length == 0) {
                     this.outParameterIndices = EMPTY_INT_ARRAY;
+                } else if (batch) {
+                    throw new IllegalArgumentException("outParameterIndices may not be supplied when"
+                                                       + " a batch execution has been requested");
+                } else if (ps instanceof CallableStatement) {
+                    this.outParameterIndices = outParameterIndices.clone();
+                } else {
+                    throw new IllegalArgumentException("outParameterIndices may be supplied only for a CallableStatement");
                 }
             } else {
                 // Plain Statement
@@ -764,24 +810,43 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
                                                            + " the supplied Statement has already been executed");
                     }
                     this.sql = null;
+                } else if (batch) {
+                    if (sql != null) {
+                        throw new IllegalArgumentException("sql may not be supplied when"
+                                                           + " a batch execution has been requested");
+                    }
+                    this.sql = null;
+                } else if (sql == null) {
+                    throw new IllegalArgumentException("sql must be supplied with non-PreparedStatements", new NullPointerException("sql"));
                 } else {
-                    this.sql = requireNonNull(sql, "sql");
+                    this.sql = sql;
                 }
-                this.generatedKeysBehavior =
-                    (columnIndices.length > 0 || columnNames.length > 0) ? GeneratedKeysBehavior.RETURN : generatedKeysBehavior;
-                this.columnIndices = columnIndices.length > 0 ? columnIndices.clone() : EMPTY_INT_ARRAY;
+                if (columnIndices.length == 0) {
+                    this.columnIndices = EMPTY_INT_ARRAY;
+                } else if (batch) {
+                    throw new IllegalArgumentException("columnIndices may not be supplied when"
+                                                       + " a batch execution has been requested");
+                } else {
+                    this.columnIndices = columnIndices.clone();
+                }
                 if (columnNames.length == 0) {
                     this.columnNames = EMPTY_STRING_ARRAY;
-                } else if (columnIndices.length > 0) {
+                } else if (batch) {
+                    throw new IllegalArgumentException("columnNames may not be supplied when"
+                                                       + " a batch execution has been requested");
+                } else if (this.columnIndices.length > 0) {
                     throw new IllegalArgumentException("columnIndices and columnNames may not be supplied together");
                 } else {
                     this.columnNames = columnNames.clone();
                 }
+                this.generatedKeysBehavior =
+                    (this.columnIndices.length > 0 || this.columnNames.length > 0) ? GeneratedKeysBehavior.RETURN : generatedKeysBehavior;
                 if (outParameterIndices.length > 0) {
                     throw new IllegalArgumentException("outParameterIndices may be supplied only for a CallableStatement");
                 }
                 this.outParameterIndices = EMPTY_INT_ARRAY;
             }
+            this.batch = batch;
             this.jdbcResult = jdbcResult;
             this.resultsAdvancementBehavior =
                 resultsAdvancementBehavior == null ? ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT : resultsAdvancementBehavior;
@@ -789,6 +854,10 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
 
         Statement statement() {
             return this.statement;
+        }
+
+        boolean batch() {
+            return this.batch;
         }
 
         Optional<String> sql() {
