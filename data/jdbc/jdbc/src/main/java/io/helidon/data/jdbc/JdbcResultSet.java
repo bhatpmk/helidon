@@ -39,4 +39,21 @@ public non-sealed interface JdbcResultSet extends JdbcResult, JdbcAutoCloseable,
      */
     ResultSet resultSet() throws SQLException;
 
+
+    /*
+     * Static methods.
+     */
+
+
+    /**
+     * Returns a new {@link JdbcResultSet} wrapping the supplied {@link ResultSet}.
+     *
+     * @param rs a non-{@code null} {@link ResultSet}
+     * @return a new {@link JdbcResultSet}
+     * @throws NullPointerException if {@code rs} is {@code null}
+     */
+    static JdbcResultSet of(ResultSet rs) {
+        return new JdbcResultSetImpl(rs);
+    }
+
 }

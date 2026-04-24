@@ -25,132 +25,105 @@ import java.sql.Statement;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Optional;
 
+import io.helidon.data.jdbc.function.JdbcAutoCloseable;
 import io.helidon.data.jdbc.function.JdbcBooleanSupplier;
 import io.helidon.data.jdbc.function.JdbcRunnable;
 
-import static java.sql.Statement.CLOSE_CURRENT_RESULT;
 import static java.util.Objects.requireNonNull;
 
 final class JdbcResultsImpl implements JdbcResults {
 
-    private static final int[] EMPTY_INT_ARRAY = new int[0];
+
+    /*
+     * Instance fields.
+     */
+
 
     private final Deque<JdbcRunnable> closers;
 
-    private final Statement s;
+    private final List<Preparation> preparations;
 
-    // Treat as final
-    private int[] outParameterIndices;
+    private int preparationIndex;
 
-    // Self-replacing; treat as final
+    private Preparation p;
+
+    // Self-replacing; treat as final. Never null.
     private JdbcBooleanSupplier advancer;
-
-    private boolean closed;
 
     private JdbcResult jr;
 
-    JdbcResultsImpl(CallableStatement s,
-                    JdbcBooleanSupplier subsequentAdvancer,
-                    int[] outParameterIndices) {
-        this(s, s::execute, subsequentAdvancer, outParameterIndices == null ? EMPTY_INT_ARRAY : outParameterIndices);
+    private boolean closed;
+
+
+    /*
+     * Constructors.
+     */
+
+
+    JdbcResultsImpl(Preparation p) {
+        this(List.of(p));
     }
 
-    JdbcResultsImpl(PreparedStatement s,
-                    JdbcBooleanSupplier subsequentAdvancer) {
-        this(s, s::execute, subsequentAdvancer, EMPTY_INT_ARRAY);
-    }
-
-    // Experimental; edge case
-    JdbcResultsImpl(ResultSet rs) throws SQLException {
-        this(rs, CLOSE_CURRENT_RESULT);
-    }
-
-    // Experimental; edge case
-    JdbcResultsImpl(ResultSet rs, int current) throws SQLException {
-        this(rs, rs.getStatement(), current);
-    }
-
-    // Private bridge constructor
-    private JdbcResultsImpl(ResultSet rs, Statement s, int current) {
-        this(s, () -> s.getMoreResults(current), EMPTY_INT_ARRAY);
-        JdbcResultSetImpl jr = new JdbcResultSetImpl(rs);
-        this.closers.push(jr::close);
-        this.jr = jr;
-    }
-
-    // Private bridge constructor
-    private JdbcResultsImpl(Statement s, JdbcBooleanSupplier subsequentAdvancer, int[] outParameterIndices) {
-        this(s, subsequentAdvancer, subsequentAdvancer, outParameterIndices);
-    }
-
-    JdbcResultsImpl(Statement s,
-                    JdbcBooleanSupplier initialAdvancer, // e.g. some variant of Statement.execute()
-                    JdbcBooleanSupplier subsequentAdvancer) { // e.g. some variant of Statement.getMoreResults(int)
-        this(s, initialAdvancer, subsequentAdvancer, EMPTY_INT_ARRAY);
-    }
-
-    JdbcResultsImpl(Statement s,
-                    JdbcBooleanSupplier initialAdvancer, // e.g. some variant of Statement.execute()
-                    JdbcBooleanSupplier subsequentAdvancer, // e.g. some variant of Statement.getMoreResults(int)
-                    int[] outParameterIndices) {
+    JdbcResultsImpl(List<? extends Preparation> ps) {
         super();
         this.closers = new ArrayDeque<>();
-        // yes, mutable, copied by the relevant JdbcResult subclass
-        this.outParameterIndices = outParameterIndices.length == 0 ? EMPTY_INT_ARRAY : outParameterIndices;
-        this.s = requireNonNull(s, "s");
-        requireNonNull(initialAdvancer, "initialAdvancer");
-        requireNonNull(subsequentAdvancer, "subsequentAdvancer");
-        this.advancer = () -> {
-            boolean rv = initialAdvancer.getAsBoolean();
-            this.advancer = subsequentAdvancer; // self-replacing
-            return rv;
-        };
+        this.preparations = List.copyOf(ps);
+        this.configure(0);
     }
 
-    @Override
+
+    /*
+     * Instance methods.
+     */
+
+
+    @Override // JdbcResults
     public boolean advance() throws SQLException {
         ensureOpen();
+        if (this.p == null) {
+            return false;
+        }
+        Statement s = this.p.statement();
         if (this.advancer.getAsBoolean()) {
-            JdbcResultSetImpl jrsi = new JdbcResultSetImpl(this.s.getResultSet());
+            JdbcResultSetImpl jrsi = new JdbcResultSetImpl(s.getResultSet());
             this.closers.push(jrsi::close);
             this.jr = jrsi;
         } else {
-            long updateCount;
-            try {
-                updateCount = this.s.getLargeUpdateCount();
-            } catch (SQLFeatureNotSupportedException e) {
-                updateCount = this.s.getUpdateCount();
-            }
+            long updateCount = updateCount(s);
             if (updateCount >= 0L) {
                 this.jr = new JdbcUpdateCountImpl(updateCount);
-            } else if (this.outParameterIndices.length > 0) {
-                this.jr = new JdbcOutValuesImpl((CallableStatement) this.s, this.outParameterIndices);
-                this.outParameterIndices = EMPTY_INT_ARRAY;
             } else {
-                this.jr = null;
-                return false;
+                int[] outParameterIndices = this.p.outParameterIndices();
+                if (outParameterIndices.length > 0) {
+                    this.jr = new JdbcOutValuesImpl((CallableStatement) s, outParameterIndices);
+                } else {
+                    this.configure(++this.preparationIndex);
+                    return this.advance(); // recurse
+                }
             }
         }
-        return true;
+        return true; // i.e. this.jr != null; this.get().isPresent() == true
     }
 
-    @Override // JdbcResults (JdbcAutoCloseable)
+    @Override // JdbcResults (JdbcOpen)
     public void close() throws SQLException {
         if (this.closed) {
             return;
         }
         this.closed = true;
-        this.outParameterIndices = EMPTY_INT_ARRAY;
+        this.preparationIndex = this.preparations.size(); // deliberately out of bounds
+        this.p = null;
         this.advancer = JdbcResultsImpl::returnFalse;
         this.jr = null;
         Throwable t = null;
-        Iterator<JdbcRunnable> i = this.closers.iterator();
-        while (i.hasNext()) {
-            JdbcRunnable c = i.next();
+        Iterator<JdbcRunnable> closers = this.closers.iterator();
+        while (closers.hasNext()) {
+            JdbcRunnable closer = closers.next();
             try {
-                c.run();
+                closer.run();
             } catch (UncheckedSQLException e) {
                 if (t == null) {
                     t = e.getCause(); // won't be null
@@ -164,7 +137,7 @@ final class JdbcResultsImpl implements JdbcResults {
                     t.addSuppressed(e);
                 }
             }
-            i.remove();
+            closers.remove();
         }
         switch (t) {
         case null -> {}
@@ -188,17 +161,17 @@ final class JdbcResultsImpl implements JdbcResults {
     @Override // JdbcResults
     public Optional<ResultSet> keys() throws SQLException {
         ensureOpen();
-        return Optional.ofNullable(this.s.getGeneratedKeys());
+        return this.p == null ? Optional.empty() : Optional.ofNullable(this.p.statement().getGeneratedKeys());
     }
 
-    @Override // JdbcResults
+    @Override // JdbcResults (JdbcOpen)
     public JdbcResultsImpl onClose(JdbcRunnable r) {
         ensureOpen();
         this.closers.add(r);
         return this;
     }
 
-    @Override // JdbcResults
+    @Override // JdbcResults (JdbcOpen)
     public JdbcResultsImpl onClose(Runnable r) {
         return this.onClose((JdbcRunnable) r::run);
     }
@@ -206,12 +179,80 @@ final class JdbcResultsImpl implements JdbcResults {
     @Override // JdbcResults (JdbcWarningsBearing)
     public Optional<SQLWarning> warnings() throws SQLException {
         ensureOpen();
-        return Optional.ofNullable(this.s.getWarnings());
+        return this.p == null ? Optional.empty() : Optional.ofNullable(this.p.statement().getWarnings());
+    }
+
+
+    /*
+     * Private methods.
+     */
+
+
+    private void configure(int index) {
+        if (index < this.preparations.size()) {
+            this.configure(this.preparations.get(index));
+        } else {
+            this.p = null;
+            this.advancer = JdbcResultsImpl::returnFalse;
+            this.jr = null;
+        }
+    }
+
+    private void configure(Preparation p) {
+        this.p = requireNonNull(p, "p");
+        Statement s = p.statement();
+        int resultsAdvancementBehavior = p.resultsAdvancementBehavior().value();
+        JdbcBooleanSupplier subsequentAdvancer = () -> s.getMoreResults(resultsAdvancementBehavior);
+        this.jr = p.initialResult().orElse(null);
+        if (this.jr != null) {
+            this.advancer = subsequentAdvancer;
+            if (this.jr instanceof JdbcAutoCloseable jac) {
+                this.closers.push(jac::close);
+            }
+        } else if (s instanceof PreparedStatement ps) {
+            this.advancer = () -> {
+                boolean rv = ps.execute();
+                this.advancer = () -> ps.getMoreResults(resultsAdvancementBehavior);
+                return rv;
+            };
+        } else {
+            String sql = p.sql().orElseThrow(() -> new IllegalArgumentException("p; p.sql() == null"));
+            int[] columnIndices = p.columnIndices();
+            String[] columnNames = p.columnNames();
+            JdbcBooleanSupplier initialAdvancer;
+            if (columnIndices.length > 0) {
+                initialAdvancer = () -> s.execute(sql, columnIndices);
+            } else if (columnNames.length > 0) {
+                initialAdvancer = () -> s.execute(sql, columnNames);
+            } else {
+                int generatedKeysBehavior = p.generatedKeysBehavior().value();
+                initialAdvancer = () -> s.execute(sql, generatedKeysBehavior);
+            }
+            this.advancer = () -> {
+                boolean rv = initialAdvancer.getAsBoolean();
+                this.advancer = subsequentAdvancer;
+                return rv;
+            };
+        }
     }
 
     private void ensureOpen() {
         if (this.closed) {
             throw new IllegalStateException("closed");
+        }
+    }
+
+
+    /*
+     * Static methods.
+     */
+
+
+    private static long updateCount(Statement s) throws SQLException {
+        try {
+            return s == null ? -1L : s.getLargeUpdateCount();
+        } catch (SQLFeatureNotSupportedException e) {
+            return s.getUpdateCount();
         }
     }
 

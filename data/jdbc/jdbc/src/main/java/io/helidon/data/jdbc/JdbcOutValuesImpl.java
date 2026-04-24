@@ -32,9 +32,7 @@ final class JdbcOutValuesImpl implements JdbcOutValues {
     JdbcOutValuesImpl(CallableStatement cs, int[] indices) {
         super();
         this.cs = requireNonNull(cs, "cs");
-        int[] a = new int[indices.length];
-        System.arraycopy(indices, 0, a, 0, indices.length);
-        this.indices = a;
+        this.indices = indices.clone();
     }
 
     @Override

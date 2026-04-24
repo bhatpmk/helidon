@@ -20,6 +20,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 import java.util.Optional;
 import java.util.Spliterator;
 import java.util.function.Consumer;
@@ -33,9 +34,9 @@ import io.helidon.data.jdbc.function.JdbcRunnable;
 import static java.util.Objects.requireNonNull;
 
 /**
- * An object representing the family of results any {@link Statement} {@linkplain Statement#execute(String) execution},
- * or {@link java.sql.PreparedStatement} {@linkplain java.sql.PreparedStatement#execute() execution (including
- * <code>CallableStatement</code> execution)}, may produce.
+ * An object representing the family of results any collection of {@link Statement} {@linkplain
+ * Statement#execute(String) execution}s, or {@link java.sql.PreparedStatement} {@linkplain
+ * java.sql.PreparedStatement#execute() executions (including <code>CallableStatement</code> executions)}, may produce.
  *
  * <p>As with all constructs related to JDBC, a {@link JdbcResults} is not necessarily safe for concurrent use by
  * multiple threads unless explicitly noted.</p>
@@ -43,6 +44,7 @@ import static java.util.Objects.requireNonNull;
  * @see #advance()
  * @see #get()
  * @see JdbcResult
+ * @see #of(Preparation)
  */
 public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
 
@@ -384,215 +386,439 @@ public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
 
     /**
      * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link CallableStatement}.
+     * supplied {@link Preparation}.
      *
-     * @param cs a non-{@code null} {@link CallableStatement}
-     * @param outParameterIndices a non-{@code null} array of {@code 1}-based already registered {@code OUT} parameters
-     * in the supplied {@link CallableStatement}
+     * @param preparation a non-{@code null} {@link Preparation}
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see #of(CallableStatement, ResultsAdvancementBehavior, int[])
-     * @see CallableStatement
-     * @see PreparedStatement#execute()
+     * @throws NullPointerException if {@code preparation} is {@code null}
      */
-    static JdbcResults of(CallableStatement cs, int[] outParameterIndices) {
-        return of(cs,
-                  ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
-                  outParameterIndices);
+    static JdbcResults of(Preparation preparation) {
+        return new JdbcResultsImpl(preparation);
     }
 
     /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link CallableStatement}.
+     * Returns a new {@link JdbcResults} representing the potentially many results produced by the executions of the
+     * supplied {@link Preparation}s.
      *
-     * @param cs a non-{@code null} {@link CallableStatement}
-     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
-     * behavior of {@link Statement#getMoreResults(int)}
-     * @param outParameterIndices a non-{@code null} array of {@code 1}-based already registered {@code OUT} parameters
-     * in the supplied {@link CallableStatement}
+     * @param preparations a non-{@code null} {@link List} of {@link Preparation}s
      * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see ResultsAdvancementBehavior
-     * @see CallableStatement
-     * @see PreparedStatement#execute()
-     * @see Statement#getMoreResults(int)
+     * @throws NullPointerException if {@code preparations} is {@code null}
      */
-    static JdbcResults of(CallableStatement cs,
-                          ResultsAdvancementBehavior resultsAdvancementBehavior,
-                          int[] outParameterIndices) {
-        requireNonNull(outParameterIndices, "outParameterIndices");
-        int rab = resultsAdvancementBehavior.value();
-        return new JdbcResultsImpl(cs,
-                                   () -> cs.getMoreResults(rab),
-                                   outParameterIndices);
+    static JdbcResults of(List<? extends Preparation> preparations) {
+        return new JdbcResultsImpl(preparations);
     }
 
-    /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link PreparedStatement}.
-     *
-     * @param ps a non-{@code null} {@link PreparedStatement}
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see PreparedStatement#execute()
-     * @see Statement#getMoreResults()
+
+    /*
+     * Inner and nested classes.
      */
-    static JdbcResults of(PreparedStatement ps) {
-        return new JdbcResultsImpl(ps,
-                                   ps::getMoreResults);
-    }
+
 
     /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link PreparedStatement}.
+     * A preparation of an imminent {@link JdbcResults}.
      *
-     * @param ps a non-{@code null} {@link PreparedStatement}
-     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
-     * behavior of {@link Statement#getMoreResults(int)}
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see ResultsAdvancementBehavior
-     * @see PreparedStatement#execute()
-     * @see Statement#getMoreResults(int)
+     * @see #of(Preparation)
      */
-    static JdbcResults of(PreparedStatement ps, ResultsAdvancementBehavior resultsAdvancementBehavior) {
-        int rab = resultsAdvancementBehavior.value();
-        return new JdbcResultsImpl(ps,
-                                   () -> ps.getMoreResults(rab));
-    }
+    final class Preparation {
 
-    /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link Statement}.
-     *
-     * @param s a non-{@code null} {@link Statement}
-     * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see Statement#execute(String)
-     * @see Statement#getMoreResults()
-     * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
-     * safe
-     */
-    @Deprecated
-    static JdbcResults of(Statement s, String sql) {
-        requireNonNull(sql, "sql");
-        return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql),
-                                   s::getMoreResults);
-    }
+        private final Statement statement;
 
-    /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link Statement}.
-     *
-     * @param s a non-{@code null} {@link Statement}
-     * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @param generatedKeysBehavior a non-{@code null} {@link GeneratedKeysBehavior} indicating whether auto-generated
-     * keys should be made avialable for retrieval using the method {@link Statement#getGeneratedKeys()}
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see GeneratedKeysBehavior
-     * @see Statement#execute(String, int)
-     * @see Statement#getMoreResults()
-     * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
-     * safe
-     */
-    @Deprecated
-    static JdbcResults of(Statement s, String sql, GeneratedKeysBehavior generatedKeysBehavior) {
-        requireNonNull(sql, "sql");
-        int agk = generatedKeysBehavior.value();
-        return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql, agk),
-                                   s::getMoreResults);
-    }
+        private final String sql;
 
-    /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link Statement}.
-     *
-     * @param s a non-{@code null} {@link Statement}
-     * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @param generatedKeysBehavior a non-{@code null} {@link GeneratedKeysBehavior} indicating whether auto-generated
-     * keys should be made avialable for retrieval using the method {@link Statement#getGeneratedKeys()}
-     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
-     * behavior of {@link Statement#getMoreResults(int)}
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see GeneratedKeysBehavior
-     * @see ResultsAdvancementBehavior
-     * @see Statement#execute(String, int)
-     * @see Statement#getMoreResults(int)
-     * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
-     * safe
-     */
-    @Deprecated
-    static JdbcResults of(Statement s,
-                          String sql,
-                          GeneratedKeysBehavior generatedKeysBehavior,
-                          ResultsAdvancementBehavior resultsAdvancementBehavior) {
-        requireNonNull(sql, "sql");
-        int agk = generatedKeysBehavior.value();
-        int rab = resultsAdvancementBehavior.value();
-        return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql, agk),
-                                   () -> s.getMoreResults(rab));
-    }
+        private final GeneratedKeysBehavior generatedKeysBehavior;
 
-    /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link Statement}.
-     *
-     * @param s a non-{@code null} {@link Statement}
-     * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @param columnIndexes an array of the indexes of the columns in the inserted row that should be made available for
-     * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
-     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
-     * behavior of {@link Statement#getMoreResults(int)}
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see ResultsAdvancementBehavior
-     * @see Statement#execute(String, int[])
-     * @see Statement#getMoreResults(int)
-     * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
-     * safe
-     */
-    @Deprecated
-    static JdbcResults of(Statement s, String sql, int[] columnIndexes, ResultsAdvancementBehavior resultsAdvancementBehavior) {
-        requireNonNull(sql, "sql");
-        requireNonNull(columnIndexes, "columnIndexes");
-        int rab = resultsAdvancementBehavior.value();
-        return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql, columnIndexes),
-                                   () -> s.getMoreResults(rab));
-    }
+        private final int[] columnIndices;
 
-    /**
-     * Returns a new {@link JdbcResults} representing the potentially many results produced by the execution of the
-     * supplied {@link Statement}.
-     *
-     * @param s a non-{@code null} {@link Statement}
-     * @param sql the non-{@code null} {@code SQL} statement to execute
-     * @param columnNames an array of the names of the columns in the inserted row that should be made available for
-     * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
-     * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior} describing the desired
-     * behavior of {@link Statement#getMoreResults(int)}
-     * @return a new {@link JdbcResult}; callers are responsible for {@linkplain #close() closing it}
-     * @throws NullPointerException if any argument is {@code null}
-     * @see ResultsAdvancementBehavior
-     * @see Statement#execute(String, String[])
-     * @see Statement#getMoreResults(int)
-     * @deprecated While this method is supported, its use is discouraged, since it cannot be proven that {@code sql} is
-     * safe
-     */
-    @Deprecated
-    static JdbcResults of(Statement s, String sql, String[] columnNames, ResultsAdvancementBehavior resultsAdvancementBehavior) {
-        requireNonNull(sql, "sql");
-        requireNonNull(columnNames, "columnNames");
-        int rab = resultsAdvancementBehavior.value();
-        return new JdbcResultsImpl(s,
-                                   () -> s.execute(sql, columnNames),
-                                   () -> s.getMoreResults(rab));
+        private final String[] columnNames;
+
+        private final JdbcResult jdbcResult;
+
+        private final ResultsAdvancementBehavior resultsAdvancementBehavior;
+
+        private final int[] outParameterIndices;
+
+        private static final int[] EMPTY_INT_ARRAY = new int[0];
+
+        private static final String[] EMPTY_STRING_ARRAY = new String[0];
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param ps a non-{@code null} {@link PreparedStatement}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(PreparedStatement ps) {
+            this(ps,
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param ps a non-{@code null} {@link PreparedStatement}
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(PreparedStatement ps, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+            this(ps,
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 resultsAdvancementBehavior,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param cs a non-{@code null} {@link CallableStatement}
+         * @param outParameterIndices a non-{@code null} array of {@code 1}-based already registered {@code OUT}
+         * parameters in the supplied {@link CallableStatement}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(CallableStatement cs, int[] outParameterIndices) {
+            this(cs,
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 outParameterIndices);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param cs a non-{@code null} {@link CallableStatement}
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @param outParameterIndices a non-{@code null} array of {@code 1}-based already registered {@code OUT}
+         * parameters in the supplied {@link CallableStatement}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(CallableStatement cs,
+                           ResultsAdvancementBehavior resultsAdvancementBehavior,
+                           int[] outParameterIndices) {
+            this(cs,
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 resultsAdvancementBehavior,
+                 outParameterIndices);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql) {
+            this(s,
+                 sql,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+            this(s,
+                 sql,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 resultsAdvancementBehavior,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param generatedKeysBehavior a non-{@code null} {@link GeneratedKeysBehavior}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql, GeneratedKeysBehavior generatedKeysBehavior) {
+            this(s,
+                 sql,
+                 generatedKeysBehavior,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param generatedKeysBehavior a non-{@code null} {@link GeneratedKeysBehavior}
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s,
+                           String sql,
+                           GeneratedKeysBehavior generatedKeysBehavior,
+                           ResultsAdvancementBehavior resultsAdvancementBehavior) {
+            this(s,
+                 sql,
+                 generatedKeysBehavior,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 resultsAdvancementBehavior,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param columnIndices an array of the indexes of the columns in the inserted row that should be made available for
+         * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql, int[] columnIndices) {
+            this(s,
+                 sql,
+                 GeneratedKeysBehavior.RETURN,
+                 columnIndices,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param columnIndices an array of the indexes of the columns in the inserted row that should be made available for
+         * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql, int[] columnIndices, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+            this(s,
+                 sql,
+                 GeneratedKeysBehavior.RETURN,
+                 columnIndices,
+                 EMPTY_STRING_ARRAY,
+                 null,
+                 resultsAdvancementBehavior,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param columnNames an array of the names of the columns in the inserted row that should be made available for
+         * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql, String[] columnNames) {
+            this(s,
+                 sql,
+                 GeneratedKeysBehavior.RETURN,
+                 EMPTY_INT_ARRAY,
+                 columnNames,
+                 null,
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param s a non-{@code null} {@link Statement}
+         * @param sql a non-{@code null} SQL statement to execute
+         * @param columnNames an array of the names of the columns in the inserted row that should be made available for
+         * retrieval by a call to the method {@link Statement#getGeneratedKeys()}
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @throws NullPointerException if any argument is {@code null}
+         */
+        public Preparation(Statement s, String sql, String[] columnNames, ResultsAdvancementBehavior resultsAdvancementBehavior) {
+            this(s,
+                 sql,
+                 GeneratedKeysBehavior.RETURN,
+                 EMPTY_INT_ARRAY,
+                 columnNames,
+                 null,
+                 resultsAdvancementBehavior,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param rs a non-{@code null} {@link ResultSet}
+         * @throws NullPointerException if any argument is {@code null}
+         * @throws SQLException if a database error occurs
+         */
+        public Preparation(ResultSet rs) throws SQLException {
+            this(rs.getStatement(),
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 JdbcResultSet.of(rs),
+                 ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT,
+                 EMPTY_INT_ARRAY);
+        }
+
+        /**
+         * Creates a new {@link Preparation}.
+         *
+         * @param rs a non-{@code null} {@link ResultSet}
+         * @param resultsAdvancementBehavior a non-{@code null} {@link ResultsAdvancementBehavior}; normally {@link
+         * ResultsAdvancementBehavior#CLOSE_CURRENT_RESULT}
+         * @throws NullPointerException if any argument is {@code null}
+         * @throws SQLException if a database error occurs
+         */
+        public Preparation(ResultSet rs, ResultsAdvancementBehavior resultsAdvancementBehavior) throws SQLException {
+            this(rs.getStatement(),
+                 null,
+                 GeneratedKeysBehavior.NONE,
+                 EMPTY_INT_ARRAY,
+                 EMPTY_STRING_ARRAY,
+                 JdbcResultSet.of(rs),
+                 resultsAdvancementBehavior,
+                 EMPTY_INT_ARRAY);
+        }
+
+        private Preparation(Statement statement,
+                            String sql,
+                            GeneratedKeysBehavior generatedKeysBehavior,
+                            int[] columnIndices,
+                            String[] columnNames,
+                            JdbcResult jdbcResult,
+                            ResultsAdvancementBehavior resultsAdvancementBehavior,
+                            int[] outParameterIndices) {
+            this.statement = requireNonNull(statement, "statement");
+            if (statement instanceof PreparedStatement ps) {
+                // PreparedStatement or CallableStatement
+                if (sql != null) {
+                    throw new IllegalArgumentException("sql cannot be supplied with a PreparedStatement");
+                }
+                this.sql = null;
+                if (generatedKeysBehavior != null && generatedKeysBehavior != GeneratedKeysBehavior.NONE) {
+                    throw new IllegalArgumentException("generatedKeysBehavior cannot be supplied with a PreparedStatement");
+                }
+                this.generatedKeysBehavior = GeneratedKeysBehavior.NONE; // really is just irrelevant
+                if (columnIndices != null && columnIndices.length > 0) {
+                    throw new IllegalArgumentException("columnIndices cannot be supplied with a PreparedStatement");
+                }
+                this.columnIndices = EMPTY_INT_ARRAY;
+                if (columnNames != null && columnNames.length > 0) {
+                    throw new IllegalArgumentException("columnNames cannot be supplied with a PreparedStatement");
+                }
+                this.columnNames = EMPTY_STRING_ARRAY;
+                if (ps instanceof CallableStatement) {
+                    this.outParameterIndices = outParameterIndices.length > 0 ? outParameterIndices.clone() : EMPTY_INT_ARRAY;
+                } else if (outParameterIndices.length > 0) {
+                    throw new IllegalArgumentException("outParameterIndices may be supplied only for a CallableStatement");
+                } else {
+                    this.outParameterIndices = EMPTY_INT_ARRAY;
+                }
+            } else {
+                // Plain Statement
+                if (jdbcResult != null) {
+                    if (sql != null) {
+                        throw new IllegalArgumentException("sql may not be supplied when"
+                                                           + " the supplied Statement has already been executed");
+                    }
+                    this.sql = null;
+                } else {
+                    this.sql = requireNonNull(sql, "sql");
+                }
+                this.generatedKeysBehavior =
+                    (columnIndices.length > 0 || columnNames.length > 0) ? GeneratedKeysBehavior.RETURN : generatedKeysBehavior;
+                this.columnIndices = columnIndices.length > 0 ? columnIndices.clone() : EMPTY_INT_ARRAY;
+                if (columnNames.length == 0) {
+                    this.columnNames = EMPTY_STRING_ARRAY;
+                } else if (columnIndices.length > 0) {
+                    throw new IllegalArgumentException("columnIndices and columnNames may not be supplied together");
+                } else {
+                    this.columnNames = columnNames.clone();
+                }
+                if (outParameterIndices.length > 0) {
+                    throw new IllegalArgumentException("outParameterIndices may be supplied only for a CallableStatement");
+                }
+                this.outParameterIndices = EMPTY_INT_ARRAY;
+            }
+            this.jdbcResult = jdbcResult;
+            this.resultsAdvancementBehavior =
+                resultsAdvancementBehavior == null ? ResultsAdvancementBehavior.CLOSE_CURRENT_RESULT : resultsAdvancementBehavior;
+        }
+
+        Statement statement() {
+            return this.statement;
+        }
+
+        Optional<String> sql() {
+            return Optional.ofNullable(this.sql);
+        }
+
+        GeneratedKeysBehavior generatedKeysBehavior() {
+            return this.generatedKeysBehavior;
+        }
+
+        int[] columnIndices() {
+            return this.columnIndices;
+        }
+
+        String[] columnNames() {
+            return this.columnNames;
+        }
+
+        Optional<JdbcResult> initialResult() {
+            return Optional.ofNullable(this.jdbcResult);
+        }
+
+        ResultsAdvancementBehavior resultsAdvancementBehavior() {
+            return this.resultsAdvancementBehavior;
+        }
+
+        int[] outParameterIndices() {
+            return this.outParameterIndices;
+        }
+
     }
 
 }

@@ -19,6 +19,9 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
+
+import io.helidon.data.jdbc.JdbcResults.Preparation;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,9 +51,26 @@ final class JdbcStatementResultTest {
     void testJdbcResultsSpike() throws SQLException {
         try (Connection c = this.ds.getConnection();
              PreparedStatement ps = c.prepareStatement("SELECT * FROM INFORMATION_SCHEMA.TABLES;");
-             JdbcResults rs = JdbcResults.of(ps)) {
+             JdbcResults rs = JdbcResults.of(new Preparation(ps))) {
             assertThat(rs.advance(), is(true));
             JdbcResultSet jrs = (JdbcResultSet) rs.get().orElseThrow(AssertionError::new);
+            assertThat(jrs, not(nullValue()));
+            assertThat(rs.advance(), is(false));
+            assertThat(rs.closed(), is(false)); // exhaustion is not closure
+        }
+    }
+
+    @Test
+    void testJdbcResultsMultiplePreparations() throws SQLException {
+        try (Connection c = this.ds.getConnection();
+             PreparedStatement ps0 = c.prepareStatement("SELECT * FROM INFORMATION_SCHEMA.TABLES;");
+             PreparedStatement ps1 = c.prepareStatement("SELECT * FROM INFORMATION_SCHEMA.TABLES;");
+             JdbcResults rs = JdbcResults.of(List.of(new Preparation(ps0), new Preparation(ps1)))) {
+            assertThat(rs.advance(), is(true));
+            JdbcResultSet jrs = (JdbcResultSet) rs.get().orElseThrow(AssertionError::new);
+            assertThat(jrs, not(nullValue()));
+            assertThat(rs.advance(), is(true));
+            jrs = (JdbcResultSet) rs.get().orElseThrow(AssertionError::new);
             assertThat(jrs, not(nullValue()));
             assertThat(rs.advance(), is(false));
             assertThat(rs.closed(), is(false)); // exhaustion is not closure

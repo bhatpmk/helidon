@@ -28,6 +28,7 @@ import java.util.Properties;
 import io.helidon.data.jdbc.GeneratedKeysBehavior;
 import io.helidon.data.jdbc.JdbcPreparedStatementBindingView;
 import io.helidon.data.jdbc.JdbcResults;
+import io.helidon.data.jdbc.JdbcResults.Preparation;
 import io.helidon.data.jdbc.ResultSetConcurrency;
 import io.helidon.data.jdbc.ResultSetFetchDirection;
 import io.helidon.data.jdbc.ResultSetHoldability;
@@ -90,9 +91,9 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
             argsBinder.accept(bindingView(s));
             int[] outParameterIndices = this.executionState.outParameterIndices();
             if (s instanceof CallableStatement callableStatement) {
-                jr = JdbcResults.of(callableStatement, this.resultsAdvancementBehavior, outParameterIndices);
+                jr = JdbcResults.of(new Preparation(callableStatement, this.resultsAdvancementBehavior, outParameterIndices));
             } else {
-                jr = JdbcResults.of(s, this.resultsAdvancementBehavior);
+                jr = JdbcResults.of(new Preparation(s, this.resultsAdvancementBehavior));
             }
             jr = jr
                 .onClose((JdbcRunnable) () -> this.restoreStatementStateAndClose(s, initialStatementState))
