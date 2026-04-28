@@ -21,19 +21,7 @@
         xsi:schemaLocation="https://github.com/spotbugs/filter/3.0.0 https://raw.githubusercontent.com/spotbugs/spotbugs/3.1.0/spotbugs/etc/findbugsfilter.xsd">
     <Match>
         <!-- This is a JDBC toolkit; some JDBC constructs are inherently unsafe. -->
-        <Class name="io.helidon.data.plan.jdbc.JdbcPlanImpl$ConnectionState"/>
-        <Bug pattern="EXTERNAL_CONFIG_CONTROL"/>
-    </Match>
-
-    <Match>
-        <!-- This is a JDBC toolkit; some JDBC constructs are inherently unsafe. -->
-        <Class name="io.helidon.data.plan.jdbc.JdbcPlanImpl$ExecutionState"/>
-        <Bug pattern="SQL_INJECTION_JDBC"/>
-    </Match>
-
-    <Match>
-        <!-- only in an error message -->
-        <Class name="io.helidon.data.plan.jdbc.JdbcPlanImpl$ExecutionState"/>
-        <Bug pattern="VA_PRIMITIVE_ARRAY_PASSED_TO_OBJECT_VARARG"/>
+        <Class name="~^io\.helidon\.data\.plan\.jdbc\.JdbcPlanImpl.*"/>
+        <Bug pattern="EXTERNAL_CONFIG_CONTROL, SQL_INJECTION_JDBC"/>
     </Match>
 </FindBugsFilter>

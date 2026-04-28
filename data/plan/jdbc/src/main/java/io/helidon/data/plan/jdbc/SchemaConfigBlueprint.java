@@ -19,9 +19,17 @@ import java.util.Optional;
 
 import io.helidon.builder.api.Prototype;
 
+/**
+ * A descriptor for a schema.
+ */
 @Prototype.Blueprint
 interface SchemaConfigBlueprint {
 
+    /**
+     * The schema value to use.
+     *
+     * @return the schema value to use
+     */
     Optional<String> value();
 
 }

@@ -15,61 +15,33 @@
  */
 package io.helidon.data.plan.jdbc;
 
-import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.function.Consumer;
 
 import javax.sql.DataSource;
 
 import io.helidon.builder.api.RuntimeType;
-import io.helidon.data.jdbc.JdbcPreparedStatementBindingView;
 import io.helidon.data.jdbc.JdbcResults;
-import io.helidon.data.jdbc.function.JdbcConsumer;
-import io.helidon.data.jdbc.function.JdbcSupplier;
-
-import static java.util.Arrays.asList;
 
 /**
  * An execution plan for the execution of a statement using JDBC constructs.
  *
  * @param <T> the results type
- * @see #execute(JdbcSupplier, JdbcConsumer)
+ * @see #execute()
  */
 public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
 
     /**
      * Executes this plan and returns the results.
      *
-     * @param cs a non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
-     * @param argsBinder a non-{@code null} {@link JdbcConsumer} of a non-{@code null} {@link
-     * JdbcPreparedStatementBindingView} that is expected to install argument values
      * @return the non-{@code null} results
      * @throws SQLException if a database error occurs
      */
-    T execute(JdbcSupplier<? extends Connection> cs,
-              JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder)
-        throws SQLException;
-
-    /**
-     * Executes this plan and returns the results.
-     *
-     * @param cs aa non-{@code null} {@link JdbcSupplier} of a non-{@code null} {@link Connection}
-     * @param args arguments
-     * @return the non-{@code null} results
-     * @throws SQLException if a database error occurs
-     * @see #execute(JdbcSupplier, JdbcConsumer)
-     */
-    default T execute(JdbcSupplier<? extends Connection> cs, Object... args) throws SQLException {
-        if (args == null || args.length == 0) {
-            return this.execute(cs, JdbcPlanImpl::doNothing);
-        }
-        GenericBinder b = new GenericBinder();
-        return this.execute(cs, psView -> b.bind(psView, asList(args)));
-    }
+    T execute() throws SQLException;
 
 
     /*
-     * Static methods.
+     * Mandated static methods.
      */
 
 
@@ -111,75 +83,38 @@ public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
         return JdbcPlanConfig.<T>builder().update(builderCustomizer).build();
     }
 
+
     /*
      * Static convenience methods.
      */
 
-    /**
-     * A convenience method that arranges for the supplied {@code statement}, requiring no arguments, to be {@linkplain
-     * #execute(JdbcSupplier, Object...)} executed without results transformation.
-     *
-     * <p>This method:</p>
-     *
-     * <ol>
-     * <li>Invokes the {@link #builder()} method</li>
-     * <li>Invokes its {@link JdbcPlanConfig.Builder#statement(String)} method with the supplied {@code statement}</li>
-     * <li>Invokes the {@link JdbcPlanConfig.Builder#build()} method to build a minimally-configured {@link JdbcPlan}</li>
-     * <li>Invokes the {@link #execute(JdbcSupplier, Object...)} method with the supplied {@link JdbcSupplier}</li>
-     * <li>Returns the results</li>
-     * </ol>
-     *
-     * @param cs a non-{@code null} {@link JdbcSupplier} of {@link Connection} instances
-     * @param statement a non-{@code null} SQL statement
-     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
-     * when finished</strong>
-     * @throws SQLException if a database error occurs
-     * @see #builder()
-     * @see JdbcPlanConfig.Builder#statement(String)
-     * @see JdbcPlanConfig.Builder#build()
-     * @see #execute(JdbcSupplier, Object...)
-     * @see JdbcResults
-     */
-    static JdbcResults execute(JdbcSupplier<? extends Connection> cs, String statement) throws SQLException {
-        return JdbcPlanConfig.<JdbcResults>builder()
-            .statement(statement)
-            .transformer(jr -> jr)
-            .build()
-            .execute(cs);
-    }
 
     /**
-     * A convenience method that arranges for the supplied {@code statement}, requiring no arguments, to be {@linkplain
-     * #execute(JdbcSupplier, Object...)} executed without results transformation.
-     *
-     * <p>This method:</p>
-     *
-     * <ol>
-     * <li>Invokes the {@link #builder()} method</li>
-     * <li>Invokes its {@link JdbcPlanConfig.Builder#statement(String)} method with the supplied {@code statement}</li>
-     * <li>Invokes the {@link JdbcPlanConfig.Builder#build()} method to build a minimally-configured {@link JdbcPlan}</li>
-     * <li>Invokes the {@link #execute(JdbcSupplier, Object...)} method with {@link DataSource#getConnection()
-     * ds::getConnection}</li>
-     * <li>Returns the results</li>
-     * </ol>
+     * A convenience method that builds a {@link JdbcPlan} from the inputs, executes it, and returns the
+     * identity-transformed results.
      *
      * @param ds a non-{@code null} {@link DataSource}
-     * @param statement a non-{@code null} SQL statement
-     * @return a non-{@code null} {@link JdbcResults}; <strong>callers must {@linkplain JdbcResults#close() close} it
-     * when finished</strong>
+     * @param jdbcStatementText a non-{@code null} JDBC statement
+     * @param arguments any arguments to be bound
+     * @return the non-{@code null} results
      * @throws SQLException if a database error occurs
-     * @see #builder()
-     * @see JdbcPlanConfig.Builder#statement(String)
-     * @see JdbcPlanConfig.Builder#build()
-     * @see #execute(JdbcSupplier, Object...)
-     * @see JdbcResults
      */
-    static JdbcResults execute(DataSource ds, String statement) throws SQLException {
+    static JdbcResults execute(DataSource ds, String jdbcStatementText, Object... arguments) throws SQLException {
         return JdbcPlanConfig.<JdbcResults>builder()
-            .statement(statement)
+            .addConnectionPlan(ConnectionPlanConfig.builder()
+                               .dataSource(ds)
+                               .addStatementPlan(StatementPlanConfig.builder()
+                                                 .statement(jdbcStatementText)
+                                                 .argumentsBinder(ps -> {
+                                                         for (int i = 0; i < arguments.length; i++) {
+                                                             ps.setObject(i + 1, arguments[i]);
+                                                         }
+                                                     })
+                                                 .build())
+                               .build())
             .transformer(jr -> jr)
             .build()
-            .execute(ds::getConnection);
+            .execute();
     }
 
 }

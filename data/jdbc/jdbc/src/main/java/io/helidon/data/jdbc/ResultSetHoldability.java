@@ -34,13 +34,18 @@ public enum ResultSetHoldability {
     /**
      * Represents {@link ResultSet#HOLD_CURSORS_OVER_COMMIT}.
      */
-    HOLD_CURSORS_OVER_COMMIT(ResultSet.HOLD_CURSORS_OVER_COMMIT);
+    HOLD_CURSORS_OVER_COMMIT(ResultSet.HOLD_CURSORS_OVER_COMMIT),
+
+    /**
+     * Indicates unspecified holdability.
+     */
+    UNSPECIFIED(-1);
 
     private final int value;
 
     ResultSetHoldability(int resultSetHoldability) {
         this.value = switch (resultSetHoldability) {
-        case ResultSet.CLOSE_CURSORS_AT_COMMIT, ResultSet.HOLD_CURSORS_OVER_COMMIT -> resultSetHoldability;
+        case ResultSet.CLOSE_CURSORS_AT_COMMIT, ResultSet.HOLD_CURSORS_OVER_COMMIT, -1 -> resultSetHoldability;
         default -> throw new IllegalArgumentException("resultSetHoldability: " + resultSetHoldability);
         };
     }
@@ -58,7 +63,7 @@ public enum ResultSetHoldability {
      * Returns a {@link ResultSetHoldability} appropriate for the supplied {@code resultSetHoldability} constant, which
      * must be either {@link ResultSet#CLOSE_CURSORS_AT_COMMIT} or {@link ResultSet#HOLD_CURSORS_OVER_COMMIT}.
      *
-     * @param resultSetHoldability a holdability constant
+     * @param resultSetHoldability a holdability constant, or {@code -1} to indicate unspecified holdability
      * @return a non-{@code null} {@link ResultSetHoldability} appropriate for the supplied {@code resultSetHoldability}
      * constant
      * @exception IllegalArgumentException if {@code resultSetHoldability} is not a valid value
@@ -69,6 +74,7 @@ public enum ResultSetHoldability {
         return switch (resultSetHoldability) {
         case ResultSet.CLOSE_CURSORS_AT_COMMIT -> CLOSE_CURSORS_AT_COMMIT;
         case ResultSet.HOLD_CURSORS_OVER_COMMIT -> HOLD_CURSORS_OVER_COMMIT;
+        case -1 -> UNSPECIFIED;
         default -> throw new IllegalArgumentException("resultSetHoldability: " + resultSetHoldability);
         };
     }

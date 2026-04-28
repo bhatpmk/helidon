@@ -34,13 +34,18 @@ public enum GeneratedKeysBehavior {
     /**
      * Represents {@link Statement#RETURN_GENERATED_KEYS}.
      */
-    RETURN(Statement.RETURN_GENERATED_KEYS);
+    RETURN(Statement.RETURN_GENERATED_KEYS),
+
+    /**
+     * Indicates that no generated keys behavior has been specified.
+     */
+    UNSPECIFIED(-1);
 
     private final int value;
 
     GeneratedKeysBehavior(int generatedKeysBehavior) {
         this.value = switch (generatedKeysBehavior) {
-        case Statement.NO_GENERATED_KEYS, Statement.RETURN_GENERATED_KEYS -> generatedKeysBehavior;
+        case Statement.NO_GENERATED_KEYS, Statement.RETURN_GENERATED_KEYS, -1 -> generatedKeysBehavior;
         default -> throw new IllegalArgumentException("generatedKeysBehavior: " + generatedKeysBehavior);
         };
     }
@@ -55,10 +60,11 @@ public enum GeneratedKeysBehavior {
     }
 
     /**
-     * Returns a {@link GeneratedKeysBehavior} appropriate for the supplied {@code generatedKeysBehavior}
-     * constant, which must be either {@link Statement#NO_GENERATED_KEYS} or {@link Statement#RETURN_GENERATED_KEYS}.
+     * Returns a {@link GeneratedKeysBehavior} appropriate for the supplied {@code generatedKeysBehavior} constant,
+     * which must be either {@link Statement#NO_GENERATED_KEYS}, {@link Statement#RETURN_GENERATED_KEYS}, or {@code -1}
+     * to indicate unspecified behavior.
      *
-     * @param generatedKeysBehavior a fetchDirection constant
+     * @param generatedKeysBehavior a generated keys constant, or {@code -1} to indicate unspecified behavior
      * @return a non-{@code null} {@link GeneratedKeysBehavior} appropriate for the supplied {@code
      * generatedKeysBehavior} constant
      * @exception IllegalArgumentException if {@code generatedKeysBehavior} is not a valid value
@@ -69,6 +75,7 @@ public enum GeneratedKeysBehavior {
         return switch (generatedKeysBehavior) {
         case Statement.NO_GENERATED_KEYS -> NONE;
         case Statement.RETURN_GENERATED_KEYS -> RETURN;
+        case -1 -> UNSPECIFIED;
         default -> throw new IllegalArgumentException("generatedKeysBehavior: " + generatedKeysBehavior);
         };
     }

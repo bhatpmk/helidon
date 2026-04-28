@@ -15,110 +15,139 @@
  */
 package io.helidon.data.plan.jdbc;
 
+import java.io.PrintWriter;
 import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.logging.Logger;
+
+import javax.sql.DataSource;
 
 import io.helidon.data.jdbc.GeneratedKeysBehavior;
 import io.helidon.data.jdbc.JdbcPreparedStatementBindingView;
 import io.helidon.data.jdbc.JdbcResults;
 import io.helidon.data.jdbc.JdbcResults.Preparation;
-import io.helidon.data.jdbc.ResultSetConcurrency;
 import io.helidon.data.jdbc.ResultSetFetchDirection;
 import io.helidon.data.jdbc.ResultSetHoldability;
 import io.helidon.data.jdbc.ResultSetType;
-import io.helidon.data.jdbc.ResultsAdvancementBehavior;
 import io.helidon.data.jdbc.TransactionIsolation;
-import io.helidon.data.jdbc.function.JdbcConsumer;
-import io.helidon.data.jdbc.function.JdbcFunction;
 import io.helidon.data.jdbc.function.JdbcRunnable;
-import io.helidon.data.jdbc.function.JdbcSupplier;
 
-import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
 
 final class JdbcPlanImpl<T> implements JdbcPlan<T> {
 
-    private static final int[] EMPTY_INT_ARRAY = new int[0];
-
-    private static final String[] EMPTY_STRING_ARRAY = new String[0];
-
     private final JdbcPlanConfig<T> prototype;
-
-    private final String jdbcStatementText;
-
-    private final ExecutionState executionState;
-
-    private final ConnectionState connectionState;
-
-    private final StatementState statementState;
-
-    private final ResultsAdvancementBehavior resultsAdvancementBehavior;
-
-    private final JdbcFunction<? super JdbcResults, ? extends T> transformer;
 
     JdbcPlanImpl(JdbcPlanConfig<T> prototype) {
         super();
-        this.jdbcStatementText = prototype.statement();
-        this.connectionState = prototype.connectionState().map(ConnectionState::new).orElse(ConnectionState.EMPTY);
-        this.statementState = prototype.statementState().map(StatementState::new).orElse(StatementState.EMPTY);
-        this.executionState = prototype.executionState().map(ExecutionState::new).orElse(ExecutionState.EMPTY);
-        this.resultsAdvancementBehavior = prototype.resultsAdvancementBehavior();
-        this.transformer = prototype.transformer();
         this.prototype = prototype;
     }
 
     @Override // JdbcPlan
-    public T execute(JdbcSupplier<? extends Connection> cs,
-                     JdbcConsumer<? super JdbcPreparedStatementBindingView> argsBinder) throws SQLException {
-        requireNonNull(argsBinder, "argsBinder");
-        Connection c = cs.get();
-        PreparedStatement ps = null;
-        JdbcResults jr = null;
+    public T execute() throws SQLException {
+        // Close actions to run either (a) in the case of error while we're preparing this plan, or (b) as part of
+        // JdbcResults.close() once the caller has taken ownership.
+        //
+        // A connection is added first. Its statements are then inserted in order before it. The next connection, in the
+        // rare event that there is one, is then added first, and its statements are inserted in order before it, and so
+        // on.
+        //
+        // The net effect is that statements are closed in order, then their creating connection is closed, then any
+        // further statements are closed in order, and their creating connection, and so on.
+        List<JdbcRunnable> closers = new LinkedList<>();
+        List<Preparation> preparations = new ArrayList<>();
         try {
-            ConnectionState initialConnectionState = new ConnectionState(c);
-            this.connectionState.install(c);
-            PreparedStatement s = this.executionState.prepareStatement(c, this.jdbcStatementText);
-            ps = s;
-            final StatementState initialStatementState = new StatementState(s);
-            this.statementState.install(s);
-            argsBinder.accept(bindingView(s));
-            int[] outParameterIndices = this.executionState.outParameterIndices();
-            if (s instanceof CallableStatement callableStatement) {
-                jr = JdbcResults.of(new Preparation(callableStatement, this.resultsAdvancementBehavior, outParameterIndices));
-            } else {
-                jr = JdbcResults.of(new Preparation(s, this.resultsAdvancementBehavior));
+            for (ConnectionPlanConfig cpConfig : this.prototype.connectionPlans()) {
+                List<StatementPlanConfig> spConfigs = cpConfig.statementPlans();
+                if (spConfigs.isEmpty()) {
+                    continue;
+                }
+                Connection c = cpConfig.dataSource().getConnection();
+                ConnectionPlan initialConnectionState;
+                try {
+                    initialConnectionState = new ConnectionPlan(c); // for later restoration if necessary
+                } catch (RuntimeException | SQLException e) {
+                    try {
+                        c.close();
+                    } catch (SQLException closeFailure) {
+                        e.addSuppressed(closeFailure);
+                    }
+                    throw e;
+                }
+                closers.addFirst(() -> restoreConnectionStateAndClose(c, initialConnectionState));
+                new ConnectionPlan(cpConfig).install(c);
+                for (int i = 0; i < spConfigs.size(); i++) {
+                    StatementPlanConfig spConfig = spConfigs.get(i);
+                    Statement s = prepareStatement(c, spConfig);
+                    StatementPlan initialStatementState;
+                    try {
+                        initialStatementState = new StatementPlan(s); // for later restoration if necessary
+                    } catch (RuntimeException | SQLException e) {
+                        try {
+                            s.close();
+                        } catch (SQLException closeFailure) {
+                            e.addSuppressed(closeFailure);
+                        }
+                        throw e;
+                    }
+                    closers.add(i, () -> restoreStatementStateAndClose(s, initialStatementState));
+                    new StatementPlan(spConfig).install(s);
+                    ExecutionPlanConfig epConfig = spConfig.executionPlan().orElse(null);
+                    if (epConfig == null) {
+                        preparations.add(s instanceof PreparedStatement ps
+                                         ? new Preparation(ps)
+                                         : new Preparation(s, spConfig.statement()));
+                    } else if (s instanceof CallableStatement cs && !epConfig.outParameterIndices().isEmpty()) {
+                        preparations.add(new Preparation(cs,
+                                                         epConfig.resultsAdvancementBehavior(),
+                                                         epConfig.outParameterIndices().stream()
+                                                         .mapToInt(Integer::intValue).toArray()));
+                    } else if (s instanceof PreparedStatement ps) {
+                        preparations.add(new Preparation(ps, epConfig.resultsAdvancementBehavior()));
+                    } else if (!epConfig.columnIndexes().isEmpty()) {
+                        preparations.add(new Preparation(s,
+                                                         spConfig.statement(),
+                                                         epConfig.columnIndexes().toArray(String[]::new),
+                                                         epConfig.resultsAdvancementBehavior()));
+                    } else if (!epConfig.columnNames().isEmpty()) {
+                        preparations.add(new Preparation(s,
+                                                         spConfig.statement(),
+                                                         epConfig.columnNames().toArray(String[]::new),
+                                                         epConfig.resultsAdvancementBehavior()));
+                    } else if (epConfig.generatedKeysBehavior() != GeneratedKeysBehavior.UNSPECIFIED) {
+                        preparations.add(new Preparation(s,
+                                                         spConfig.statement(),
+                                                         epConfig.generatedKeysBehavior(),
+                                                         epConfig.resultsAdvancementBehavior()));
+                    } else {
+                        preparations.add(new Preparation(s, spConfig.statement(), epConfig.resultsAdvancementBehavior()));
+                    }
+                }
             }
-            jr = jr
-                .onClose((JdbcRunnable) () -> this.restoreStatementStateAndClose(s, initialStatementState))
-                .onClose((JdbcRunnable) () -> this.restoreConnectionStateAndClose(c, initialConnectionState));
-            return this.transformer.apply(jr);
+            JdbcResults jr = JdbcResults.of(preparations);
+            for (JdbcRunnable closer : closers) {
+                jr = jr.onClose(closer);
+            }
+            return this.prototype().transformer().apply(jr);
         } catch (RuntimeException | SQLException e) {
-            if (jr != null) {
+            for (JdbcRunnable closer : closers) {
                 try {
-                    jr.close();
+                    closer.run();
                 } catch (RuntimeException | SQLException closeFailure) {
                     e.addSuppressed(closeFailure);
                 }
             }
-            if (ps != null) {
-                try {
-                    ps.close();
-                } catch (RuntimeException | SQLException closeFailure) {
-                    e.addSuppressed(closeFailure);
-                }
-            }
-            try {
-                c.close();
-            } catch (RuntimeException | SQLException closeFailure) {
-                e.addSuppressed(closeFailure);
-            }
+            closers.clear();
             throw e;
         }
     }
@@ -128,153 +157,156 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
         return this.prototype;
     }
 
-    private void restoreConnectionStateAndClose(Connection c, ConnectionState initial) throws SQLException {
-        // We deliberately do not include networkTimeout because it cannot be portably reset. Same with sharding
-        // information.
-        Exception e = null;
-        try {
-            initial.install(c);
-        } catch (RuntimeException | SQLException setterException) {
-            e = setterException;
-        }
-        try {
-            c.close();
-        } catch (RuntimeException | SQLException closeFailure) {
-            if (e == null) {
-                e = closeFailure;
-            } else {
-                e.addSuppressed(closeFailure);
-            }
-        }
-        switch (e) {
-        case null -> {}
-        case RuntimeException re -> throw re;
-        case SQLException se -> throw se;
-        default -> throw new AssertionError(e.getMessage(), e);
-        }
-    }
-
-    private void restoreStatementStateAndClose(Statement s, StatementState initial) throws SQLException {
-        Exception e = null;
-        try {
-            initial.install(s);
-        } catch (RuntimeException | SQLException setterException) {
-            e = setterException;
-        }
-        try {
-            s.close();
-        } catch (RuntimeException | SQLException closeFailure) {
-            if (e == null) {
-                e = closeFailure;
-            } else {
-                e.addSuppressed(closeFailure);
-            }
-        }
-        switch (e) {
-        case null -> {}
-        case RuntimeException re -> throw re;
-        case SQLException se -> throw se;
-        default -> throw new AssertionError(e.getMessage(), e);
-        }
-    }
-
 
     /*
      * Static methods.
      */
 
 
-    static <T> void doNothing(T ignored) {
-    }
-
     private static JdbcPreparedStatementBindingView bindingView(PreparedStatement s) {
         return JdbcPreparedStatementBindingView.of(s);
     }
+
+    private static Statement prepareStatement(Connection c, StatementPlanConfig spc) throws SQLException {
+        Statement s;
+        ExecutionPlanConfig epc = spc.executionPlan().orElse(null);
+        String jdbcStatementText = spc.statement();
+        if (epc == null) {
+            if (CallableStatement.class.isAssignableFrom(spc.type())) {
+                s = c.prepareCall(jdbcStatementText);
+            } else if (PreparedStatement.class.isAssignableFrom(spc.type())) {
+                s = c.prepareStatement(jdbcStatementText);
+            } else {
+                s = c.createStatement();
+            }
+        } else if (!epc.columnIndexes().isEmpty()) {
+            // assert PreparedStatement.class.isAssignableFrom(epc.type());
+            s = c.prepareStatement(jdbcStatementText,
+                                   epc.columnIndexes().stream().mapToInt(Integer::intValue).toArray());
+        } else if (!epc.columnNames().isEmpty()) {
+            // assert PreparedStatement.class.isAssignableFrom(epc.type());
+            s = c.prepareStatement(jdbcStatementText,
+                                   epc.columnNames().toArray(String[]::new));
+        } else if (CallableStatement.class.isAssignableFrom(spc.type())) {
+            if (epc.resultSetType() == ResultSetType.UNSPECIFIED) {
+                s = c.prepareCall(jdbcStatementText);
+            } else if (epc.resultSetHoldability() == ResultSetHoldability.UNSPECIFIED) {
+                s = c.prepareCall(jdbcStatementText,
+                                  epc.resultSetType().value(),
+                                  epc.resultSetConcurrency().value());
+            } else {
+                s = c.prepareCall(jdbcStatementText,
+                                  epc.resultSetType().value(),
+                                  epc.resultSetConcurrency().value(),
+                                  epc.resultSetHoldability().value());
+            }
+        } else if (epc.generatedKeysBehavior() != GeneratedKeysBehavior.UNSPECIFIED) {
+            // assert PreparedStatement.class.isAssignableFrom(epc.type());
+            s = c.prepareStatement(jdbcStatementText,
+                                   epc.generatedKeysBehavior().value());
+        } else if (epc.resultSetType() == ResultSetType.UNSPECIFIED) {
+            if (PreparedStatement.class.isAssignableFrom(spc.type())) {
+                s = c.prepareStatement(jdbcStatementText);
+            } else {
+                s = c.createStatement();
+            }
+        } else if (epc.resultSetHoldability() == ResultSetHoldability.UNSPECIFIED) {
+            if (PreparedStatement.class.isAssignableFrom(spc.type())) {
+                s = c.prepareStatement(jdbcStatementText,
+                                       epc.resultSetType().value(),
+                                       epc.resultSetConcurrency().value());
+            } else {
+                s = c.createStatement(epc.resultSetType().value(),
+                                      epc.resultSetConcurrency().value());
+            }
+        } else if (PreparedStatement.class.isAssignableFrom(spc.type())) {
+            s = c.prepareStatement(jdbcStatementText,
+                                   epc.resultSetType().value(),
+                                   epc.resultSetConcurrency().value(),
+                                   epc.resultSetHoldability().value());
+        } else {
+            s = c.createStatement(epc.resultSetType().value(),
+                                  epc.resultSetConcurrency().value(),
+                                  epc.resultSetHoldability().value());
+        }
+        if (s instanceof PreparedStatement ps) {
+            spc.argumentsBinder().accept(bindingView(ps));
+        }
+        return s;
+    }
+
+    private static void restoreConnectionStateAndClose(Connection c, ConnectionPlan initial) throws SQLException {
+        try (c) {
+            initial.install(c);
+        }
+    }
+
+    private static void restoreStatementStateAndClose(Statement s, StatementPlan initial) throws SQLException {
+        try (s) {
+            initial.install(s);
+        }
+    }
+
 
     /*
      * Inner and nested classes.
      */
 
 
+    private record ConnectionPlan(ConnectionPlanConfig prototype) {
 
-    // Deliberately omitted, because it is not restorable:
-    // - networkTimeout
-    // - shardingKey
-    // Deliberately omitted, because it is handled by ExecutionState:
-    // - holdability
-    private record ConnectionState(Catalog catalog,
-                                   Properties clientInfo,
-                                   boolean readOnly,
-                                   Schema schema,
-                                   TransactionIsolation transactionIsolation,
-                                   Map<String, Class<?>> typeMap) {
-
-        private static final ConnectionState EMPTY = new ConnectionState();
-
-        private ConnectionState() {
-            this(null, null, false, null, TransactionIsolation.NONE, null);
+        private ConnectionPlan {
+            requireNonNull(prototype, "prototype");
         }
 
-        private ConnectionState(ConnectionStateConfig prototype) {
-            this(prototype.catalog().map(c -> new Catalog(c.value().orElse(null))).orElse(null),
-                 prototype.clientInfo().orElse(null),
-                 prototype.readOnly(),
-                 prototype.schema().map(s -> new Schema(s.value().orElse(null))).orElse(null),
-                 prototype.transactionIsolation().orElse(TransactionIsolation.NONE),
-                 prototype.typeMap().orElse(null));
-        }
-
-        private ConnectionState(Connection c) throws SQLException {
-            this(new Catalog(c.getCatalog()),
-                 c.getClientInfo(),
-                 c.isReadOnly(),
-                 new Schema(c.getSchema()),
-                 TransactionIsolation.of(c.getTransactionIsolation()),
-                 c.getTypeMap());
-        }
-
-        private ConnectionState {
-            if (clientInfo != null) {
-                clientInfo = copy(clientInfo);
-            }
-            requireNonNull(transactionIsolation, "transactionIsolation");
-            if (typeMap != null) {
-                typeMap = Map.copyOf(typeMap);
-            }
+        private ConnectionPlan(Connection c) throws SQLException {
+            this(ConnectionPlanConfig.builder()
+                 .dataSource(new DataSourceStub()) // not used by this ConnectionPlan class; just needs to be non-null
+                 .catalog(CatalogConfig.builder().value(c.getCatalog()).build())
+                 .clientInfo(c.getClientInfo())
+                 .resultSetHoldability(ResultSetHoldability.of(c.getHoldability()))
+                 .readOnly(c.isReadOnly())
+                 .schema(SchemaConfig.builder().value(c.getSchema()).build())
+                 .transactionIsolation(TransactionIsolation.of(c.getTransactionIsolation()))
+                 .typeMap(c.getTypeMap())
+                 .build());
         }
 
         private Connection install(Connection c) throws SQLException {
-            if (this.catalog != null && !Objects.equals(this.catalog.value(), c.getCatalog())) {
-                c.setCatalog(this.catalog.value());
+            CatalogConfig catalogConfig = this.prototype.catalog().orElse(null);
+            Catalog catalog = catalogConfig == null ? null : new Catalog(catalogConfig.value().orElse(null));
+            if (catalog != null && !Objects.equals(catalog.value(), c.getCatalog())) {
+                c.setCatalog(catalog.value());
             }
-            if (this.clientInfo != null && !equals(this.clientInfo, c.getClientInfo())) {
+            Properties clientInfo = this.prototype.clientInfo().orElse(null);
+            if (clientInfo != null && !equals(clientInfo, c.getClientInfo())) {
                 // Note: this is a full replacement
-                c.setClientInfo(this.clientInfo);
+                c.setClientInfo(clientInfo);
             }
-            if (this.readOnly != c.isReadOnly()) {
-                c.setReadOnly(this.readOnly);
+            ResultSetHoldability resultSetHoldability = this.prototype.resultSetHoldability();
+            if (resultSetHoldability != ResultSetHoldability.UNSPECIFIED
+                && resultSetHoldability.value() != c.getHoldability()) {
+                c.setHoldability(resultSetHoldability.value());
             }
-            if (this.schema != null && !Objects.equals(this.schema.value(), c.getSchema())) {
-                // We deliberately treat null as a sentinel value. This prohibits you from, for example, overriding a
-                // non-null value with a null value, but the tradeoff seems worth it.
-                c.setSchema(this.schema.value());
+            boolean readOnly = this.prototype.readOnly();
+            if (readOnly != c.isReadOnly()) {
+                c.setReadOnly(readOnly);
             }
-            if (this.transactionIsolation != TransactionIsolation.NONE
-                && this.transactionIsolation != TransactionIsolation.of(c.getTransactionIsolation())) {
-                c.setTransactionIsolation(this.transactionIsolation.value());
+            SchemaConfig schemaConfig = this.prototype.schema().orElse(null);
+            Schema schema = schemaConfig == null ? null : new Schema(schemaConfig.value().orElse(null));
+            if (schema != null && !Objects.equals(schema.value(), c.getSchema())) {
+                c.setSchema(schema.value());
             }
-            if (this.typeMap != null && !this.typeMap.equals(c.getTypeMap())) {
-                c.setTypeMap(this.typeMap);
+            TransactionIsolation ti = this.prototype.transactionIsolation().orElse(null);
+            if (ti != null
+                && ti != TransactionIsolation.of(c.getTransactionIsolation())) {
+                c.setTransactionIsolation(ti.value());
+            }
+            Map<String, Class<?>> typeMap = this.prototype.typeMap().orElse(null);
+            if (typeMap != null && !typeMap.equals(c.getTypeMap())) {
+                c.setTypeMap(typeMap);
             }
             return c;
-        }
-
-        private static Properties copy(Properties p0) {
-            Properties p1 = new Properties();
-            for (String pn : p0.stringPropertyNames()) {
-                p1.setProperty(pn, p0.getProperty(pn));
-            }
-            return p1;
         }
 
         private static boolean equals(Properties p0, Properties p1) {
@@ -299,83 +331,64 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
 
     }
 
-    // Deliberately omitted, because they are not restorable:
-    // - cursorName // (there is no accessor, only a mutator; what happens if statement is pooled?)
-    // - escapeProcessing // (there is no accessor)
-    private record StatementState(boolean closeOnCompletion,
-                                  ResultSetFetchDirection fetchDirection,
-                                  int fetchSize,
-                                  long maxRows,
-                                  int maxFieldSize,
-                                  Boolean poolable,
-                                  int queryTimeout) {
+    private record StatementPlan(StatementPlanConfig prototype) {
 
-        private static final StatementState EMPTY = new StatementState();
-
-        private StatementState() {
-            this(false, ResultSetFetchDirection.FORWARD, -1, -1L, -1, null, -1);
+        private StatementPlan {
+            requireNonNull(prototype, "prototype");
         }
 
-        private StatementState(Statement s) throws SQLException {
-            this(false, // no way to read it
-                 ResultSetFetchDirection.of(s.getFetchDirection()),
-                 s.getFetchSize(),
-                 maxRows(s),
-                 s.getMaxFieldSize(),
-                 s.isPoolable(),
-                 s.getQueryTimeout());
-        }
-
-        private StatementState(StatementStateConfig prototype) {
-            this(prototype.closeOnCompletion(),
-                 prototype.fetchDirection(),
-                 prototype.fetchSize(),
-                 prototype.maxRows(),
-                 prototype.maxFieldSize(),
-                 null, // poolable, can't set it without an actual statement
-                 prototype.queryTimeout());
-        }
-
-        private StatementState {
-            if (fetchDirection == null) {
-                fetchDirection = ResultSetFetchDirection.FORWARD;
-            }
+        private StatementPlan(Statement s) throws SQLException {
+            this(StatementPlanConfig.builder()
+                 .type(switch (requireNonNull(s, "s")) {
+                     case CallableStatement cs -> CallableStatement.class;
+                     case PreparedStatement ps -> PreparedStatement.class;
+                     default -> Statement.class;
+                     })
+                 .statement("SELECT 1") // not used by this StatementPlan class; just needs to be non-null
+                 .closeOnCompletion(false) // no way to read it; false is the default
+                 .fetchDirection(ResultSetFetchDirection.of(s.getFetchDirection()))
+                 .fetchSize(s.getFetchSize())
+                 .maxRows(maxRows(s))
+                 .maxFieldSize(s.getMaxFieldSize())
+                 .queryTimeout(s.getQueryTimeout())
+                 .argumentsBinder(ps -> {})
+                 .build());
         }
 
         private <S extends Statement> S install(S s) throws SQLException {
             // closeOnCompletion is not strictly speaking reversible and has undefined semantics for pooled
             // statements. We make a best effort.
-            if (this.closeOnCompletion && (this.closeOnCompletion != s.isCloseOnCompletion())) {
+            if (this.prototype.closeOnCompletion()
+                && (this.prototype.closeOnCompletion() != s.isCloseOnCompletion())) {
                 // This is a little shaky since it strictly speaking is not fully reversible.
                 s.closeOnCompletion();
             }
-            // We ignore escape processing because it has no "getter".
-            if (!Objects.equals(this.fetchDirection, ResultSetFetchDirection.of(s.getFetchDirection()))) {
-                s.setFetchDirection(this.fetchDirection.value());
+            if (this.prototype.fetchDirection() != ResultSetFetchDirection.UNKNOWN
+                && this.prototype.fetchDirection() != ResultSetFetchDirection.of(s.getFetchDirection())) {
+                s.setFetchDirection(this.prototype.fetchDirection().value());
             }
-            if (this.fetchSize >= 0 && (this.fetchSize != s.getFetchSize())) {
-                s.setFetchSize(this.fetchSize);
+            if (this.prototype.fetchSize() >= 0 && (this.prototype.fetchSize() != s.getFetchSize())) {
+                s.setFetchSize(this.prototype.fetchSize());
             }
-            if (this.maxRows >= 0L) {
+            if (this.prototype.maxRows() >= 0L) {
                 try {
-                    if (this.maxRows != s.getLargeMaxRows()) {
-                        s.setLargeMaxRows(this.maxRows);
+                    if (this.prototype.maxRows() != s.getLargeMaxRows()) {
+                        s.setLargeMaxRows(this.prototype.maxRows());
                     }
                 } catch (SQLFeatureNotSupportedException e) {
-                    int maxRows = this.maxRows >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) this.maxRows;
+                    int maxRows =
+                        this.prototype.maxRows() >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) this.prototype.maxRows();
                     if (maxRows != s.getMaxRows()) {
                         s.setMaxRows(maxRows);
                     }
                 }
             }
-            if (this.maxFieldSize >= 0 && (this.maxFieldSize != s.getMaxFieldSize())) {
-                s.setMaxFieldSize(this.maxFieldSize);
+            if (this.prototype.maxFieldSize() >= 0 && (this.prototype.maxFieldSize() != s.getMaxFieldSize())) {
+                s.setMaxFieldSize(this.prototype.maxFieldSize());
             }
-            if (this.poolable != null && (this.poolable.booleanValue() != s.isPoolable())) {
-                s.setPoolable(this.poolable.booleanValue());
-            }
-            if (this.queryTimeout >= 0 && (this.queryTimeout != s.getQueryTimeout())) {
-                s.setQueryTimeout(this.queryTimeout);
+            // poolable omitted for now; not clear what the semantics are
+            if (this.prototype.queryTimeout() >= 0 && (this.prototype.queryTimeout() != s.getQueryTimeout())) {
+                s.setQueryTimeout(this.prototype.queryTimeout());
             }
             return s;
         }
@@ -390,110 +403,53 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
 
     }
 
-    private record ExecutionState(Class<? extends PreparedStatement> type,
-                                  GeneratedKeysBehavior generatedKeysBehavior,
-                                  int[] columnIndexes,
-                                  String[] columnNames,
-                                  ResultSetType resultSetType,
-                                  ResultSetConcurrency resultSetConcurrency,
-                                  ResultSetHoldability resultSetHoldability,
-                                  int[] outParameterIndices) {
+    private static class DataSourceStub implements DataSource {
 
-        private static final ExecutionState EMPTY = new ExecutionState();
-
-        private ExecutionState() {
-            this(PreparedStatement.class,
-                 GeneratedKeysBehavior.NONE,
-                 EMPTY_INT_ARRAY,
-                 EMPTY_STRING_ARRAY,
-                 ResultSetType.FORWARD_ONLY,
-                 ResultSetConcurrency.READ_ONLY,
-                 ResultSetHoldability.CLOSE_CURSORS_AT_COMMIT,
-                 EMPTY_INT_ARRAY);
+        private DataSourceStub() {
+            super();
         }
 
-        private ExecutionState(ExecutionStateConfig prototype) {
-            this(prototype.type(),
-                 prototype.generatedKeysBehavior(),
-                 prototype.columnIndexes().stream().mapToInt(Integer::intValue).toArray(),
-                 prototype.columnNames().toArray(new String[0]),
-                 prototype.resultSetType(),
-                 prototype.resultSetConcurrency(),
-                 prototype.resultSetHoldability(),
-                 prototype.outParameterIndices().stream().mapToInt(Integer::intValue).toArray());
+        @Override // DataSource
+        public Connection getConnection() throws SQLException {
+            throw new SQLFeatureNotSupportedException();
         }
 
-        private ExecutionState {
-            requireNonNull(type, "type");
-            if (generatedKeysBehavior == null) {
-                generatedKeysBehavior = GeneratedKeysBehavior.NONE;
-            } else if (generatedKeysBehavior != GeneratedKeysBehavior.NONE && CallableStatement.class.isAssignableFrom(type)) {
-                throw new IllegalArgumentException("CallableStatements and generated keys don't work together");
-            }
-            if (columnIndexes == null || columnIndexes.length == 0) {
-                columnIndexes = EMPTY_INT_ARRAY;
-            } else if (CallableStatement.class.isAssignableFrom(type)) {
-                throw new IllegalArgumentException("CallableStatements and generated keys don't work together");
-            } else {
-                columnIndexes = columnIndexes.clone();
-            }
-            if (columnNames == null || columnNames.length == 0) {
-                columnNames = EMPTY_STRING_ARRAY;
-            } else if (CallableStatement.class.isAssignableFrom(type)) {
-                throw new IllegalArgumentException("CallableStatements and generated keys don't work together");
-            } else if (columnIndexes.length == 0) {
-                columnNames = columnNames.clone();
-            } else {
-                throw new IllegalArgumentException("columnNames and columnIndexes cannot coexist");
-            }
-            if (resultSetType == null) {
-                resultSetType = ResultSetType.FORWARD_ONLY;
-            }
-            if (resultSetConcurrency == null) {
-                resultSetConcurrency = ResultSetConcurrency.READ_ONLY;
-            }
-            if (resultSetHoldability == null) {
-                resultSetHoldability = ResultSetHoldability.CLOSE_CURSORS_AT_COMMIT;
-            }
-            if (outParameterIndices == null || outParameterIndices.length == 0) {
-                outParameterIndices = EMPTY_INT_ARRAY;
-            } else if (!CallableStatement.class.isAssignableFrom(type)) {
-                throw new IllegalArgumentException("outParameterIndices: " + asList(outParameterIndices));
-            } else {
-                outParameterIndices = outParameterIndices.clone();
-            }
+        @Override // DataSource
+        public Connection getConnection(String username, String password) throws SQLException {
+            throw new SQLFeatureNotSupportedException();
         }
 
-        private PreparedStatement prepareStatement(Connection c, String jdbcStatementText) throws SQLException {
-            PreparedStatement ps;
-            if (this.columnIndexes.length > 0) {
-                ps = c.prepareStatement(jdbcStatementText,
-                                        this.columnIndexes);
-            } else if (this.columnNames.length > 0) {
-                ps = c.prepareStatement(jdbcStatementText,
-                                        this.columnNames);
-            } else if (CallableStatement.class.isAssignableFrom(this.type)) {
-                ps = c.prepareCall(jdbcStatementText,
-                                   this.resultSetType.value(),
-                                   this.resultSetConcurrency.value(),
-                                   this.resultSetHoldability(c));
-            } else if (this.generatedKeysBehavior == GeneratedKeysBehavior.RETURN) {
-                ps = c.prepareStatement(jdbcStatementText,
-                                        GeneratedKeysBehavior.RETURN.value());
-            } else {
-                ps = c.prepareStatement(jdbcStatementText,
-                                        this.resultSetType.value(),
-                                        this.resultSetConcurrency.value(),
-                                        this.resultSetHoldability(c));
-            }
-            return ps;
+        @Override // DataSource
+        public <T> T unwrap(Class<T> iface) throws SQLException {
+            throw new UnsupportedOperationException();
         }
 
-        private int resultSetHoldability(Connection c) throws SQLException {
-            return switch (this.resultSetHoldability) {
-            case CLOSE_CURSORS_AT_COMMIT, HOLD_CURSORS_OVER_COMMIT -> this.resultSetHoldability.value();
-            default -> c.getHoldability();
-            };
+        @Override // DataSource
+        public boolean isWrapperFor(Class<?> iface) throws SQLException {
+            return false;
+        }
+
+        @Override // DataSource
+        public PrintWriter getLogWriter() throws SQLException {
+            return null;
+        }
+
+        @Override // DataSource
+        public void setLogWriter(PrintWriter out) throws SQLException {
+        }
+
+        @Override // DataSource
+        public void setLoginTimeout(int seconds) throws SQLException {
+        }
+
+        @Override // DataSource
+        public int getLoginTimeout() throws SQLException {
+            return 0;
+        }
+
+        @Override // DataSource
+        public Logger getParentLogger() throws SQLFeatureNotSupportedException {
+            throw new SQLFeatureNotSupportedException();
         }
 
     }

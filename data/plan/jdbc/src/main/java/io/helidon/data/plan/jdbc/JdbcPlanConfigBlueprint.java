@@ -15,33 +15,34 @@
  */
 package io.helidon.data.plan.jdbc;
 
-import java.util.Optional;
+import java.util.List;
 
 import io.helidon.builder.api.Option;
 import io.helidon.builder.api.Prototype;
 import io.helidon.data.jdbc.JdbcResults;
-import io.helidon.data.jdbc.ResultsAdvancementBehavior;
 import io.helidon.data.jdbc.function.JdbcFunction;
 
 /**
- * A prototype for an {@linkplain JdbcPlan executable plan} based on JDBC {@link java.sql.PreparedStatement}s.
+ * A prototype for a {@linkplain JdbcPlan JDBC execution plan} based on {@link java.sql.PreparedStatement}s.
  *
  * @param <T> the results type
  */
 @Prototype.Blueprint
 interface JdbcPlanConfigBlueprint<T> extends Prototype.Factory<JdbcPlan<T>> {
 
-    String statement();
+    /**
+     * The connection plans.
+     *
+     * @return the connection plans
+     */
+    @Option.Singular
+    List<ConnectionPlanConfig> connectionPlans();
 
-    Optional<ConnectionStateConfig> connectionState();
-
-    Optional<StatementStateConfig> statementState();
-
-    Optional<ExecutionStateConfig> executionState();
-
-    @Option.Default("CLOSE_CURRENT_RESULT")
-    ResultsAdvancementBehavior resultsAdvancementBehavior();
-
+    /**
+     * A results transformer.
+     *
+     * @return a results transformer
+     */
     JdbcFunction<? super JdbcResults, ? extends T> transformer();
 
 }

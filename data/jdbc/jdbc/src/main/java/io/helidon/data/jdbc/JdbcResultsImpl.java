@@ -59,7 +59,7 @@ final class JdbcResultsImpl implements JdbcResults {
 
     private Preparation currentPreparation;
 
-    // Self-replacing; treat as final. Never null.
+    // Never null. Self-replacing.
     private JdbcBooleanSupplier advancer;
 
     private JdbcSupplier<? extends long[]> batchExecutor;
@@ -221,8 +221,11 @@ final class JdbcResultsImpl implements JdbcResults {
     private void configure(Preparation p) {
         this.currentPreparation = requireNonNull(p, "p");
         Statement s = p.statement();
-        int resultsAdvancementBehavior = p.resultsAdvancementBehavior().value();
-        JdbcBooleanSupplier subsequentAdvancer = () -> s.getMoreResults(resultsAdvancementBehavior);
+        ResultsAdvancementBehavior resultsAdvancementBehavior = p.resultsAdvancementBehavior();
+        JdbcBooleanSupplier subsequentAdvancer = switch (resultsAdvancementBehavior) {
+        case UNSPECIFIED -> s::getMoreResults;
+        default -> () -> s.getMoreResults(resultsAdvancementBehavior.value());
+        };
         this.result = p.initialResult().orElse(null);
         if (p.batch()) {
             // Simple and extraordinarily uncommon.
@@ -243,7 +246,7 @@ final class JdbcResultsImpl implements JdbcResults {
             this.batchExecutor = null;
             this.advancer = () -> {
                 boolean rv = ps.execute();
-                this.advancer = () -> ps.getMoreResults(resultsAdvancementBehavior);
+                this.advancer = subsequentAdvancer;
                 return rv;
             };
         } else {
@@ -257,8 +260,11 @@ final class JdbcResultsImpl implements JdbcResults {
             } else if (columnNames.length > 0) {
                 initialAdvancer = () -> s.execute(sql, columnNames);
             } else {
-                int generatedKeysBehavior = p.generatedKeysBehavior().value();
-                initialAdvancer = () -> s.execute(sql, generatedKeysBehavior);
+                GeneratedKeysBehavior generatedKeysBehavior = p.generatedKeysBehavior();
+                initialAdvancer = switch (generatedKeysBehavior) {
+                case UNSPECIFIED -> () -> s.execute(sql);
+                default -> () -> s.execute(sql, generatedKeysBehavior.value());
+                };
             }
             this.advancer = () -> {
                 boolean rv = initialAdvancer.getAsBoolean();

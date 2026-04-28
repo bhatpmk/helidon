@@ -57,7 +57,7 @@ public enum ResultSetConcurrency {
 
     /**
      * Returns a {@link ResultSetConcurrency} appropriate for the supplied {@code resultSetConcurrency} constant, which
-     * must be either {@link ResultSet#CONCUR_READ_ONLY} or {@link ResultSet#CONCUR_UPDATABLE}.
+     * must be {@link ResultSet#CONCUR_READ_ONLY} or {@link ResultSet#CONCUR_UPDATABLE}.
      *
      * @param resultSetConcurrency a concurrency constant
      * @return a non-{@code null} {@link ResultSetConcurrency} appropriate for the supplied {@code resultSetConcurrency}

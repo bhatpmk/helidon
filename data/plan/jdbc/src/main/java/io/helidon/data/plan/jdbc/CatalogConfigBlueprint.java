@@ -19,9 +19,17 @@ import java.util.Optional;
 
 import io.helidon.builder.api.Prototype;
 
+/**
+ * A descriptor for a catalog.
+ */
 @Prototype.Blueprint
 interface CatalogConfigBlueprint {
 
+    /**
+     * The catalog value to use.
+     *
+     * @return the catalog value to use
+     */
     Optional<String> value();
 
 }

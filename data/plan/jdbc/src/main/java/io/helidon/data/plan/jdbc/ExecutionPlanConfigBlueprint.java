@@ -15,7 +15,6 @@
  */
 package io.helidon.data.plan.jdbc;
 
-import java.sql.PreparedStatement;
 import java.util.List;
 
 import io.helidon.builder.api.Option;
@@ -24,29 +23,73 @@ import io.helidon.data.jdbc.GeneratedKeysBehavior;
 import io.helidon.data.jdbc.ResultSetConcurrency;
 import io.helidon.data.jdbc.ResultSetHoldability;
 import io.helidon.data.jdbc.ResultSetType;
+import io.helidon.data.jdbc.ResultsAdvancementBehavior;
 
+/**
+ * A descriptor for statement execution state.
+ */
 @Prototype.Blueprint
-interface ExecutionStateConfigBlueprint {
+interface ExecutionPlanConfigBlueprint {
 
-    @Option.Default("PreparedStatement.class")
-    Class<? extends PreparedStatement> type();
-
-    @Option.Default("NONE")
+    /**
+     * Generated keys behavior of the execution.
+     *
+     * @return generated keys behavior
+     */
+    @Option.Default("UNSPECIFIED")
     GeneratedKeysBehavior generatedKeysBehavior();
 
+    /**
+     * Generated column indexes returned by the execution.
+     *
+     * @return generated column indexes
+     */
     List<Integer> columnIndexes();
 
+    /**
+     * Generated column names returned by the execution.
+     *
+     * @return generated column names
+     */
     List<String> columnNames();
 
-    @Option.Default("FORWARD_ONLY")
+    /**
+     * The result set type to use.
+     *
+     * @return the result set type to use
+     */
+    @Option.Default("UNSPECIFIED")
     ResultSetType resultSetType();
 
+    /**
+     * The result set concurrency to use.
+     *
+     * @return the result set concurrency to use
+     */
     @Option.Default("READ_ONLY")
     ResultSetConcurrency resultSetConcurrency();
 
-    @Option.Default("CLOSE_CURSORS_AT_COMMIT")
+    /**
+     * The result set holdability to use.
+     *
+     * @return the result set holdability to use
+     */
+    @Option.Default("UNSPECIFIED")
     ResultSetHoldability resultSetHoldability();
 
+    /**
+     * The results advancement behavior to use.
+     *
+     * @return the result set advancement behavior
+     */
+    @Option.Default("UNSPECIFIED")
+    ResultsAdvancementBehavior resultsAdvancementBehavior();
+
+    /**
+     * Registered {@code OUT} parameter indices containin values.
+     *
+     * @return registered {@code OUT} parameter indices
+     */
     List<Integer> outParameterIndices();
 
 }

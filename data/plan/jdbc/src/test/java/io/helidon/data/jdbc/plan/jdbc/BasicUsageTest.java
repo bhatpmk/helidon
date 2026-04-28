@@ -48,7 +48,24 @@ final class BasicUsageTest {
 
     @Test
     void testUsage() throws SQLException {
-        try (var jrss = JdbcPlan.execute(ds, "SELECT * FROM INFORMATION_SCHEMA.TABLES")) {
+        var plan = JdbcPlanConfig.<JdbcResults>builder()
+            .addConnectionPlan(ConnectionPlanConfig.builder()
+                               .dataSource(this.ds)
+                               .addStatementPlan(StatementPlanConfig.builder()
+                                                 .statement("SELECT * FROM INFORMATION_SCHEMA.TABLES")
+                                                 .argumentsBinder(ps -> {})
+                                                 .build())
+                               .build())
+            .transformer(jr -> jr)
+            .build();
+        try (var jrss = plan.execute()) {
+            jrss.forOnly(JdbcResultSet.class, BasicUsageTest::printResultSet);
+        }
+    }
+
+    @Test
+    void testConvenienceUsage() throws SQLException {
+        try (var jrss = JdbcPlan.execute(this.ds, "SELECT * FROM INFORMATION_SCHEMA.TABLES")) {
             jrss.forOnly(JdbcResultSet.class, BasicUsageTest::printResultSet);
         }
     }
@@ -56,7 +73,7 @@ final class BasicUsageTest {
     private static void printResultSet(JdbcResultSet jrs) throws SQLException {
         printResultSet(jrs.resultSet());
     }
-    
+
     private static void printResultSet(ResultSet rs) throws SQLException {
         ResultSetMetaData rsmd = rs.getMetaData();
         while (rs.next()) {

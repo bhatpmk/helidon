@@ -41,7 +41,12 @@ public enum ResultsAdvancementBehavior {
     /**
      * Represents {@link Statement#KEEP_CURRENT_RESULT}.
      */
-    KEEP_CURRENT_RESULT(Statement.KEEP_CURRENT_RESULT);
+    KEEP_CURRENT_RESULT(Statement.KEEP_CURRENT_RESULT),
+
+    /**
+     * Indicates unspecified behavior.
+     */
+    UNSPECIFIED(-1);
 
     private final int value;
 
@@ -49,7 +54,8 @@ public enum ResultsAdvancementBehavior {
         this.value = switch (resultsAdvancementBehavior) {
         case Statement.CLOSE_ALL_RESULTS,
         Statement.CLOSE_CURRENT_RESULT,
-        Statement.KEEP_CURRENT_RESULT -> resultsAdvancementBehavior;
+        Statement.KEEP_CURRENT_RESULT,
+        -1 -> resultsAdvancementBehavior;
         default -> throw new IllegalArgumentException("resultsAdvancementBehavior: " + resultsAdvancementBehavior);
         };
     }
@@ -65,10 +71,11 @@ public enum ResultsAdvancementBehavior {
 
     /**
      * Returns a {@link ResultsAdvancementBehavior} appropriate for the supplied {@code resultsAdvancementBehavior}
-     * constant, which must be either {@link Statement#CLOSE_ALL_RESULTS}, {@link Statement#CLOSE_CURRENT_RESULT}, or
-     * {@link Statement#KEEP_CURRENT_RESULT}.
+     * constant, which must be either {@link Statement#CLOSE_ALL_RESULTS}, {@link Statement#CLOSE_CURRENT_RESULT},
+     * {@link Statement#KEEP_CURRENT_RESULT}, or {@code -1} to indicate unspecified behavior.
      *
-     * @param resultsAdvancementBehavior a fetchDirection constant
+     * @param resultsAdvancementBehavior a results advancement behavior constant, or {@code -1} to indicate unspecified
+     * behavior
      * @return a non-{@code null} {@link ResultsAdvancementBehavior} appropriate for the supplied {@code
      * resultsAdvancementBehavior} constant
      * @exception IllegalArgumentException if {@code resultsAdvancementBehavior} is not a valid value
@@ -82,6 +89,7 @@ public enum ResultsAdvancementBehavior {
         case Statement.CLOSE_ALL_RESULTS -> CLOSE_ALL_RESULTS;
         case Statement.CLOSE_CURRENT_RESULT -> CLOSE_CURRENT_RESULT;
         case Statement.KEEP_CURRENT_RESULT -> KEEP_CURRENT_RESULT;
+        case -1 -> UNSPECIFIED;
         default -> throw new IllegalArgumentException("resultsAdvancementBehavior: " + resultsAdvancementBehavior);
         };
     }

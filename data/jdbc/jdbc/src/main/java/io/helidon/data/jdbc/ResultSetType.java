@@ -40,13 +40,18 @@ public enum ResultSetType {
     /**
      * Represents {@link ResultSet#TYPE_SCROLL_SENSITIVE}.
      */
-    SCROLL_SENSITIVE(ResultSet.TYPE_SCROLL_SENSITIVE);
+    SCROLL_SENSITIVE(ResultSet.TYPE_SCROLL_SENSITIVE),
+
+    /**
+     * Represents an unspecified {@link ResultSet} type.
+     */
+    UNSPECIFIED(-1);
 
     private final int value;
 
     ResultSetType(int resultSetType) {
         this.value = switch (resultSetType) {
-        case ResultSet.TYPE_FORWARD_ONLY, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.TYPE_SCROLL_SENSITIVE -> resultSetType;
+        case ResultSet.TYPE_FORWARD_ONLY, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.TYPE_SCROLL_SENSITIVE, -1 -> resultSetType;
         default -> throw new IllegalArgumentException("resultSetType: " + resultSetType);
         };
     }
@@ -62,10 +67,10 @@ public enum ResultSetType {
 
     /**
      * Returns a {@link ResultSetType} appropriate for the supplied {@code resultSetType} constant, which must be either
-     * {@link ResultSet#TYPE_FORWARD_ONLY}, {@link ResultSet#TYPE_SCROLL_INSENSITIVE}, or {@link
-     * ResultSet#TYPE_SCROLL_SENSITIVE}.
+     * {@link ResultSet#TYPE_FORWARD_ONLY}, {@link ResultSet#TYPE_SCROLL_INSENSITIVE}, {@link
+     * ResultSet#TYPE_SCROLL_SENSITIVE}, or {@code -1} to indicate an unspecified {@link ResultSet} type.
      *
-     * @param resultSetType a type constant
+     * @param resultSetType a type constant, or {@code -1} to indicate an unspecified {@link ResultSet} type
      * @return a non-{@code null} {@link ResultSetType} appropriate for the supplied {@code resultSetType}
      * constant
      * @exception IllegalArgumentException if {@code resultSetType} is not a valid value
@@ -78,6 +83,7 @@ public enum ResultSetType {
         case ResultSet.TYPE_FORWARD_ONLY -> FORWARD_ONLY;
         case ResultSet.TYPE_SCROLL_INSENSITIVE -> SCROLL_INSENSITIVE;
         case ResultSet.TYPE_SCROLL_SENSITIVE -> SCROLL_SENSITIVE;
+        case -1 -> UNSPECIFIED;
         default -> throw new IllegalArgumentException("resultSetType: " + resultSetType);
         };
     }
