@@ -53,10 +53,10 @@ public final class NamedParameters {
     }
 
     /**
-     * Converts a pseudo-JDBC statement featuring colon-prefixed <dfn>named parameter markers</dfn> (<i>e.g.</i> {@code
-     * :name}) into a valid JDBC statement featuring only valid JDBC (positional) parameter markers ({@code ?}), passing
-     * any encountered parameter markers, named or positional, to the supplied {@link Consumer}, and returns the
-     * rewritten statement.
+     * Converts a pseudo-JDBC statement, perhaps featuring colon-prefixed <dfn>named parameter markers</dfn>
+     * (<i>e.g.</i> {@code :name}), into an equivalent valid JDBC statement featuring only valid JDBC (positional)
+     * parameter markers ({@code ?}), passing any encountered parameter markers, named or positional, to the supplied
+     * {@link Consumer}, and returns the rewritten statement.
      *
      * <p>If no colon-prefixed named parameter markers are found, a statement equal to the supplied statement is
      * returned.</p>
@@ -64,9 +64,11 @@ public final class NamedParameters {
      * @param pseudoStatement a non-{@code null} pseudo-JDBC statement possibly featuring colon-prefixed named parameter
      * markers (<i>e.g.</i> {@code :name})
      * @param parameterMarkers a non-{@code null} {@link Consumer} that is notified of each named or positional
-     * parameter marker encountered; the marker itself (e.g. {@code :name} or {@code ?}) is supplied verbatim
-     * @return a JDBC-compatible pseudo-SQL statement suitable for supplying to {@link
-     * java.sql.Connection#prepareStatement(String)} and all analogous methods
+     * parameter marker encountered; the marker itself (e.g. {@code :name} or {@code ?}) is supplied verbatim; often a
+     * method reference to the {@link java.util.List#add(Object) add} method of a {@link java.util.List} (e.g. {@code
+     * someList::add})
+     * @return a legal JDBC statement suitable for supplying to {@link java.sql.Connection#prepareStatement(String)} and
+     * other analogous methods
      * @see java.sql.Connection#prepareCall(String)
      * @see java.sql.Connection#prepareCall(String, int, int)
      * @see java.sql.Connection#prepareCall(String, int, int, int)
@@ -85,15 +87,15 @@ public final class NamedParameters {
         while (t.getType() != EOF) {
             switch (t.getType()) {
             case PARAMETER_NAME -> {
-                parameterMarkers.accept(t.getText());
+                parameterMarkers.accept(t.getText()); // e.g. ":foo"
                 sb.append('?');
             }
             case PARAMETER_MARKER -> {
-                parameterMarkers.accept(t.getText()); // "?"
-                sb.append(t.getText()); // "?"
+                String parameterMarker = t.getText(); // "?"
+                parameterMarkers.accept(parameterMarker);
+                sb.append(parameterMarker);
             }
-            case
-                BACKTICK_QUOTED_STRING,
+            case BACKTICK_QUOTED_STRING,
                 BLOCK_COMMENT,
                 BRACKET_QUOTED_IDENTIFIER,
                 CHUNK,

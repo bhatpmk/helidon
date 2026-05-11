@@ -22,9 +22,8 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
 
@@ -32,8 +31,6 @@ import io.helidon.data.jdbc.function.JdbcAutoCloseable;
 import io.helidon.data.jdbc.function.JdbcBooleanSupplier;
 import io.helidon.data.jdbc.function.JdbcRunnable;
 import io.helidon.data.jdbc.function.JdbcSupplier;
-
-import static java.util.Objects.requireNonNull;
 
 final class JdbcResultsImpl implements JdbcResults {
 
@@ -51,7 +48,7 @@ final class JdbcResultsImpl implements JdbcResults {
      */
 
 
-    private final Deque<JdbcRunnable> closers;
+    private final List<JdbcRunnable> closers;
 
     private final List<Preparation> preparations;
 
@@ -80,9 +77,9 @@ final class JdbcResultsImpl implements JdbcResults {
 
     JdbcResultsImpl(List<? extends Preparation> ps) {
         super();
-        this.closers = new ArrayDeque<>();
+        this.closers = new LinkedList<>();
         this.preparations = List.copyOf(ps);
-        this.configure(0);
+        this.configure();
     }
 
 
@@ -96,26 +93,28 @@ final class JdbcResultsImpl implements JdbcResults {
         ensureOpen();
         if (this.currentPreparation == null) {
             return false;
-        }
-        Statement s = this.currentPreparation.statement();
-        if (this.batchExecutor != null) {
+        } else if (this.batchExecutor != null) {
             this.result = new JdbcBatchExecutionResultsImpl(this.batchExecutor.get());
-        } else if (this.advancer.getAsBoolean()) {
-            JdbcResultSetImpl result = new JdbcResultSetImpl(s.getResultSet());
-            this.closers.push(result::close);
-            this.result = result;
         } else {
-            long updateCount = updateCount(s);
-            if (updateCount >= 0L) {
-                this.result = new JdbcUpdateCountImpl(updateCount);
+            Statement s = this.currentPreparation.statement();
+            if (this.advancer.getAsBoolean()) {
+                JdbcResultSetImpl result = new JdbcResultSetImpl(s.getResultSet());
+                this.closers.add(this.preparationIndex, result::close);
+                this.result = result;
             } else {
-                int[] outParameterIndices = this.currentPreparation.outParameterIndices();
-                if (outParameterIndices.length > 0) {
-                    this.result = new JdbcOutValuesImpl((CallableStatement) s, outParameterIndices);
+                long updateCount = updateCount(s);
+                if (updateCount >= 0L) {
+                    this.result = new JdbcUpdateCountImpl(updateCount);
                 } else {
-                    // Go to the next preparation if there is one and try to keep going.
-                    this.configure(++this.preparationIndex);
-                    return this.advance(); // recurse
+                    int[] outParameterIndices = this.currentPreparation.outParameterIndices();
+                    if (outParameterIndices.length > 0) {
+                        this.result = new JdbcOutValuesImpl((CallableStatement) s, outParameterIndices);
+                    } else {
+                        // Go to the next preparation if there is one (uncommon) and try to keep going.
+                        ++this.preparationIndex;
+                        this.configure();
+                        return this.advance(); // recurse
+                    }
                 }
             }
         }
@@ -139,12 +138,6 @@ final class JdbcResultsImpl implements JdbcResults {
             JdbcRunnable closer = closers.next();
             try {
                 closer.run();
-            } catch (UncheckedSQLException e) {
-                if (t == null) {
-                    t = e.getCause(); // won't be null
-                } else {
-                    t.addSuppressed(e.getCause()); // won't be null
-                }
             } catch (RuntimeException | SQLException e) {
                 if (t == null) {
                     t = e;
@@ -184,7 +177,7 @@ final class JdbcResultsImpl implements JdbcResults {
     @Override // JdbcResults (JdbcOpen)
     public JdbcResultsImpl onClose(JdbcRunnable r) {
         ensureOpen();
-        this.closers.add(r);
+        this.closers.addLast(r);
         return this;
     }
 
@@ -207,28 +200,25 @@ final class JdbcResultsImpl implements JdbcResults {
      */
 
 
-    private void configure(int index) {
-        if (index < this.preparations.size()) {
-            this.configure(this.preparations.get(index));
-        } else {
+    private void configure() {
+        if (this.preparationIndex >= this.preparations.size()) {
             this.currentPreparation = null;
+            this.result = null;
             this.batchExecutor = null;
             this.advancer = JdbcResultsImpl::returnFalse;
-            this.result = null;
+            return;
         }
-    }
-
-    private void configure(Preparation p) {
-        this.currentPreparation = requireNonNull(p, "p");
+        Preparation p = this.preparations.get(this.preparationIndex);
+        this.currentPreparation = p;
+        this.result = p.initialResult().orElse(null);
         Statement s = p.statement();
         ResultsAdvancementBehavior resultsAdvancementBehavior = p.resultsAdvancementBehavior();
         JdbcBooleanSupplier subsequentAdvancer = switch (resultsAdvancementBehavior) {
         case UNSPECIFIED -> s::getMoreResults;
         default -> () -> s.getMoreResults(resultsAdvancementBehavior.value());
         };
-        this.result = p.initialResult().orElse(null);
         if (p.batch()) {
-            // Simple and extraordinarily uncommon.
+            // Simple and very uncommon.
             this.batchExecutor = () -> {
                 long[] rv = executeLargeBatch(s);
                 this.batchExecutor = null;
@@ -240,7 +230,7 @@ final class JdbcResultsImpl implements JdbcResults {
             this.batchExecutor = null;
             this.advancer = subsequentAdvancer;
             if (this.result instanceof JdbcAutoCloseable jac) {
-                this.closers.push(jac::close);
+                this.closers.add(this.preparationIndex, jac::close);
             }
         } else if (s instanceof PreparedStatement ps) {
             this.batchExecutor = null;

@@ -19,9 +19,9 @@
  */
 module io.helidon.transaction.jdbc {
 
-    requires transitive java.sql;
+    requires java.sql;
     requires io.helidon.data.jdbc;
-    requires transitive io.helidon.service.registry;
-    requires transitive io.helidon.transaction;
+    requires io.helidon.service.registry;
+    requires io.helidon.transaction;
 
 }
