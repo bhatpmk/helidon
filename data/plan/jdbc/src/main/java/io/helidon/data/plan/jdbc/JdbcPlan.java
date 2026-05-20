@@ -24,9 +24,9 @@ import io.helidon.builder.api.RuntimeType;
 import io.helidon.data.jdbc.JdbcResults;
 
 /**
- * An execution plan for the execution of a statement using JDBC constructs.
+ * A plan for the execution of JDBC operations and the transformation of their results.
  *
- * @param <T> the results type
+ * @param <T> the transformed results type
  * @see #execute()
  */
 public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
@@ -41,7 +41,7 @@ public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
 
 
     /*
-     * Mandated static methods.
+     * Helidon Builder-required static methods.
      */
 
 
@@ -58,11 +58,11 @@ public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
     /**
      * Returns a new {@link JdbcPlan} implementation.
      *
-     * @param <T> the results type
+     * @param <T> the transformed results type
      * @param prototype the prototype
      * @return a new {@link JdbcPlan}
      * @throws NullPointerException if {@code prototype} is {@code null}
-     * @throws IllegalArgumentException if the prototype is somehow badly assembled
+     * @throws IllegalArgumentException if the prototype is invalid
      */
     static <T> JdbcPlan<T> create(JdbcPlanConfig<T> prototype) {
         return new JdbcPlanImpl<>(prototype);
@@ -91,7 +91,7 @@ public interface JdbcPlan<T> extends RuntimeType.Api<JdbcPlanConfig<T>> {
 
     /**
      * A convenience method that builds a {@link JdbcPlan} from the inputs, executes it, and returns the
-     * identity-transformed results.
+     * (identity-transformed) results.
      *
      * @param ds a non-{@code null} {@link DataSource}
      * @param jdbcStatementText a non-{@code null} JDBC statement

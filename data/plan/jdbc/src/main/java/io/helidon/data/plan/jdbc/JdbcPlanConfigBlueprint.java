@@ -23,9 +23,10 @@ import io.helidon.data.jdbc.JdbcResults;
 import io.helidon.data.jdbc.function.JdbcFunction;
 
 /**
- * A prototype for a {@linkplain JdbcPlan JDBC execution plan} based on {@link java.sql.PreparedStatement}s.
+ * A prototype for a {@linkplain JdbcPlan JDBC execution plan}.
  *
- * @param <T> the results type
+ * @param <T> the transformed results type
+ * @see JdbcPlan
  */
 @Prototype.Blueprint
 interface JdbcPlanConfigBlueprint<T> extends Prototype.Factory<JdbcPlan<T>> {

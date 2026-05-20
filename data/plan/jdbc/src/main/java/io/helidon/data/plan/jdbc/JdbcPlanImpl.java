@@ -50,7 +50,7 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
 
     JdbcPlanImpl(JdbcPlanConfig<T> prototype) {
         super();
-        this.prototype = prototype;
+        this.prototype = requireNonNull(prototype, "prototype");
     }
 
     @Override // JdbcPlan
@@ -67,11 +67,14 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
         List<JdbcRunnable> closers = new LinkedList<>();
         List<Preparation> preparations = new ArrayList<>();
         try {
-            for (ConnectionPlanConfig cpConfig : this.prototype.connectionPlans()) {
-                List<StatementPlanConfig> spConfigs = cpConfig.statementPlans();
+            for (ConnectionPlanConfig cpConfig : this.prototype.connectionPlans()) { // normally only one
+                List<StatementPlanConfig> spConfigs = cpConfig.statementPlans(); // normally only one
                 if (spConfigs.isEmpty()) {
+                    // If there won't be any statements for this connection to execute, there's no point in going
+                    // further in this loop iteration.
                     continue;
                 }
+
                 Connection c = cpConfig.dataSource().getConnection();
                 ConnectionPlan initialConnectionState;
                 try {
@@ -86,8 +89,10 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
                 }
                 closers.addFirst(() -> restoreConnectionStateAndClose(c, initialConnectionState));
                 new ConnectionPlan(cpConfig).install(c);
+
                 for (int i = 0; i < spConfigs.size(); i++) {
                     StatementPlanConfig spConfig = spConfigs.get(i);
+
                     Statement s = prepareStatement(c, spConfig);
                     StatementPlan initialStatementState;
                     try {
@@ -102,17 +107,21 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
                     }
                     closers.add(i, () -> restoreStatementStateAndClose(s, initialStatementState));
                     new StatementPlan(spConfig).install(s);
+
                     ExecutionPlanConfig epConfig = spConfig.executionPlan().orElse(null);
                     if (epConfig == null) {
+                        // No particular execution instructions or overrides. Very common.
                         preparations.add(s instanceof PreparedStatement ps
                                          ? new Preparation(ps)
                                          : new Preparation(s, spConfig.statement()));
                     } else if (s instanceof CallableStatement cs && !epConfig.outParameterIndices().isEmpty()) {
+                        // Stored procedure with OUT parameters.
                         preparations.add(new Preparation(cs,
                                                          epConfig.resultsAdvancementBehavior(),
                                                          epConfig.outParameterIndices().stream()
                                                          .mapToInt(Integer::intValue).toArray()));
                     } else if (s instanceof PreparedStatement ps) {
+                        // Specific instructions on what to do with multiple result sets and closing behavior.
                         preparations.add(new Preparation(ps, epConfig.resultsAdvancementBehavior()));
                     } else if (!epConfig.columnIndexes().isEmpty()) {
                         preparations.add(new Preparation(s,
@@ -162,10 +171,6 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
      * Static methods.
      */
 
-
-    private static JdbcPreparedStatementBindingView bindingView(PreparedStatement s) {
-        return JdbcPreparedStatementBindingView.of(s);
-    }
 
     private static Statement prepareStatement(Connection c, StatementPlanConfig spc) throws SQLException {
         Statement s;
@@ -230,7 +235,7 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
                                   epc.resultSetHoldability().value());
         }
         if (s instanceof PreparedStatement ps) {
-            spc.argumentsBinder().accept(bindingView(ps));
+            spc.argumentsBinder().accept(JdbcPreparedStatementBindingView.of(ps));
         }
         return s;
     }

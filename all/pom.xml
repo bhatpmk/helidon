@@ -367,6 +367,22 @@
             <artifactId>helidon-data-codegen-query</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.helidon.data.declarative</groupId>
+            <artifactId>helidon-data-declarative</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.declarative.codegen</groupId>
+            <artifactId>helidon-data-declarative-codegen</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.declarative.codegen</groupId>
+            <artifactId>helidon-data-declarative-codegen-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.declarative</groupId>
+            <artifactId>helidon-data-declarative-jdbc</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.helidon.data.jdbc</groupId>
             <artifactId>helidon-data-jdbc</artifactId>
         </dependency>
