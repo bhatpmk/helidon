@@ -48,7 +48,7 @@ class RepositoryInfoBuilder extends RepositoryInfo.Builder {
             entity = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).entityType();
             id = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).idType();
         } else {
-            // TODO: Understand whether this is the correct approach and clean-up the comment as appropriate.
+            // Understand whether this is the correct approach and clean-up the comment as appropriate.
             // A JDBC provider can implement @Data.Query methods without entity and id types.
             // For example, the client application can define a repository interface without extending
             // Data.CrudRepository<Entity, Id>, something like below:

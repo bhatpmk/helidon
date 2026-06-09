@@ -25,14 +25,16 @@
  *     or {@code update} with SQL from {@code @Data.Query}.</li>
  *     <li>The executor owns connection acquisition, statement planning, statement preparation, named parameter
  *     binding, execution, result mapping, exception translation, and JDBC resource cleanup.</li>
+ *     <li>When a Helidon transaction is active, {@code JdbcTransactionContext} reuses transaction-scoped
+ *     connections and commits or rolls them back from transaction lifecycle notifications.</li>
  * </ol>
- * <h2>Current POC boundaries</h2>
+ * <h2>Current implementation boundaries</h2>
  * <p>
- * This runtime intentionally stays small. It proves the generated repository path without pulling in JPA or DbClient.
- * The named parameter parser, parameter binder, and parameter binding configuration are adapted from DbClient JDBC
- * as Data JDBC owned source for the transition period. Production code should add generated mappers, build-time
- * statement plans, stronger compile-time validation, transaction scoped connection reuse, generated-key support,
- * and more complete SQL script handling.
+ * This runtime intentionally stays small. It provides the generated repository path without pulling in JPA or DbClient.
+ * The named parameter parser, parameter binder, parameter binding configuration, and transaction connection lifecycle
+ * are adapted from DbClient JDBC as Data JDBC owned source for the transition period. Production code should add
+ * generated mappers, build-time statement plans, stronger compile-time validation, generated-key support, and more
+ * complete SQL script handling.
  * </p>
  */
 package io.helidon.data.jdbc;

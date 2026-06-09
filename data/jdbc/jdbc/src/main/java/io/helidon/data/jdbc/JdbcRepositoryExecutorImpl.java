@@ -33,9 +33,10 @@ import io.helidon.data.NonUniqueResultException;
 /**
  * JDBC implementation of the generated repository executor contract.
  * <p>
- * The current POC uses one method-scoped connection per repository call. That is enough to prove direct SQL
- * repository execution and resource cleanup. A production implementation should keep this public contract but
- * route connection acquisition through a transaction-aware context when Helidon transaction support is added.
+ * Repository methods use a method-scoped connection when no Helidon transaction is active. Inside a Helidon transaction,
+ * the executor reuses the transaction-scoped connection owned by {@link JdbcTransactionContext}; statements and result
+ * sets are still closed by the repository call, while the connection is committed, rolled back, and closed by the
+ * transaction lifecycle.
  */
 final class JdbcRepositoryExecutorImpl implements JdbcRepositoryExecutor {
 
@@ -54,8 +55,8 @@ final class JdbcRepositoryExecutorImpl implements JdbcRepositoryExecutor {
     @Override
     public <T> List<T> queryList(String sql, Class<T> resultType, JdbcParameters parameters) {
         // Resource ownership is centralized here so generated repositories do not need try-with-resources blocks.
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = prepare(connection, sql, parameters);
+        try (JdbcConnectionHandle connection = JdbcTransactionContext.getInstance().connection(dataSource);
+                PreparedStatement statement = prepare(connection.connection(), sql, parameters);
                 ResultSet resultSet = statement.executeQuery()) {
             List<T> rows = new ArrayList<>();
             while (resultSet.next()) {
@@ -87,8 +88,8 @@ final class JdbcRepositoryExecutorImpl implements JdbcRepositoryExecutor {
 
     @Override
     public long update(String sql, JdbcParameters parameters) {
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = prepare(connection, sql, parameters)) {
+        try (JdbcConnectionHandle connection = JdbcTransactionContext.getInstance().connection(dataSource);
+                PreparedStatement statement = prepare(connection.connection(), sql, parameters)) {
             return statement.executeUpdate();
         } catch (SQLException e) {
             throw sqlException("DML execution failed", sql, e);
