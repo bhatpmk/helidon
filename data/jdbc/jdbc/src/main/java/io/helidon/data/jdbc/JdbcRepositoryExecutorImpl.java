@@ -27,8 +27,8 @@ import java.util.Optional;
 import javax.sql.DataSource;
 
 import io.helidon.data.DataException;
-import io.helidon.data.NonUniqueResultException;
 import io.helidon.data.NoResultException;
+import io.helidon.data.NonUniqueResultException;
 
 /**
  * JDBC implementation of the generated repository executor contract.
