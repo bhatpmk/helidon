@@ -48,11 +48,21 @@ class RepositoryInfoBuilder extends RepositoryInfo.Builder {
             entity = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).entityType();
             id = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).idType();
         } else {
-            /*
-             * Explicit-only repositories are intentionally allowed to avoid inherited repository
-             * interfaces. The interface itself is used as a harmless metadata placeholder because
-             * providers such as JDBC can implement @Data.Query methods without entity and id types.
-             */
+            // TODO: Understand whether this is the correct approach and clean-up the comment as appropriate.
+            // A JDBC provider can implement @Data.Query methods without entity and id types.
+            // For example, the client application can define a repository interface without extending
+            // Data.CrudRepository<Entity, Id>, something like below:
+            //
+            //  @Data.Repository
+            //  public interface PokemonRepository {
+            //
+            //      @Data.Query("""
+            //              SELECT p.ID AS id, p.NAME AS name
+            //              FROM POKEMON p
+            //              ORDER BY p.NAME
+            //              """)
+            //      List<PokemonRow> listOrderByName();
+            //  }
             return new RepositoryInfo(interfaceInfo(), interfaces(), interfaceInfo(), id);
         }
         Optional<TypeInfo> maybeEntityInfo = codegenContext().typeInfo(entity);

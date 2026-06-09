@@ -66,12 +66,14 @@ final class JdbcPersistenceGenerator implements PersistenceGenerator {
 
     @Override
     public QueryBuilder queryBuilder(RepositoryInfo repositoryInfo) {
-        throw new UnsupportedOperationException("JDBC POC generates explicit @Data.Query SQL directly.");
+        // JDBC QueryBuilder support belongs with query-by-method-name generation.
+        throw new UnsupportedOperationException("JDBC repositories currently generate explicit @Data.Query SQL directly.");
     }
 
     @Override
     public StatementGenerator statementGenerator() {
-        throw new UnsupportedOperationException("JDBC POC generates explicit @Data.Query SQL directly.");
+        // Probably required when JDBC module starts translating query model into generated JDBC execution statements.
+        throw new UnsupportedOperationException("JDBC repositories currently generate explicit @Data.Query SQL directly.");
     }
 
 }
