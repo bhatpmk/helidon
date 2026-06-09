@@ -53,4 +53,16 @@ interface JdbcPersistenceUnitConfigBlueprint extends SqlConfig {
      */
     @Option.Configured
     Optional<Path> initScript();
+
+    /**
+     * JDBC parameter binding configuration.
+     * <p>
+     * Defaults match the DbClient JDBC defaults. A configured {@code parameters} block can override driver-specific
+     * string, byte array, and Java time binding behavior without making Data JDBC depend on DbClient.
+     *
+     * @return parameter binding configuration
+     */
+    @Option.Configured
+    @Option.DefaultCode("JdbcParametersConfig.create()")
+    JdbcParametersConfig parameters();
 }

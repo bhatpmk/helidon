@@ -23,14 +23,16 @@
  *     <li>The factory publishes a qualified {@code JdbcRepositoryExecutor} service for generated repositories.</li>
  *     <li>Generated {@code __Jdbc} repositories call {@code queryList}, {@code queryOptional}, {@code queryOne},
  *     or {@code update} with SQL from {@code @Data.Query}.</li>
- *     <li>The executor owns connection acquisition, statement preparation, named parameter binding, execution,
- *     result mapping, exception translation, and JDBC resource cleanup.</li>
+ *     <li>The executor owns connection acquisition, statement planning, statement preparation, named parameter
+ *     binding, execution, result mapping, exception translation, and JDBC resource cleanup.</li>
  * </ol>
  * <h2>Current POC boundaries</h2>
  * <p>
  * This runtime intentionally stays small. It proves the generated repository path without pulling in JPA or DbClient.
- * Production code should add generated mappers, statement plans, stronger compile-time validation, transaction scoped
- * connection reuse, generated-key support, and more complete SQL script handling.
+ * The named parameter parser, parameter binder, and parameter binding configuration are adapted from DbClient JDBC
+ * as Data JDBC owned source for the transition period. Production code should add generated mappers, build-time
+ * statement plans, stronger compile-time validation, transaction scoped connection reuse, generated-key support,
+ * and more complete SQL script handling.
  * </p>
  */
 package io.helidon.data.jdbc;

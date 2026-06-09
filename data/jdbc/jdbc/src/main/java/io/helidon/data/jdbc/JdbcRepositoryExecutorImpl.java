@@ -41,10 +41,14 @@ final class JdbcRepositoryExecutorImpl implements JdbcRepositoryExecutor {
 
     private final String persistenceUnitName;
     private final DataSource dataSource;
+    private final JdbcParametersConfig parametersConfig;
 
-    JdbcRepositoryExecutorImpl(String persistenceUnitName, DataSource dataSource) {
+    JdbcRepositoryExecutorImpl(String persistenceUnitName,
+                               DataSource dataSource,
+                               JdbcParametersConfig parametersConfig) {
         this.persistenceUnitName = persistenceUnitName;
         this.dataSource = dataSource;
+        this.parametersConfig = parametersConfig;
     }
 
     @Override
@@ -92,12 +96,12 @@ final class JdbcRepositoryExecutorImpl implements JdbcRepositoryExecutor {
     }
 
     private PreparedStatement prepare(Connection connection, String sql, JdbcParameters parameters) throws SQLException {
-        // Named parameters are converted to JDBC positional markers immediately before statement preparation.
-        // Production code should cache this parsing as a statement plan.
-        NamedSql namedSql = NamedSql.parse(sql);
-        PreparedStatement statement = connection.prepareStatement(namedSql.jdbcSql());
-        for (int i = 0; i < namedSql.parameterNames().size(); i++) {
-            statement.setObject(i + 1, parameters.value(namedSql.parameterNames().get(i)));
+        // The planner and binder are adapted from DbClient JDBC but kept package-private in Data JDBC.
+        // Production code should move plan creation to code generation so runtime only prepares and binds.
+        JdbcStatementPlan plan = JdbcStatementPlan.create(sql);
+        PreparedStatement statement = connection.prepareStatement(plan.jdbcSql());
+        for (int i = 0; i < plan.parameterNames().size(); i++) {
+            JdbcParameterBinder.bind(statement, i + 1, parameters.value(plan.parameterNames().get(i)), parametersConfig);
         }
         return statement;
     }

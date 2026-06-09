@@ -71,7 +71,9 @@ class JdbcRepositoryExecutorFactory implements Service.ServicesFactory<JdbcRepos
     private Service.QualifiedInstance<JdbcRepositoryExecutor> mapSingleConfig(Config config) {
         JdbcPersistenceUnitConfig jdbcConfig = JdbcPersistenceUnitConfig.create(config);
         DataSource dataSource = dataSource(jdbcConfig.name(), jdbcConfig);
-        JdbcRepositoryExecutor executor = new JdbcRepositoryExecutorImpl(jdbcConfig.name(), dataSource);
+        JdbcRepositoryExecutor executor = new JdbcRepositoryExecutorImpl(jdbcConfig.name(),
+                                                                         dataSource,
+                                                                         jdbcConfig.parameters());
 
         jdbcConfig.initScript()
                 .ifPresent(script -> JdbcScriptRunner.run(dataSource, script));
