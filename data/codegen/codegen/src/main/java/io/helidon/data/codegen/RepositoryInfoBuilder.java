@@ -47,6 +47,13 @@ class RepositoryInfoBuilder extends RepositoryInfo.Builder {
         } else if (interfaces().containsKey(DataCodegenTypes.GENERIC_REPOSITORY)) {
             entity = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).entityType();
             id = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).idType();
+        } else {
+            /*
+             * Explicit-only repositories are intentionally allowed to avoid inherited repository
+             * interfaces. The interface itself is used as a harmless metadata placeholder because
+             * providers such as JDBC can implement @Data.Query methods without entity and id types.
+             */
+            return new RepositoryInfo(interfaceInfo(), interfaces(), interfaceInfo(), id);
         }
         Optional<TypeInfo> maybeEntityInfo = codegenContext().typeInfo(entity);
         if (maybeEntityInfo.isEmpty()) {

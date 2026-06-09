@@ -106,6 +106,15 @@ class RepositoryCodegen implements CodegenExtension {
                                                .orElseGet(repositoryInterface::typeName));
         }
         if (assigned.isEmpty()) {
+            if (repositoryGenerators.size() == 1) {
+                /*
+                 * Explicit SQL repositories do not need to inherit CrudRepository or GenericRepository.
+                 * When there is a single repository model generator available, use it as the default owner
+                 * for a plain @Data.Repository interface and let the persistence provider decide which
+                 * methods it can implement.
+                 */
+                return repositoryGenerators.getFirst();
+            }
             throw new CodegenException("Interface extends no data repository provider's interface",
                                        repositoryInterface.originatingElement()
                                                .orElseGet(repositoryInterface::typeName));
