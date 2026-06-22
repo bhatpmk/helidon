@@ -21,6 +21,7 @@ import java.sql.Connection;
  * An {@code enum} whose constants correspond to the defined transaction isolation {@code int} constants of the {@link Connection}
  * class.
  */
+@io.helidon.common.Api.Internal
 public enum TransactionIsolation {
 
     /**

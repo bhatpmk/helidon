@@ -32,6 +32,7 @@ import java.util.Iterator;
  * @see java.sql.CallableStatement#getObject(int)
  * @see java.sql.CallableStatement#getObject(int, Class)
  */
+@io.helidon.common.Api.Internal
 public non-sealed interface JdbcOutValues extends Iterable<Object>, JdbcResult {
 
     /**

@@ -28,6 +28,7 @@ import java.util.Optional;
  * @see #warnings()
  * @see SQLWarning
  */
+@io.helidon.common.Api.Internal
 public interface JdbcWarningsBearing {
 
     /**

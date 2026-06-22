@@ -46,6 +46,7 @@ import static java.util.Objects.requireNonNull;
  * @see JdbcResult
  * @see #of(Preparation)
  */
+@io.helidon.common.Api.Internal
 public interface JdbcResults extends JdbcOpen, JdbcWarningsBearing {
 
     /**

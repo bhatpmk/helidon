@@ -32,5 +32,6 @@ package io.helidon.data.jdbc;
  * @see java.sql.PreparedStatement#execute()
  * @see java.sql.Statement#executeLargeBatch()
  */
+@io.helidon.common.Api.Internal
 public sealed interface JdbcResult permits JdbcResultSet, JdbcUpdateCount, JdbcOutValues, JdbcBatchExecutionResults {
 }

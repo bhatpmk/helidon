@@ -24,6 +24,7 @@ import java.sql.ResultSet;
  * @see ResultSet#CLOSE_CURSORS_AT_COMMIT
  * @see ResultSet#HOLD_CURSORS_OVER_COMMIT
  */
+@io.helidon.common.Api.Internal
 public enum ResultSetHoldability {
 
     /**

@@ -20,9 +20,9 @@ import java.util.Optional;
 
 import io.helidon.builder.api.Option;
 import io.helidon.builder.api.Prototype;
+import io.helidon.data.jdbc.JdbcBinder;
 import io.helidon.data.jdbc.JdbcPreparedStatementBindingView;
 import io.helidon.data.jdbc.ResultSetFetchDirection;
-import io.helidon.data.jdbc.function.JdbcConsumer;
 
 /**
  * A descriptor of a statement.
@@ -106,6 +106,6 @@ interface StatementPlanConfigBlueprint {
      *
      * @return the arguments binder
      */
-    JdbcConsumer<? super JdbcPreparedStatementBindingView> argumentsBinder();
+    JdbcBinder argumentsBinder();
 
 }

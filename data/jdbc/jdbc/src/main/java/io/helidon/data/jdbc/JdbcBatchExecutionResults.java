@@ -23,6 +23,7 @@ import java.sql.SQLException;
  *
  * @see #batchExecutionResults()
  */
+@io.helidon.common.Api.Internal
 public non-sealed interface JdbcBatchExecutionResults extends JdbcResult {
 
     /**

@@ -28,6 +28,7 @@ import io.helidon.data.jdbc.function.JdbcAutoCloseable;
  * @see ResultSet
  * @see java.sql.Statement#getResultSet()
  */
+@io.helidon.common.Api.Internal
 public non-sealed interface JdbcResultSet extends JdbcResult, JdbcAutoCloseable, JdbcWarningsBearing {
 
     /**

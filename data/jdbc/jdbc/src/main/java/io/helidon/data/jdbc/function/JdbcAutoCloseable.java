@@ -24,6 +24,7 @@ import java.sql.SQLException;
  * @see AutoCloseable
  */
 @FunctionalInterface
+@io.helidon.common.Api.Internal
 public interface JdbcAutoCloseable extends AutoCloseable {
 
     /**

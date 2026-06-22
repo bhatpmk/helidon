@@ -26,6 +26,7 @@ import io.helidon.data.runtime.Open;
  *
  * @see #onClose(JdbcRunnable)
  */
+@io.helidon.common.Api.Internal
 public interface JdbcOpen extends Open, JdbcAutoCloseable {
 
     @Override // Open

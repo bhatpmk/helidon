@@ -32,6 +32,7 @@ import java.sql.Statement;
  * <p>As with all constructs related to JDBC, a {@link JdbcStatementFactory} is not necessarily safe for concurrent use
  * by multiple threads unless explicitly noted.</p>
  */
+@io.helidon.common.Api.Internal
 public sealed interface JdbcStatementFactory permits JdbcStatementFactoryImpl {
 
     /**

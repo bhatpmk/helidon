@@ -25,6 +25,7 @@ import java.sql.ResultSet;
  * @see ResultSet#FETCH_REVERSE
  * @see ResultSet#FETCH_UNKNOWN
  */
+@io.helidon.common.Api.Internal
 public enum ResultSetFetchDirection {
 
     /**

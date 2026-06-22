@@ -26,6 +26,7 @@ import java.sql.Statement;
  * @see Statement#CLOSE_CURRENT_RESULT
  * @see Statement#KEEP_CURRENT_RESULT
  */
+@io.helidon.common.Api.Internal
 public enum ResultsAdvancementBehavior {
 
     /**

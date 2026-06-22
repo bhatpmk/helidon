@@ -22,6 +22,7 @@ import java.sql.SQLException;
 import io.helidon.data.jdbc.JdbcResult;
 import io.helidon.data.jdbc.JdbcResultSet;
 import io.helidon.data.jdbc.JdbcResults;
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,14 +60,31 @@ final class BasicUsageTest {
             .transformer(jr -> jr)
             .build();
         try (var jrss = plan.execute()) {
-            jrss.forOnly(JdbcResultSet.class, BasicUsageTest::printResultSet);
+            printResultSets(jrss);
         }
     }
 
     @Test
     void testConvenienceUsage() throws SQLException {
         try (var jrss = JdbcPlan.execute(this.ds, "SELECT * FROM INFORMATION_SCHEMA.TABLES")) {
-            jrss.forOnly(JdbcResultSet.class, BasicUsageTest::printResultSet);
+            printResultSets(jrss);
+        }
+    }
+
+    private static void printResultSets(JdbcResults jrss) throws SQLException {
+        try {
+            jrss.stream()
+                    .filter(JdbcResultSet.class::isInstance)
+                    .map(JdbcResultSet.class::cast)
+                    .forEach(jrs -> {
+                        try {
+                            printResultSet(jrs);
+                        } catch (SQLException e) {
+                            throw new UncheckedSQLException(e);
+                        }
+                    });
+        } catch (UncheckedSQLException e) {
+            throw e.getCause();
         }
     }
 

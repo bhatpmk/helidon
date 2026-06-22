@@ -16,11 +16,11 @@
 package io.helidon.data.plan.jdbc;
 
 import java.util.List;
+import java.util.function.Function;
 
 import io.helidon.builder.api.Option;
 import io.helidon.builder.api.Prototype;
 import io.helidon.data.jdbc.JdbcResults;
-import io.helidon.data.jdbc.function.JdbcFunction;
 
 /**
  * A prototype for a {@linkplain JdbcPlan JDBC execution plan}.
@@ -44,6 +44,6 @@ interface JdbcPlanConfigBlueprint<T> extends Prototype.Factory<JdbcPlan<T>> {
      *
      * @return a results transformer
      */
-    JdbcFunction<? super JdbcResults, ? extends T> transformer();
+    Function<JdbcResults, T> transformer();
 
 }

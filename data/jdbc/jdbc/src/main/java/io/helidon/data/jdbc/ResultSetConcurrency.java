@@ -25,6 +25,7 @@ import java.sql.ResultSet;
  * @see ResultSet#TYPE_SCROLL_INSENSITIVE
  * @see ResultSet#TYPE_SCROLL_SENSITIVE
  */
+@io.helidon.common.Api.Internal
 public enum ResultSetConcurrency {
 
     /**

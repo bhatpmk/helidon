@@ -35,6 +35,7 @@ import io.helidon.data.jdbc.UncheckedSQLException;
  * @see java.util.function.BooleanSupplier
  */
 @FunctionalInterface
+@io.helidon.common.Api.Internal
 public interface JdbcBooleanSupplier {
 
     /**

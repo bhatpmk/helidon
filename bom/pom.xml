@@ -516,28 +516,13 @@
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.helidon.data.declarative</groupId>
-                <artifactId>helidon-data-declarative</artifactId>
-                <version>${helidon.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.helidon.data.declarative.codegen</groupId>
-                <artifactId>helidon-data-declarative-codegen</artifactId>
-                <version>${helidon.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.helidon.data.declarative.codegen</groupId>
-                <artifactId>helidon-data-declarative-codegen-jdbc</artifactId>
-                <version>${helidon.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.helidon.data.declarative</groupId>
-                <artifactId>helidon-data-declarative-jdbc</artifactId>
+                <groupId>io.helidon.data.jdbc</groupId>
+                <artifactId>helidon-data-jdbc</artifactId>
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.helidon.data.jdbc</groupId>
-                <artifactId>helidon-data-jdbc</artifactId>
+                <artifactId>helidon-data-jdbc-codegen</artifactId>
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>

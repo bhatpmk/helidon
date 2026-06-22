@@ -31,8 +31,9 @@
     <packaging>pom</packaging>
 
     <modules>
-        <module>jdbc</module>
         <module>named-parameters</module>
+        <module>codegen</module>
+        <module>jdbc</module>
     </modules>
 
     <build>

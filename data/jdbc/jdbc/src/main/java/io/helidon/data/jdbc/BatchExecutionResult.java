@@ -26,6 +26,7 @@ import java.sql.Statement;
  * @see Statement#EXECUTE_FAILED
  * @see Statement#SUCCESS_NO_INFO
  */
+@io.helidon.common.Api.Internal
 public enum BatchExecutionResult {
 
     /**

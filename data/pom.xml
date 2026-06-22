@@ -38,7 +38,6 @@
     <modules>
         <module>data</module>
         <module>codegen</module>
-        <module>declarative</module>
         <module>sql</module>
         <module>jakarta-persistence</module>
         <module>jdbc</module>

@@ -50,6 +50,7 @@ import java.util.Map;
  * @see ResultSet
  * @see ResultSet#TYPE_SCROLL_SENSITIVE
  */
+@io.helidon.common.Api.Internal
 public sealed interface JdbcResultSetRowView permits JdbcResultSetRowViewImpl {
 
     /**

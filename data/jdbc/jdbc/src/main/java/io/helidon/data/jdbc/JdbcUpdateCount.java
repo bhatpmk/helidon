@@ -25,6 +25,7 @@ import java.sql.SQLException;
  * @see java.sql.Statement#getLargeUpdateCount()
  * @see java.sql.Statement#getUpdateCount()
  */
+@io.helidon.common.Api.Internal
 public non-sealed interface JdbcUpdateCount extends JdbcResult {
 
     /**

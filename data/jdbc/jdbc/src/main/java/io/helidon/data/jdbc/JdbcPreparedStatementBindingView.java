@@ -48,6 +48,7 @@ import java.util.Calendar;
  *
  * @see PreparedStatement
  */
+@io.helidon.common.Api.Internal
 public interface JdbcPreparedStatementBindingView {
 
     /**

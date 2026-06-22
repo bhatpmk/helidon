@@ -20,10 +20,17 @@
 module io.helidon.data.jdbc {
 
     requires transitive java.sql;
+    requires io.helidon.builder.api;
+    requires io.helidon.common;
+    requires io.helidon.common.types;
+    requires io.helidon.config;
+    requires io.helidon.data;
+    requires io.helidon.data.sql.common;
     requires transitive io.helidon.data.runtime;
+    requires io.helidon.service.registry;
+    requires static io.helidon.config.metadata;
     requires static java.naming; // for testing only
 
     exports io.helidon.data.jdbc;
-    exports io.helidon.data.jdbc.function;
 
 }

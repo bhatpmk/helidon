@@ -28,6 +28,7 @@ import io.helidon.data.jdbc.UncheckedSQLException;
  * @see Runnable
  */
 @FunctionalInterface
+@io.helidon.common.Api.Internal
 public interface JdbcRunnable {
 
     /**

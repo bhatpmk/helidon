@@ -23,6 +23,7 @@ import java.sql.SQLException;
  * @see RuntimeException
  * @see SQLException
  */
+@io.helidon.common.Api.Internal
 public class UncheckedSQLException extends RuntimeException {
 
     /**

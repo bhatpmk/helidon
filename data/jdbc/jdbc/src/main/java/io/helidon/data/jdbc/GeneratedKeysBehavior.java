@@ -24,6 +24,7 @@ import java.sql.Statement;
  * @see Statement#NO_GENERATED_KEYS
  * @see Statement#RETURN_GENERATED_KEYS
  */
+@io.helidon.common.Api.Internal
 public enum GeneratedKeysBehavior {
 
     /**

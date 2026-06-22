@@ -40,7 +40,7 @@ import io.helidon.data.jdbc.ResultSetFetchDirection;
 import io.helidon.data.jdbc.ResultSetHoldability;
 import io.helidon.data.jdbc.ResultSetType;
 import io.helidon.data.jdbc.TransactionIsolation;
-import io.helidon.data.jdbc.function.JdbcRunnable;
+import io.helidon.data.jdbc.UncheckedSQLException;
 
 import static java.util.Objects.requireNonNull;
 
@@ -64,7 +64,7 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
         //
         // The net effect is that statements are closed in order, then their creating connection is closed, then any
         // further statements are closed in order, and their creating connection, and so on.
-        List<JdbcRunnable> closers = new LinkedList<>();
+        List<SqlRunnable> closers = new LinkedList<>();
         List<Preparation> preparations = new ArrayList<>();
         try {
             for (ConnectionPlanConfig cpConfig : this.prototype.connectionPlans()) { // normally only one
@@ -144,12 +144,19 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
                 }
             }
             JdbcResults jr = JdbcResults.of(preparations);
-            for (JdbcRunnable closer : closers) {
-                jr = jr.onClose(closer);
+            for (SqlRunnable closer : closers) {
+                Runnable closeAction = () -> {
+                    try {
+                        closer.run();
+                    } catch (SQLException e) {
+                        throw new UncheckedSQLException(e);
+                    }
+                };
+                jr.onClose(closeAction);
             }
             return this.prototype().transformer().apply(jr);
         } catch (RuntimeException | SQLException e) {
-            for (JdbcRunnable closer : closers) {
+            for (SqlRunnable closer : closers) {
                 try {
                     closer.run();
                 } catch (RuntimeException | SQLException closeFailure) {
@@ -235,9 +242,14 @@ final class JdbcPlanImpl<T> implements JdbcPlan<T> {
                                   epc.resultSetHoldability().value());
         }
         if (s instanceof PreparedStatement ps) {
-            spc.argumentsBinder().accept(JdbcPreparedStatementBindingView.of(ps));
+            spc.argumentsBinder().bind(JdbcPreparedStatementBindingView.of(ps));
         }
         return s;
+    }
+
+    @FunctionalInterface
+    private interface SqlRunnable {
+        void run() throws SQLException;
     }
 
     private static void restoreConnectionStateAndClose(Connection c, ConnectionPlan initial) throws SQLException {
