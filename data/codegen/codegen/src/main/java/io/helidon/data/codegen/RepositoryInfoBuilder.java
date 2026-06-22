@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,6 +47,23 @@ class RepositoryInfoBuilder extends RepositoryInfo.Builder {
         } else if (interfaces().containsKey(DataCodegenTypes.GENERIC_REPOSITORY)) {
             entity = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).entityType();
             id = interfaces().get(DataCodegenTypes.GENERIC_REPOSITORY).idType();
+        } else {
+            // Understand whether this is the correct approach and clean-up the comment as appropriate.
+            // A JDBC provider can implement @Data.Query methods without entity and id types.
+            // For example, the client application can define a repository interface without extending
+            // Data.CrudRepository<Entity, Id>, something like below:
+            //
+            //  @Data.Repository
+            //  public interface PokemonRepository {
+            //
+            //      @Data.Query("""
+            //              SELECT p.ID AS id, p.NAME AS name
+            //              FROM POKEMON p
+            //              ORDER BY p.NAME
+            //              """)
+            //      List<PokemonRow> listOrderByName();
+            //  }
+            return new RepositoryInfo(interfaceInfo(), interfaces(), interfaceInfo(), id);
         }
         Optional<TypeInfo> maybeEntityInfo = codegenContext().typeInfo(entity);
         if (maybeEntityInfo.isEmpty()) {

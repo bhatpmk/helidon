@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,6 +106,14 @@ class RepositoryCodegen implements CodegenExtension {
                                                .orElseGet(repositoryInterface::typeName));
         }
         if (assigned.isEmpty()) {
+            // This is a change for POC, evaluate this can stay with additional checks
+            // Explicit SQL repositories do not need to inherit CrudRepository or GenericRepository.
+            // When there is a single repository model generator available, use it as the default owner
+            // for a plain @Data.Repository interface and let the persistence provider decide which
+            // methods it can implement.
+            if (repositoryGenerators.size() == 1) {
+                return repositoryGenerators.getFirst();
+            }
             throw new CodegenException("Interface extends no data repository provider's interface",
                                        repositoryInterface.originatingElement()
                                                .orElseGet(repositoryInterface::typeName));

@@ -1,0 +1,118 @@
+/*
+ * Copyright (c) 2026 Oracle and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.helidon.data.jdbc;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import javax.sql.DataSource;
+
+import io.helidon.data.DataException;
+import io.helidon.data.NoResultException;
+import io.helidon.data.NonUniqueResultException;
+
+/**
+ * JDBC implementation of the generated repository executor contract.
+ * <p>
+ * Repository methods use a method-scoped connection when no Helidon transaction is active. Inside a Helidon transaction,
+ * the executor reuses the transaction-scoped connection owned by {@link JdbcTransactionContext}; statements and result
+ * sets are still closed by the repository call, while the connection is committed, rolled back, and closed by the
+ * transaction lifecycle.
+ */
+final class JdbcRepositoryExecutorImpl implements JdbcRepositoryExecutor {
+
+    private final String persistenceUnitName;
+    private final DataSource dataSource;
+    private final JdbcParametersConfig parametersConfig;
+
+    JdbcRepositoryExecutorImpl(String persistenceUnitName,
+                               DataSource dataSource,
+                               JdbcParametersConfig parametersConfig) {
+        this.persistenceUnitName = persistenceUnitName;
+        this.dataSource = dataSource;
+        this.parametersConfig = parametersConfig;
+    }
+
+    @Override
+    public <T> List<T> queryList(String sql, Class<T> resultType, JdbcParameters parameters) {
+        // Resource ownership is centralized here so generated repositories do not need try-with-resources blocks.
+        try (JdbcConnectionHandle connection = JdbcTransactionContext.getInstance().connection(dataSource);
+                PreparedStatement statement = prepare(connection.connection(), sql, parameters);
+                ResultSet resultSet = statement.executeQuery()) {
+            List<T> rows = new ArrayList<>();
+            while (resultSet.next()) {
+                rows.add(JdbcRowMapper.map(resultSet, resultType));
+            }
+            return List.copyOf(rows);
+        } catch (SQLException e) {
+            throw sqlException("Query execution failed", sql, e);
+        }
+    }
+
+    @Override
+    public <T> Optional<T> queryOptional(String sql, Class<T> resultType, JdbcParameters parameters) {
+        List<T> rows = queryList(sql, resultType, parameters);
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        if (rows.size() > 1) {
+            throw new NonUniqueResultException("JDBC query returned more than one row.");
+        }
+        return Optional.of(rows.getFirst());
+    }
+
+    @Override
+    public <T> T queryOne(String sql, Class<T> resultType, JdbcParameters parameters) {
+        return queryOptional(sql, resultType, parameters)
+                .orElseThrow(() -> new NoResultException("JDBC query returned no rows."));
+    }
+
+    @Override
+    public long update(String sql, JdbcParameters parameters) {
+        try (JdbcConnectionHandle connection = JdbcTransactionContext.getInstance().connection(dataSource);
+                PreparedStatement statement = prepare(connection.connection(), sql, parameters)) {
+            return statement.executeUpdate();
+        } catch (SQLException e) {
+            throw sqlException("DML execution failed", sql, e);
+        }
+    }
+
+    private PreparedStatement prepare(Connection connection, String sql, JdbcParameters parameters) throws SQLException {
+        // The planner and binder are adapted from DbClient JDBC but kept package-private in Data JDBC.
+        // Production code should move plan creation to code generation so runtime only prepares and binds.
+        JdbcStatementPlan plan = JdbcStatementPlan.create(sql);
+        PreparedStatement statement = connection.prepareStatement(plan.jdbcSql());
+        for (int i = 0; i < plan.parameterNames().size(); i++) {
+            JdbcParameterBinder.bind(statement, i + 1, parameters.value(plan.parameterNames().get(i)), parametersConfig);
+        }
+        return statement;
+    }
+
+    private DataException sqlException(String message, String sql, SQLException cause) {
+        return new DataException(message
+                                         + " for JDBC persistence unit \""
+                                         + persistenceUnitName
+                                         + "\" using SQL: "
+                                         + sql,
+                                 cause);
+    }
+}
