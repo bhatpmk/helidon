@@ -462,6 +462,11 @@
             </dependency>
             <dependency>
                 <groupId>io.helidon.transaction</groupId>
+                <artifactId>helidon-transaction-jdbc</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.transaction</groupId>
                 <artifactId>helidon-transaction-jta</artifactId>
                 <version>${helidon.version}</version>
             </dependency>
@@ -473,6 +478,11 @@
             <dependency>
                 <groupId>io.helidon.data</groupId>
                 <artifactId>helidon-data</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data</groupId>
+                <artifactId>helidon-data-runtime</artifactId>
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>
@@ -503,6 +513,41 @@
             <dependency>
                 <groupId>io.helidon.data.codegen</groupId>
                 <artifactId>helidon-data-codegen-query</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.declarative</groupId>
+                <artifactId>helidon-data-declarative</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.declarative.codegen</groupId>
+                <artifactId>helidon-data-declarative-codegen</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.declarative.codegen</groupId>
+                <artifactId>helidon-data-declarative-codegen-jdbc</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.declarative</groupId>
+                <artifactId>helidon-data-declarative-jdbc</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.jdbc</groupId>
+                <artifactId>helidon-data-jdbc</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.jdbc</groupId>
+                <artifactId>helidon-data-jdbc-named-parameters</artifactId>
+                <version>${helidon.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.helidon.data.plan</groupId>
+                <artifactId>helidon-data-plan-jdbc</artifactId>
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    Copyright (c) 2025, 2026 Oracle and/or its affiliates.
+    Copyright (c) 2026 Oracle and/or its affiliates.
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -18,54 +18,33 @@
 <project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xmlns="http://maven.apache.org/POM/4.0.0"
         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-
     <parent>
-        <groupId>io.helidon</groupId>
-        <artifactId>helidon-project</artifactId>
+        <groupId>io.helidon.data</groupId>
+        <artifactId>helidon-data-project</artifactId>
         <version>27.0.0-SNAPSHOT</version>
     </parent>
+    <modelVersion>4.0.0</modelVersion>
 
-    <groupId>io.helidon.data</groupId>
-    <artifactId>helidon-data-project</artifactId>
+    <artifactId>helidon-data-plan-project</artifactId>
+    <groupId>io.helidon.data.plan</groupId>
+    <name>Helidon Data Plan Project</name>
     <packaging>pom</packaging>
-    <name>Helidon Data Project</name>
-
-    <properties>
-        <javadoc.fail-on-warnings>true</javadoc.fail-on-warnings>
-    </properties>
 
     <modules>
-        <module>data</module>
-        <module>codegen</module>
-        <module>declarative</module>
-        <module>sql</module>
-        <module>jakarta-persistence</module>
         <module>jdbc</module>
-        <module>plan</module>
-        <module>runtime</module>
     </modules>
-
-    <profiles>
-        <profile>
-            <id>tests</id>
-            <modules>
-                <module>tests</module>
-            </modules>
-        </profile>
-    </profiles>
 
     <build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>check-dependencies</id>
-                        <phase>verify</phase>
-                    </execution>
-                </executions>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                        <arg>-Xpkginfo:always</arg>
+                    </compilerArgs>
+                </configuration>
             </plugin>
         </plugins>
     </build>
