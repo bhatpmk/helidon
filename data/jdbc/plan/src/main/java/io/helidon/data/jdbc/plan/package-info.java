@@ -17,12 +17,4 @@
 /**
  * JDBC execution plan support for Helidon Data.
  */
-module io.helidon.data.plan.jdbc {
-
-    requires transitive io.helidon.builder.api;
-    requires transitive io.helidon.common;
-    requires transitive io.helidon.data.jdbc;
-
-    exports io.helidon.data.plan.jdbc;
-
-}
+package io.helidon.data.jdbc.plan;

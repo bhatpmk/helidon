@@ -13,8 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package io.helidon.data.jdbc.plan;
+
+import java.util.Optional;
+
+import io.helidon.builder.api.Prototype;
 
 /**
- * JDBC execution plan support for Helidon Data.
+ * A descriptor for a catalog.
  */
-package io.helidon.data.plan.jdbc;
+@Prototype.Blueprint
+interface CatalogConfigBlueprint {
+
+    /**
+     * The catalog value to use.
+     *
+     * @return the catalog value to use
+     */
+    Optional<String> value();
+
+}

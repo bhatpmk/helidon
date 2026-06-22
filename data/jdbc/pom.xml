@@ -34,6 +34,7 @@
         <module>named-parameters</module>
         <module>codegen</module>
         <module>jdbc</module>
+        <module>plan</module>
     </modules>
 
     <build>

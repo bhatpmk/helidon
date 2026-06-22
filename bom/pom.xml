@@ -531,8 +531,8 @@
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>
-                <groupId>io.helidon.data.plan</groupId>
-                <artifactId>helidon-data-plan-jdbc</artifactId>
+                <groupId>io.helidon.data.jdbc</groupId>
+                <artifactId>helidon-data-jdbc-plan</artifactId>
                 <version>${helidon.version}</version>
             </dependency>
             <dependency>

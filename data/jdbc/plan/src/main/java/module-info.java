@@ -13,23 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.helidon.data.plan.jdbc;
-
-import java.util.Optional;
-
-import io.helidon.builder.api.Prototype;
 
 /**
- * A descriptor for a schema.
+ * JDBC execution plan support for Helidon Data.
  */
-@Prototype.Blueprint
-interface SchemaConfigBlueprint {
+module io.helidon.data.jdbc.plan {
 
-    /**
-     * The schema value to use.
-     *
-     * @return the schema value to use
-     */
-    Optional<String> value();
+    requires transitive io.helidon.builder.api;
+    requires transitive io.helidon.common;
+    requires transitive io.helidon.data.jdbc;
+
+    exports io.helidon.data.jdbc.plan;
 
 }

@@ -13,23 +13,37 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.helidon.data.plan.jdbc;
+package io.helidon.data.jdbc.plan;
 
-import java.util.Optional;
+import java.util.List;
+import java.util.function.Function;
 
+import io.helidon.builder.api.Option;
 import io.helidon.builder.api.Prototype;
+import io.helidon.data.jdbc.JdbcResults;
 
 /**
- * A descriptor for a catalog.
+ * A prototype for a {@linkplain JdbcPlan JDBC execution plan}.
+ *
+ * @param <T> the transformed results type
+ * @see JdbcPlan
  */
 @Prototype.Blueprint
-interface CatalogConfigBlueprint {
+interface JdbcPlanConfigBlueprint<T> extends Prototype.Factory<JdbcPlan<T>> {
 
     /**
-     * The catalog value to use.
+     * The connection plans.
      *
-     * @return the catalog value to use
+     * @return the connection plans
      */
-    Optional<String> value();
+    @Option.Singular
+    List<ConnectionPlanConfig> connectionPlans();
+
+    /**
+     * A results transformer.
+     *
+     * @return a results transformer
+     */
+    Function<JdbcResults, T> transformer();
 
 }

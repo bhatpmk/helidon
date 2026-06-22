@@ -379,8 +379,8 @@
             <artifactId>helidon-data-jdbc-named-parameters</artifactId>
         </dependency>
         <dependency>
-            <groupId>io.helidon.data.plan</groupId>
-            <artifactId>helidon-data-plan-jdbc</artifactId>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc-plan</artifactId>
         </dependency>
         <dependency>
             <groupId>io.helidon.data.sql</groupId>

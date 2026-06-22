@@ -41,7 +41,6 @@
         <module>sql</module>
         <module>jakarta-persistence</module>
         <module>jdbc</module>
-        <module>plan</module>
         <module>runtime</module>
     </modules>
 
