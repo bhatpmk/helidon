@@ -14,7 +14,24 @@
  * limitations under the License.
  */
 
-/**
- * WebServer implementation helpers that are not exported from the module.
- */
-package io.helidon.webserver.internal;
+package io.helidon.http;
+
+import io.helidon.builder.api.Prototype;
+import io.helidon.config.Config;
+
+final class HttpConfigSupport {
+    private HttpConfigSupport() {
+    }
+
+    static final class HttpConfigCustomMethods {
+        private HttpConfigCustomMethods() {
+        }
+
+        @Prototype.ConfigFactoryMethod
+        static HeaderName headerName(Config config) {
+            return config.asString()
+                    .map(HeaderNames::create)
+                    .orElseThrow();
+        }
+    }
+}
