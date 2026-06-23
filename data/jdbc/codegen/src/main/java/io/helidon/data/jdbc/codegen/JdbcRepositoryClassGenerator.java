@@ -45,6 +45,8 @@ import io.helidon.data.codegen.common.RepositoryInfo;
 import io.helidon.data.jdbc.namedparameters.NamedParameters;
 
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.GENERATOR;
+import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.methodError;
+import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.repositoryError;
 
 final class JdbcRepositoryClassGenerator {
 
@@ -128,9 +130,9 @@ final class JdbcRepositoryClassGenerator {
         Set<TypeName> unsupported = new HashSet<>(repositoryInfo.interfaceNames());
         unsupported.remove(GENERIC_REPOSITORY);
         if (!unsupported.isEmpty()) {
-            throw new CodegenException("JDBC repositories currently support Data.GenericRepository and @Data.Query "
-                                               + "methods only. Unsupported repository interfaces: " + unsupported,
-                                       repositoryInfo.interfaceInfo().originatingElement());
+            throw repositoryError(repositoryInfo,
+                                  "JDBC repositories currently support Data.GenericRepository and @Data.Query "
+                                          + "methods only. Unsupported repository interfaces: " + unsupported);
         }
 
         repositoryInfo.interfaceInfo()
@@ -142,9 +144,8 @@ final class JdbcRepositoryClassGenerator {
                 .filter(it -> !it.hasAnnotation(QUERY))
                 .findFirst()
                 .ifPresent(it -> {
-                    throw new CodegenException("JDBC repository methods must be annotated with @Data.Query: "
-                                                       + it.elementName(),
-                                               it.originatingElement());
+                    throw methodError(it, "JDBC repository methods must be annotated with @Data.Query: "
+                            + it.elementName());
                 });
     }
 
@@ -205,15 +206,11 @@ final class JdbcRepositoryClassGenerator {
     private void generateQueryMethod(TypedElementInfo methodInfo) {
         classModel.addMethod(builder -> {
             generateMethodHeader(builder, methodInfo);
-            String sql = methodInfo.annotation(QUERY)
-                    .value()
-                    .orElseThrow(() -> new CodegenException("@Data.Query annotation value is missing",
-                                                            methodInfo.originatingElement()));
-            StatementBinding binding = statementBinding(sql, methodInfo);
-            binding = binding.withPlanField(addStatementPlanField(methodInfo, binding));
-            if (methodInfo.hasAnnotation(GENERATED_KEYS)) {
+            RepositoryMethodAnalysis analysis = analyzeMethod(methodInfo);
+            StatementBinding binding = analysis.binding().withPlanField(addStatementPlanField(methodInfo, analysis.binding()));
+            if (analysis.generatedKeys()) {
                 generateGeneratedKeyMethodBody(builder, methodInfo, binding);
-            } else if (isQuery(binding.statement())) {
+            } else if (analysis.query()) {
                 generateSelectMethodBody(builder, methodInfo, binding);
             } else {
                 generateUpdateMethodBody(builder, methodInfo, binding);
@@ -223,9 +220,9 @@ final class JdbcRepositoryClassGenerator {
 
     private void generateMethodHeader(Method.Builder builder, TypedElementInfo methodInfo) {
         if (!methodInfo.typeParameters().isEmpty()) {
-            throw new CodegenException("JDBC repository methods with method type parameters are not yet supported: "
-                                               + methodInfo.elementName(),
-                                       methodInfo.originatingElement());
+            throw methodError(methodInfo,
+                              "JDBC repository methods with method type parameters are not yet supported: "
+                                      + methodInfo.elementName());
         }
         builder.name(methodInfo.elementName())
                 .returnType(methodInfo.typeName())
@@ -313,11 +310,7 @@ final class JdbcRepositoryClassGenerator {
             throw unsupportedReturnType(methodInfo);
         }
 
-        if (optional) {
-            builder.addContentLine("return this.jdbc.generatedKey(");
-        } else {
-            builder.addContentLine("return this.jdbc.generatedKey(");
-        }
+        builder.addContentLine("return this.jdbc.generatedKey(");
         appendGeneratedKeyArguments(builder, binding, keyType, methodInfo);
         if (optional) {
             builder.addContentLine(");");
@@ -363,7 +356,6 @@ final class JdbcRepositoryClassGenerator {
                                             StatementBinding binding,
                                             TypeName keyType,
                                             TypedElementInfo methodInfo) {
-        List<String> columnNames = generatedKeyColumnNames(methodInfo);
         builder.increaseContentPadding();
         builder.addContentLine(binding.planField() + ",");
         appendBinder(builder, binding);
@@ -452,29 +444,49 @@ final class JdbcRepositoryClassGenerator {
         String statement = NamedParameters.rewrite(sql, markers::add);
         List<TypedElementInfo> parameters = methodInfo.parameterArguments();
         if (markers.isEmpty() && !parameters.isEmpty()) {
-            throw new CodegenException("JDBC query has method parameters but no parameter markers: "
-                                               + methodInfo.elementName(),
-                                       methodInfo.originatingElement());
+            throw methodError(methodInfo,
+                              "JDBC query has method parameters but no parameter markers: " + methodInfo.elementName());
         }
 
         List<BindValue> bindings = new ArrayList<>(markers.size());
+        Set<String> usedParameters = new HashSet<>();
         int positionalIndex = 0;
         for (int i = 0; i < markers.size(); i++) {
             String marker = markers.get(i);
             String expression;
             if ("?".equals(marker)) {
                 if (positionalIndex >= parameters.size()) {
-                    throw new CodegenException("JDBC query has more positional markers than method parameters: "
-                                                       + methodInfo.elementName(),
-                                               methodInfo.originatingElement());
+                    throw methodError(methodInfo,
+                                      "JDBC query has more positional markers than method parameters: "
+                                              + methodInfo.elementName());
                 }
                 expression = parameters.get(positionalIndex++).elementName();
             } else {
                 expression = namedBindingExpression(marker.substring(1), parameters, methodInfo);
             }
+            usedParameters.add(boundParameterName(expression));
             bindings.add(new BindValue(i + 1, expression));
         }
+        parameters.stream()
+                .map(TypedElementInfo::elementName)
+                .filter(parameter -> !usedParameters.contains(parameter))
+                .findFirst()
+                .ifPresent(parameter -> {
+                    throw methodError(methodInfo,
+                                      "JDBC query parameter is not used by SQL markers: "
+                                              + parameter
+                                              + " in method "
+                                              + methodInfo.elementName());
+                });
         return new StatementBinding(statement, List.copyOf(bindings), null);
+    }
+
+    private static String boundParameterName(String expression) {
+        int methodCall = expression.indexOf('.');
+        if (methodCall == -1) {
+            return expression;
+        }
+        return expression.substring(0, methodCall);
     }
 
     private String namedBindingExpression(String name,
@@ -495,13 +507,13 @@ final class JdbcRepositoryClassGenerator {
             return matches.getFirst();
         }
         if (matches.isEmpty()) {
-            throw new CodegenException("No method parameter or readable parameter property matches JDBC named "
-                                               + "parameter :" + name + " in method " + methodInfo.elementName(),
-                                       methodInfo.originatingElement());
+            throw methodError(methodInfo,
+                              "No method parameter or readable parameter property matches JDBC named "
+                                      + "parameter :" + name + " in method " + methodInfo.elementName());
         }
-        throw new CodegenException("Multiple method parameter properties match JDBC named parameter :"
-                                           + name + " in method " + methodInfo.elementName(),
-                                   methodInfo.originatingElement());
+        throw methodError(methodInfo,
+                          "Multiple method parameter properties match JDBC named parameter :"
+                                  + name + " in method " + methodInfo.elementName());
     }
 
     private Optional<String> propertyExpression(TypedElementInfo parameter, String propertyName) {
@@ -540,10 +552,28 @@ final class JdbcRepositoryClassGenerator {
     private TypeName typeArgument(TypedElementInfo methodInfo) {
         List<TypeName> typeArguments = methodInfo.typeName().typeArguments();
         if (typeArguments.isEmpty()) {
-            throw new CodegenException("Missing generic return type argument for " + methodInfo.elementName(),
-                                       methodInfo.originatingElement());
+            throw methodError(methodInfo, "Missing generic return type argument for " + methodInfo.elementName());
         }
         return typeArguments.getFirst();
+    }
+
+    private RepositoryMethodAnalysis analyzeMethod(TypedElementInfo methodInfo) {
+        String sql = methodInfo.annotation(QUERY)
+                .value()
+                .orElseThrow(() -> methodError(methodInfo, "@Data.Query annotation value is missing"));
+        StatementBinding binding = statementBinding(sql, methodInfo);
+        boolean generatedKeys = methodInfo.hasAnnotation(GENERATED_KEYS);
+        boolean query = isQuery(binding.statement());
+        if (generatedKeys && query) {
+            throw methodError(methodInfo,
+                              "@Data.GeneratedKeys can be used only with data-changing JDBC repository methods: "
+                                      + methodInfo.elementName());
+        }
+        return new RepositoryMethodAnalysis(sql,
+                                            binding,
+                                            generatedKeys,
+                                            query,
+                                            methodInfo.typeName());
     }
 
     private List<String> generatedKeyColumnNames(TypedElementInfo methodInfo) {
@@ -553,11 +583,11 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private CodegenException unsupportedReturnType(TypedElementInfo methodInfo) {
-        return new CodegenException("Unsupported JDBC repository return type for method "
-                                            + methodInfo.elementName()
-                                            + ": "
-                                            + methodInfo.typeName().resolvedName(),
-                                    methodInfo.originatingElement());
+        return methodError(methodInfo,
+                           "Unsupported JDBC repository return type for method "
+                                   + methodInfo.elementName()
+                                   + ": "
+                                   + methodInfo.typeName().resolvedName());
     }
 
     private static boolean isQuery(String statement) {
@@ -592,5 +622,12 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private record BindValue(int index, String expression) {
+    }
+
+    private record RepositoryMethodAnalysis(String sql,
+                                            StatementBinding binding,
+                                            boolean generatedKeys,
+                                            boolean query,
+                                            TypeName returnType) {
     }
 }

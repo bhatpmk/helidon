@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 
 import io.helidon.codegen.CodegenContext;
 import io.helidon.codegen.CodegenException;
@@ -75,8 +76,13 @@ final class JdbcMapperCodegen {
             return;
         }
 
-        builder.addContent("row -> ");
-        appendGeneratedExpression(builder, resultType, methodInfo, methodInfo);
+        Optional<TypeInfo> typeInfo = typeInfo(resultType);
+        if (!isSupportedScalar(resultType) && typeInfo.isPresent() && beanMappingRequired(typeInfo.get())) {
+            appendBeanLambda(builder, resultType, typeInfo.get(), mapperMappings(typeInfo.get(), methodInfo), methodInfo);
+        } else {
+            builder.addContent("row -> ");
+            appendGeneratedExpression(builder, resultType, methodInfo, methodInfo);
+        }
     }
 
     private TypeName generateMapper(TypeName mapperType, TypeName resultType, TypedElementInfo methodInfo) {
@@ -138,10 +144,15 @@ final class JdbcMapperCodegen {
                     .returnType(resultType)
                     .addAnnotation(Annotations.OVERRIDE)
                     .addParameter(JDBC_ROW_VIEW, "row")
-                    .addThrows(SQL_EXCEPTION)
-                    .addContent("return ");
-            appendGeneratedExpression(method, resultType, mapperInfo, methodInfo);
-            method.addContentLine(";");
+                    .addThrows(SQL_EXCEPTION);
+            if (!isSupportedScalar(resultType) && beanMappingRequired(resultType)) {
+                appendBeanMethodBody(method, resultType, mapperMappings(typeInfo(resultType).orElseThrow(), mapperInfo),
+                                     methodInfo);
+            } else {
+                method.addContent("return ");
+                appendGeneratedExpression(method, resultType, mapperInfo, methodInfo);
+                method.addContentLine(";");
+            }
         });
 
         roundContext.addGeneratedType(generatedMapper,
@@ -156,6 +167,10 @@ final class JdbcMapperCodegen {
                                            Annotated mappingSource,
                                            TypedElementInfo methodInfo) {
         Optional<TypeInfo> typeInfo = typeInfo(resultType);
+        if (isSupportedScalar(resultType)) {
+            appendRowRead(builder, resultType, "1");
+            return;
+        }
         if (typeInfo.isPresent() && typeInfo.get().kind() == ElementKind.RECORD) {
             appendRecordExpression(builder,
                                    resultType,
@@ -164,13 +179,28 @@ final class JdbcMapperCodegen {
                                    methodInfo);
             return;
         }
-        if (isSupportedScalar(resultType)) {
-            appendRowRead(builder, resultType, "1");
+        if (typeInfo.isPresent() && typeInfo.get().kind() == ElementKind.CLASS) {
+            appendConstructorExpression(builder,
+                                        resultType,
+                                        typeInfo.get(),
+                                        mapperMappings(typeInfo.get(), mappingSource),
+                                        methodInfo);
             return;
         }
-        throw new CodegenException("JDBC mapper generation currently supports scalar values and records only: "
+        throw new CodegenException("JDBC mapper generation currently supports scalar values, records, "
+                                           + "constructor DTOs, and simple beans only: "
                                            + resultType.fqName(),
                                    methodInfo.originatingElement());
+    }
+
+    private boolean beanMappingRequired(TypeName resultType) {
+        return typeInfo(resultType)
+                .filter(this::beanMappingRequired)
+                .isPresent();
+    }
+
+    private boolean beanMappingRequired(TypeInfo typeInfo) {
+        return typeInfo.kind() == ElementKind.CLASS && constructor(typeInfo).isEmpty() && !beanProperties(typeInfo).isEmpty();
     }
 
     private void appendRecordExpression(ContentBuilder<?> builder,
@@ -227,6 +257,172 @@ final class JdbcMapperCodegen {
         }
 
         appendRowRead(builder, component.typeName(), literal(componentName));
+    }
+
+    private void appendConstructorExpression(ContentBuilder<?> builder,
+                                             TypeName resultType,
+                                             TypeInfo typeInfo,
+                                             Map<String, String> mappings,
+                                             TypedElementInfo methodInfo) {
+        Optional<TypedElementInfo> maybeConstructor = constructor(typeInfo);
+        if (maybeConstructor.isEmpty()) {
+            throw new CodegenException("JDBC class mapper requires one accessible constructor with parameters "
+                                               + "or a no-argument constructor with setters: "
+                                               + typeInfo.typeName().fqName(),
+                                       methodInfo.originatingElement());
+        }
+        TypedElementInfo constructor = maybeConstructor.get();
+        List<TypedElementInfo> parameters = constructor.parameterArguments();
+        validateConstructorMappingTargets(typeInfo, parameters, mappings.keySet(), methodInfo);
+
+        builder.addContent("new ")
+                .addContent(resultType)
+                .addContentLine("(");
+        builder.increaseContentPadding();
+        for (int i = 0; i < parameters.size(); i++) {
+            TypedElementInfo parameter = parameters.get(i);
+            String target = parameter.elementName();
+            String source = mappings.getOrDefault(target, target);
+            appendRowRead(builder, parameter.typeName(), literal(source));
+            if (i + 1 < parameters.size()) {
+                builder.addContentLine(",");
+            } else {
+                builder.addContentLine();
+            }
+        }
+        builder.decreaseContentPadding();
+        builder.addContent(")");
+    }
+
+    private Optional<TypedElementInfo> constructor(TypeInfo typeInfo) {
+        List<TypedElementInfo> constructors = typeInfo.elementInfo()
+                .stream()
+                .filter(it -> it.kind() == ElementKind.CONSTRUCTOR)
+                .filter(it -> !it.parameterArguments().isEmpty())
+                .filter(it -> it.accessModifier() != AccessModifier.PRIVATE)
+                .toList();
+        if (constructors.size() == 1) {
+            return Optional.of(constructors.getFirst());
+        }
+        if (constructors.isEmpty()) {
+            return Optional.empty();
+        }
+        throw new CodegenException("JDBC constructor DTO mapper found multiple accessible constructors: "
+                                           + typeInfo.typeName().fqName());
+    }
+
+    private void validateConstructorMappingTargets(TypeInfo typeInfo,
+                                                   List<TypedElementInfo> parameters,
+                                                   Set<String> targets,
+                                                   TypedElementInfo methodInfo) {
+        for (String target : targets) {
+            boolean matches = parameters.stream()
+                    .anyMatch(parameter -> parameter.elementName().equals(target));
+            if (!matches || target.contains(".")) {
+                throw new CodegenException("@Data.Map target does not match constructor parameters for "
+                                                   + typeInfo.typeName().fqName()
+                                                   + ": "
+                                                   + target,
+                                           methodInfo.originatingElement());
+            }
+        }
+    }
+
+    private void appendBeanLambda(ContentBuilder<?> builder,
+                                  TypeName resultType,
+                                  TypeInfo typeInfo,
+                                  Map<String, String> mappings,
+                                  TypedElementInfo methodInfo) {
+        builder.addContentLine("row -> {");
+        builder.increaseContentPadding();
+        appendBeanBody(builder, resultType, typeInfo, mappings, methodInfo);
+        builder.decreaseContentPadding();
+        builder.addContent("}");
+    }
+
+    private void appendBeanMethodBody(Method.Builder method,
+                                      TypeName resultType,
+                                      Map<String, String> mappings,
+                                      TypedElementInfo methodInfo) {
+        TypeInfo typeInfo = typeInfo(resultType)
+                .orElseThrow(() -> new CodegenException("JDBC bean mapper target cannot be resolved: "
+                                                                + resultType.fqName(),
+                                                        methodInfo.originatingElement()));
+        appendBeanBody(method, resultType, typeInfo, mappings, methodInfo);
+    }
+
+    private void appendBeanBody(ContentBuilder<?> builder,
+                                TypeName resultType,
+                                TypeInfo typeInfo,
+                                Map<String, String> mappings,
+                                TypedElementInfo methodInfo) {
+        Map<String, TypedElementInfo> properties = beanProperties(typeInfo);
+        validateBeanMappingTargets(typeInfo, properties.keySet(), mappings.keySet(), methodInfo);
+
+        builder.addContent(resultType)
+                .addContentLine(" mapped = new " + resultType.className() + "();");
+        properties.forEach((property, setter) -> {
+            String source = mappings.getOrDefault(property, property);
+            builder.addContent("mapped.")
+                    .addContent(setter.elementName())
+                    .addContent("(");
+            appendRowRead(builder, setter.parameterArguments().getFirst().typeName(), literal(source));
+            builder.addContentLine(");");
+        });
+        builder.addContentLine("return mapped;");
+    }
+
+    private Map<String, TypedElementInfo> beanProperties(TypeInfo typeInfo) {
+        if (!hasAccessibleNoArgConstructor(typeInfo)) {
+            return Map.of();
+        }
+        Map<String, TypedElementInfo> properties = new TreeMap<>();
+        typeInfo.elementInfo()
+                .stream()
+                .filter(it -> it.kind() == ElementKind.METHOD)
+                .filter(it -> it.accessModifier() != AccessModifier.PRIVATE)
+                .filter(it -> it.typeName().equals(TypeNames.PRIMITIVE_VOID) || it.typeName().equals(TypeNames.BOXED_VOID))
+                .filter(it -> it.parameterArguments().size() == 1)
+                .forEach(setter -> setterProperty(setter.elementName())
+                        .ifPresent(property -> properties.put(property, setter)));
+        return Map.copyOf(properties);
+    }
+
+    private boolean hasAccessibleNoArgConstructor(TypeInfo typeInfo) {
+        List<TypedElementInfo> constructors = typeInfo.elementInfo()
+                .stream()
+                .filter(it -> it.kind() == ElementKind.CONSTRUCTOR)
+                .toList();
+        return constructors.isEmpty()
+                || constructors.stream()
+                        .filter(it -> it.parameterArguments().isEmpty())
+                        .anyMatch(it -> it.accessModifier() != AccessModifier.PRIVATE);
+    }
+
+    private Optional<String> setterProperty(String setterName) {
+        if (setterName.length() <= 3 || !setterName.startsWith("set")) {
+            return Optional.empty();
+        }
+        char first = setterName.charAt(3);
+        if (!Character.isUpperCase(first)) {
+            return Optional.empty();
+        }
+        return Optional.of(Character.toLowerCase(first) + setterName.substring(4));
+    }
+
+    private void validateBeanMappingTargets(TypeInfo typeInfo,
+                                            Set<String> properties,
+                                            Set<String> targets,
+                                            TypedElementInfo methodInfo) {
+        for (String target : targets) {
+            if (!properties.contains(target) || target.contains(".")) {
+                throw new CodegenException("@Data.Map target does not match bean properties for "
+                                                   + typeInfo.typeName().fqName()
+                                                   + ": "
+                                                   + target,
+                                           methodInfo.originatingElement());
+            }
+        }
     }
 
     private void validateMappingTargets(TypeInfo typeInfo, Set<String> targets, TypedElementInfo methodInfo) {

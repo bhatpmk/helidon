@@ -20,6 +20,7 @@ import io.helidon.codegen.CodegenException;
 import io.helidon.codegen.RoundContext;
 import io.helidon.codegen.classmodel.ClassModel;
 import io.helidon.common.types.TypeName;
+import io.helidon.common.types.TypedElementInfo;
 import io.helidon.data.codegen.common.BasePersistenceGenerator;
 import io.helidon.data.codegen.common.RepositoryInfo;
 import io.helidon.data.codegen.common.spi.PersistenceGenerator;
@@ -32,7 +33,7 @@ class JdbcPersistenceGenerator extends BasePersistenceGenerator {
 
     static final TypeName GENERATOR = TypeName.create(JdbcPersistenceGenerator.class);
 
-    private static final String PROVIDER_NAME = "jdbc";
+    static final String PROVIDER_NAME = "jdbc";
 
     JdbcPersistenceGenerator() {
         super();
@@ -68,5 +69,13 @@ class JdbcPersistenceGenerator extends BasePersistenceGenerator {
         return TypeName.builder(baseName)
                 .className(baseName.className() + "__Jdbc")
                 .build();
+    }
+
+    static CodegenException repositoryError(RepositoryInfo repositoryInfo, String message) {
+        return new CodegenException(message, repositoryInfo.interfaceInfo().originatingElement());
+    }
+
+    static CodegenException methodError(TypedElementInfo methodInfo, String message) {
+        return new CodegenException(message, methodInfo.originatingElement());
     }
 }

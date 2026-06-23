@@ -64,6 +64,11 @@ public record JdbcGeneratedKeys(String[] columnNames) {
         return columnNames != null && columnNames.length == 0;
     }
 
+    /**
+     * Generated-key column names.
+     *
+     * @return generated-key column names, an empty array for driver default columns, or {@code null} when keys are not requested
+     */
     @Override
     public String[] columnNames() {
         return columnNames == null ? null : columnNames.clone();

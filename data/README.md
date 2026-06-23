@@ -41,6 +41,50 @@ User chooses at injection time which instance they desire (if there is more than
 the one with the highest weight will be used. They can also use `@Service.Named("...")` with the provider name to inject
 the specific provider based instance.
 
+### JDBC Repository Provider
+
+The JDBC repository provider generates repository implementations for methods
+annotated with `@Data.Query`. SQL is supplied explicitly in the annotation and
+is executed through Helidon JDBC runtime contracts. The provider supports named
+parameters such as `:name` and positional markers such as `?`; named parameters
+are resolved from method arguments or readable argument properties at build
+time. Unresolved SQL parameters and unused repository method parameters fail
+code generation with method-specific diagnostics.
+
+Generated JDBC repositories are provider-specific services named `jdbc` and use
+`JdbcOperations` injection. The JDBC provider does not depend on Jakarta
+Persistence and can be present with the Jakarta provider in the same build. Use
+provider selection or service names when an application includes multiple
+repository providers.
+
+#### JDBC Joined Result Reduction
+
+JDBC repositories can reduce joined rows into aggregate object graphs when SQL
+aliases use dotted result labels. The root object uses labels such as `id` and
+`name`; collection elements use paths such as `phones.id`, `phones.phone`, and
+`phones.tags.name`. The reducer uses `id` by convention for the root and each
+collection path, suppresses duplicate child rows, and ignores left-join child
+rows whose key columns are all `NULL`.
+
+Use `@Data.Key` when the identity label is not the conventional `id`, and use
+`@Data.ReduceWith` with a `@Data.Mapper` contract when aliases need explicit
+source-to-target mapping. Reducers are generated code and do not use runtime
+reflection.
+
+#### JDBC Data-Changing Methods and Generated Keys
+
+JDBC repository methods whose SQL starts with data-changing statements such as
+`insert`, `update`, or `delete` are generated as update operations. Supported
+return shapes are `void`, `long`/`Long`, `int`/`Integer`, and
+`boolean`/`Boolean`; boolean methods return `true` when the update count is
+greater than zero.
+
+Annotate an insert or other data-changing method with `@Data.GeneratedKeys` to
+read a generated key. Empty `@Data.GeneratedKeys` requests the JDBC driver's
+default generated-key behavior, while explicit values such as
+`@Data.GeneratedKeys("id")` pass column names to JDBC. Generated-key
+annotations on query methods fail during code generation.
+
 ## Persistence Unit and Repository
 
 Each provider may require additional configuration. This is achieved through a persistence unit, which is expected to 
@@ -56,6 +100,7 @@ There are following new nodes in the configuration:
 - `data.sources.sql` - a list of SQL data sources (implement `javax.sql.DataSource`)
 - `data.persistence-units` - a section for persistence units
 - `data.persistence-units.jakarta` - a list of Jakarta Persistence units configurations
+- `data.persistence-units.jdbc` - a list of JDBC repository persistence unit configurations
 
 ### Persistence unit with custom connection
 
@@ -76,6 +121,37 @@ data:
           eclipselink.target-server: "None"
           jakarta.persistence.schema-generation.database.action: "drop-and-create"
 ```
+
+### JDBC persistence unit
+
+JDBC repositories use `data.persistence-units.jdbc`. A JDBC persistence unit
+can either reference a named SQL `DataSource` from the service registry or
+define an inline JDBC connection. A single configured JDBC persistence unit is
+also registered as the default `JdbcOperations` service; multiple units must be
+selected with `@Data.PersistenceUnit`.
+
+```yaml
+data:
+  sources:
+    sql:
+      - name: "example"
+        provider.hikari:
+          username: "user"
+          password: "changeit"
+          url: "jdbc:mysql://localhost:3306/pets"
+          jdbc-driver-class-name: "com.mysql.cj.jdbc.Driver"
+  persistence-units:
+    jdbc:
+      - name: "example"
+        data-source: "example"
+        init-script: "init.sql"
+        drop-script: "drop.sql"
+```
+
+`init-script` and `drop-script` may point to classpath resources or file-system
+paths. The JDBC runner executes semicolon-delimited SQL statements and supports
+line comments, block comments, and quoted semicolons. It is intended for simple
+schema setup and test data, not for vendor migration tooling.
 
 ### Persistence unit with DataSource
 

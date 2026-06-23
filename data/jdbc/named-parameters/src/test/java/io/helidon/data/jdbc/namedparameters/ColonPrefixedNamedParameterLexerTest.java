@@ -15,6 +15,7 @@
  */
 package io.helidon.data.jdbc.namedparameters;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -204,6 +205,37 @@ final class ColonPrefixedNamedParameterLexerTest {
                               token("POSTGRESQL_CAST", "::"),
                               token("CHUNK", "text"),
                               token("CHUNK", "="))));
+    }
+
+    @Test
+    void shouldRewriteOnlyVisibleParameterMarkers() {
+        List<String> markers = new ArrayList<>();
+
+        String sql = NamedParameters.rewrite("""
+                SELECT ':not_a_parameter',
+                       "quoted:id",
+                       c::text,
+                       q'[:also_hidden]',
+                       :id,
+                       ?
+                FROM pokemon
+                WHERE name = :name
+                -- :commented
+                """,
+                                             markers::add);
+
+        assertThat(markers, is(List.of(":id", "?", ":name")));
+        assertThat(sql, is("""
+                SELECT ':not_a_parameter',
+                       "quoted:id",
+                       c::text,
+                       q'[:also_hidden]',
+                       ?,
+                       ?
+                FROM pokemon
+                WHERE name = ?
+                -- :commented
+                """));
     }
 
 

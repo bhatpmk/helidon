@@ -20,8 +20,8 @@
         xmlns="https://github.com/spotbugs/filter/3.0.0"
         xsi:schemaLocation="https://github.com/spotbugs/filter/3.0.0 https://raw.githubusercontent.com/spotbugs/spotbugs/3.1.0/spotbugs/etc/findbugsfilter.xsd">
     <Match>
-        <!-- This is a JDBC toolkit; some JDBC constructs are inherently unsafe. -->
-        <Class name="~io\.helidon\.data\.jdbc\.Jdbc(StatementFactory|Results)(Impl)?(\$.*)?"/>
+        <!-- This is a JDBC toolkit; SQL is provided by repository annotations, statement plans, or init scripts. -->
+        <Class name="~^io\.helidon\.data\.jdbc\.Jdbc(ResultsImpl|StatementFactoryImpl|StatementExecutor|ScriptRunner)(\$.*)?$"/>
         <Bug pattern="SQL_INJECTION_JDBC"/>
     </Match>
 </FindBugsFilter>

@@ -157,6 +157,34 @@ final class JdbcOperationsTest {
     }
 
     @Test
+    void testSqlFailureIsTranslated() {
+        DataException ex = assertThrows(DataException.class,
+                                        () -> jdbc.list("""
+                                                               SELECT missing_column
+                                                               FROM missing_table
+                                                       """,
+                                                       JdbcBinder.none(),
+                                                       row -> row.getString("missing_column")));
+
+        assertThat(ex.getMessage(), is("JDBC query failed."));
+    }
+
+    @Test
+    void testMappingFailureIsTranslated() {
+        insert("Bulbasaur");
+
+        DataException ex = assertThrows(DataException.class,
+                                        () -> jdbc.list("""
+                                                               SELECT name
+                                                               FROM pokemon
+                                                       """,
+                                                       JdbcBinder.none(),
+                                                       row -> row.getString("missing_column")));
+
+        assertThat(ex.getMessage(), is("JDBC query failed."));
+    }
+
+    @Test
     void testOptionalWithTooManyRows() {
         insert("Bulbasaur");
         insert("Ivysaur");
@@ -183,6 +211,19 @@ final class JdbcOperationsTest {
                                                 "id");
 
         assertThat(id.orElseThrow(), is(1));
+    }
+
+    @Test
+    void testGeneratedKeyRequiresGeneratedKeyPlan() {
+        DataException ex = assertThrows(DataException.class,
+                                        () -> jdbc.generatedKey(JdbcStatementPlan.update("""
+                                                INSERT INTO pokemon (name)
+                                                VALUES (?)
+                                                """),
+                                                                statement -> statement.setString(1, "Bulbasaur"),
+                                                                row -> row.getInt(1)));
+
+        assertThat(ex.getMessage(), is("JDBC generated-key update requires a generated-keys statement plan."));
     }
 
     @Test

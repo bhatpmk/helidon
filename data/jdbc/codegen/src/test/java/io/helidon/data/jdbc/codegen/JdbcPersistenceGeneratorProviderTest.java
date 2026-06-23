@@ -79,6 +79,35 @@ final class JdbcPersistenceGeneratorProviderTest {
                         public record PokemonDetail(long id, String name, PokemonType type) {
                         }
                         """)
+                .addSource("example/PokemonSummary.java", """
+                        package example;
+
+                        public class PokemonSummary {
+                            private final long id;
+                            private final String name;
+
+                            public PokemonSummary(long id, String name) {
+                                this.id = id;
+                                this.name = name;
+                            }
+                        }
+                        """)
+                .addSource("example/PokemonBean.java", """
+                        package example;
+
+                        public class PokemonBean {
+                            private long id;
+                            private String name;
+
+                            public void setId(long id) {
+                                this.id = id;
+                            }
+
+                            public void setName(String name) {
+                                this.name = name;
+                            }
+                        }
+                        """)
                 .addSource("example/PokemonDetailMapping.java", """
                         package example;
 
@@ -108,6 +137,15 @@ final class JdbcPersistenceGeneratorProviderTest {
                             @Data.Query("select id as pokemon_id, name from pokemon where id = ?")
                             Optional<Pokemon> findById(long id);
 
+                            @Data.Query("select count(*) from pokemon")
+                            long countAll();
+
+                            @Data.Query("select id, name from pokemon")
+                            List<PokemonSummary> listSummaries();
+
+                            @Data.Query("select id, name from pokemon where id = :id")
+                            Optional<PokemonBean> findBean(long id);
+
                             @Data.Query(\"\"\"
                                     select p.id as pokemon_id, p.name as pokemon_name, t.name as type_name
                                     from pokemon p
@@ -119,6 +157,19 @@ final class JdbcPersistenceGeneratorProviderTest {
                             @Data.Query("insert into pokemon(name) values(:name)")
                             @Data.GeneratedKeys("id")
                             long insert(String name);
+
+                            @Data.Query("insert into pokemon(name) values(:name)")
+                            @Data.GeneratedKeys
+                            Optional<Long> insertDefaultKey(String name);
+
+                            @Data.Query("update pokemon set name = :name where id = :id")
+                            void rename(long id, String name);
+
+                            @Data.Query("delete from pokemon where id = :id")
+                            int delete(long id);
+
+                            @Data.Query("update pokemon set name = :name where id = :id")
+                            boolean updateIfPresent(long id, String name);
                         }
                         """)
                 .addSource("example/Contact.java", """
@@ -154,6 +205,24 @@ final class JdbcPersistenceGeneratorProviderTest {
                             String name;
                         }
                         """)
+                .addSource("example/ContactMapping.java", """
+                        package example;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Mapper(target = Contact.class)
+                        @Data.Map(source = "contact_key", target = "id")
+                        @Data.Map(source = "contact_name", target = "name")
+                        @Data.Map(source = "phone_key", target = "phones.id")
+                        @Data.Map(source = "phone_number", target = "phones.phone")
+                        @Data.Map(source = "tag_key", target = "phones.tags.id")
+                        @Data.Map(source = "tag_name", target = "phones.tags.name")
+                        @Data.Key(source = "contact_key")
+                        @Data.Key(source = "phone_key", target = "phones")
+                        @Data.Key(source = "tag_key", target = "phones.tags")
+                        interface ContactMapping {
+                        }
+                        """)
                 .addSource("example/ContactRepository.java", """
                         package example;
 
@@ -178,6 +247,21 @@ final class JdbcPersistenceGeneratorProviderTest {
                                     ORDER BY c.ID, p.ID, t.ID
                                     \"\"\")
                             List<Contact> findContacts();
+
+                            @Data.Query(\"\"\"
+                                    SELECT c.ID    AS contact_key,
+                                           c.NAME  AS contact_name,
+                                           p.ID    AS phone_key,
+                                           p.PHONE AS phone_number,
+                                           t.ID    AS tag_key,
+                                           t.NAME  AS tag_name
+                                    FROM CONTACT c
+                                    LEFT JOIN PHONE p ON p.CONTACT_ID = c.ID
+                                    LEFT JOIN TAG t   ON t.PHONE_ID = p.ID
+                                    ORDER BY c.ID, p.ID, t.ID
+                                    \"\"\")
+                            @Data.ReduceWith(ContactMapping.class)
+                            List<Contact> findContactsWithMapping();
                         }
                         """)
                 .build()
@@ -195,12 +279,22 @@ final class JdbcPersistenceGeneratorProviderTest {
         assertThat(generated, containsString("private static final JdbcStatementPlan STATEMENT_FIND_BY_NAME_1"));
         assertThat(generated, containsString("JdbcStatementPlan.query("));
         assertThat(generated, containsString("JdbcStatementPlan.generatedKeys("));
+        assertThat(generated, containsString("JdbcStatementPlan.update("));
         assertThat(generated, containsString("return this.jdbc.list("));
         assertThat(generated, containsString("return this.jdbc.optional("));
         assertThat(generated, containsString("return this.jdbc.generatedKey("));
         assertThat(generated, containsString(").orElseThrow"));
+        assertThat(generated, containsString("this.jdbc.update("));
+        assertThat(generated, containsString("return (int) this.jdbc.update("));
+        assertThat(generated, containsString(") > 0L;"));
         assertThat(generated, containsString("statement.setObject(1, name);"));
+        assertThat(generated, containsString("row.getLong(1)"));
         assertThat(generated, containsString("row.getLong(\"pokemon_id\")"));
+        assertThat(generated, containsString("new PokemonSummary("));
+        assertThat(generated, containsString("PokemonBean mapped = new PokemonBean();"));
+        assertThat(generated, containsString("mapped.setId(row.getLong(\"id\"));"));
+        assertThat(generated, containsString("mapped.setName(row.getString(\"name\"));"));
+        assertThat(generated, containsString("return mapped;"));
         assertThat(generated, containsString("new Pokemon("));
         assertThat(generated, containsString("PokemonDetailMapping__JdbcMapper.INSTANCE"));
 
@@ -236,12 +330,276 @@ final class JdbcPersistenceGeneratorProviderTest {
         assertThat(reducerGenerated, containsString("row.getObject(\"phones.tags.id\")"));
         assertThat(reducerGenerated, containsString("phonesByKey"));
         assertThat(reducerGenerated, containsString("tagsByKey"));
+
+        Path mappedReducerSource = result.sourceOutput()
+                .resolve("example/ContactRepository__JdbcFindContactsWithMappingReducer.java");
+        assertThat(Files.exists(mappedReducerSource), is(true));
+
+        String mappedReducerGenerated = Files.readString(mappedReducerSource);
+        assertThat(mappedReducerGenerated, containsString("row.getObject(\"contact_key\")"));
+        assertThat(mappedReducerGenerated, containsString("row.getObject(\"phone_key\")"));
+        assertThat(mappedReducerGenerated, containsString("row.getObject(\"tag_key\")"));
+    }
+
+    @Test
+    void testRejectUnresolvedNamedParameter() {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Pokemon.java", """
+                        package example;
+
+                        public record Pokemon(long id, String name) {
+                        }
+                        """)
+                .addSource("example/PokemonRepository.java", """
+                        package example;
+
+                        import java.util.List;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        public interface PokemonRepository extends Data.GenericRepository<Pokemon, Long> {
+
+                            @Data.Query("select id, name from pokemon where name = :missing")
+                            List<Pokemon> findByName(String name);
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(result.success(), is(false));
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()),
+                   containsString("No method parameter or readable parameter property matches JDBC named parameter :missing"));
+    }
+
+    @Test
+    void testExplicitJdbcProviderAndPersistenceUnitSelection() throws IOException {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Pokemon.java", """
+                        package example;
+
+                        public record Pokemon(long id, String name) {
+                        }
+                        """)
+                .addSource("example/PokemonRepository.java", """
+                        package example;
+
+                        import java.util.List;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        @Data.Provider("jdbc")
+                        @Data.PersistenceUnit("pokemon")
+                        public interface PokemonRepository extends Data.GenericRepository<Pokemon, Long> {
+
+                            @Data.Query("select id, name from pokemon")
+                            List<Pokemon> list();
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()), result.success(), is(true));
+
+        String generated = Files.readString(result.sourceOutput()
+                                                    .resolve("example/PokemonRepository__Jdbc.java"));
+        assertThat(generated, containsString("@Service.Named(\"pokemon\")"));
+    }
+
+    @Test
+    void testNonJdbcProviderDoesNotGenerateJdbcImplementation() {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Pokemon.java", """
+                        package example;
+
+                        public record Pokemon(long id, String name) {
+                        }
+                        """)
+                .addSource("example/PokemonRepository.java", """
+                        package example;
+
+                        import java.util.List;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        @Data.Provider("other")
+                        public interface PokemonRepository extends Data.GenericRepository<Pokemon, Long> {
+
+                            @Data.Query("select id, name from pokemon")
+                            List<Pokemon> list();
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()), result.success(), is(true));
+        assertThat(Files.exists(result.sourceOutput().resolve("example/PokemonRepository__Jdbc.java")), is(false));
+    }
+
+    @Test
+    void testRejectUnusedMethodParameter() {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Pokemon.java", """
+                        package example;
+
+                        public record Pokemon(long id, String name) {
+                        }
+                        """)
+                .addSource("example/PokemonRepository.java", """
+                        package example;
+
+                        import java.util.List;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        public interface PokemonRepository extends Data.GenericRepository<Pokemon, Long> {
+
+                            @Data.Query("select id, name from pokemon where name = :name")
+                            List<Pokemon> findByName(String name, int limit);
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(result.success(), is(false));
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()),
+                   containsString("JDBC query parameter is not used by SQL markers: limit in method findByName"));
+    }
+
+    @Test
+    void testRejectInvalidMappingTarget() {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Pokemon.java", """
+                        package example;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Map(value = "pokemon_id", target = "missing")
+                        public record Pokemon(long id, String name) {
+                        }
+                        """)
+                .addSource("example/PokemonRepository.java", """
+                        package example;
+
+                        import java.util.Optional;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        public interface PokemonRepository extends Data.GenericRepository<Pokemon, Long> {
+
+                            @Data.Query("select id as pokemon_id, name from pokemon")
+                            Optional<Pokemon> find();
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(result.success(), is(false));
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()),
+                   containsString("mapping target does not match example.Pokemon: missing"));
+    }
+
+    @Test
+    void testRejectDuplicateReducerKeys() {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Contact.java", """
+                        package example;
+
+                        import java.util.ArrayList;
+                        import java.util.List;
+
+                        public class Contact {
+                            Long id;
+                            List<Phone> phones = new ArrayList<>();
+                        }
+                        """)
+                .addSource("example/Phone.java", """
+                        package example;
+
+                        public class Phone {
+                            Long id;
+                        }
+                        """)
+                .addSource("example/ContactRepository.java", """
+                        package example;
+
+                        import java.util.List;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        public interface ContactRepository extends Data.GenericRepository<Contact, Long> {
+
+                            @Data.Query(\"\"\"
+                                    SELECT c.ID AS "id",
+                                           p.ID AS "phones.id"
+                                    FROM CONTACT c
+                                    LEFT JOIN PHONE p ON p.CONTACT_ID = c.ID
+                                    \"\"\")
+                            @Data.Key(source = "id")
+                            @Data.Key(source = "contact_id")
+                            List<Contact> findContacts();
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(result.success(), is(false));
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()),
+                   containsString("@Data.Key declares multiple reducer keys for target"));
+    }
+
+    @Test
+    void testRejectGeneratedKeysOnQuery() {
+        TestCompiler.Result result = repositoryCompiler()
+                .addSource("example/Pokemon.java", """
+                        package example;
+
+                        public record Pokemon(long id, String name) {
+                        }
+                        """)
+                .addSource("example/PokemonRepository.java", """
+                        package example;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        public interface PokemonRepository extends Data.GenericRepository<Pokemon, Long> {
+
+                            @Data.Query("select id from pokemon where name = :name")
+                            @Data.GeneratedKeys("id")
+                            long findId(String name);
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(result.success(), is(false));
+        assertThat(String.join(System.lineSeparator(), result.diagnostics()),
+                   containsString("@Data.GeneratedKeys can be used only with data-changing JDBC repository methods"));
     }
 
     private static Path moduleClasses(String module) {
         return rootDirectory()
                 .resolve(module)
                 .resolve("target/classes");
+    }
+
+    private static TestCompiler.Builder repositoryCompiler() {
+        return TestCompiler.builder()
+                .addProcessor(new AptProcessor())
+                .currentRelease()
+                .addOption("-Xlint:none")
+                .addClasspathEntries(List.of(moduleClasses("common/common"),
+                                             moduleClasses("common/types"),
+                                             moduleClasses("data/data"),
+                                             moduleClasses("data/jdbc/jdbc"),
+                                             moduleClasses("service/registry")))
+                .printDiagnostics(false);
     }
 
     private static Path rootDirectory() {

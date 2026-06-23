@@ -933,6 +933,9 @@ final class JdbcReducerCodegen {
             throw new CodegenException("@Data.Key source value is missing");
         }
         String target = annotation.stringValue("target").orElse("");
+        if (keys.containsKey(target)) {
+            throw new CodegenException("@Data.Key declares multiple reducer keys for target: " + target);
+        }
         keys.put(target, List.copyOf(resolved));
     }
 
