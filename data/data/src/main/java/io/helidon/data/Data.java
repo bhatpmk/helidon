@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package io.helidon.data;
 
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
@@ -132,6 +133,175 @@ public final class Data {
          * @return the query string
          */
         String value();
+    }
+
+    /**
+     * Result mapping from a provider result field to a model property.
+     * <p>
+     * This annotation is intended for compile-time repository processing. Providers may use it to generate mapper code
+     * without relying on runtime reflection or implicit column/property naming.
+     */
+    @Target({ElementType.TYPE, ElementType.METHOD})
+    @Retention(RetentionPolicy.SOURCE)
+    @Repeatable(Maps.class)
+    public @interface Map {
+        /**
+         * Source result field, such as a SQL column label.
+         * <p>
+         * This is an alias for {@link #source()}.
+         *
+         * @return source result field
+         */
+        String value() default "";
+
+        /**
+         * Source result field, such as a SQL column label.
+         * <p>
+         * This is an alias for {@link #value()}.
+         *
+         * @return source result field
+         */
+        String source() default "";
+
+        /**
+         * Target model property.
+         *
+         * @return target model property
+         */
+        String target();
+    }
+
+    /**
+     * Container annotation for repeatable {@link Data.Map} declarations.
+     */
+    @Target({ElementType.TYPE, ElementType.METHOD})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Maps {
+        /**
+         * Mapping declarations.
+         *
+         * @return mapping declarations
+         */
+        Map[] value();
+    }
+
+    /**
+     * Result aggregation key.
+     * <p>
+     * Providers may use this annotation when generating relationship reducers for joined result sets. When omitted,
+     * providers may use their documented key conventions, such as {@code id} for the root object and
+     * {@code relation.id} for collection elements.
+     */
+    @Target({ElementType.TYPE, ElementType.METHOD})
+    @Retention(RetentionPolicy.SOURCE)
+    @Repeatable(Keys.class)
+    public @interface Key {
+        /**
+         * Source result fields that make up the key.
+         * <p>
+         * This is an alias for {@link #source()}.
+         *
+         * @return source result fields
+         */
+        String[] value() default {};
+
+        /**
+         * Source result fields that make up the key.
+         * <p>
+         * This is an alias for {@link #value()}.
+         *
+         * @return source result fields
+         */
+        String[] source() default {};
+
+        /**
+         * Target aggregate path. An empty value identifies the root aggregate.
+         *
+         * @return target aggregate path
+         */
+        String target() default "";
+    }
+
+    /**
+     * Container annotation for repeatable {@link Data.Key} declarations.
+     */
+    @Target({ElementType.TYPE, ElementType.METHOD})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Keys {
+        /**
+         * Key declarations.
+         *
+         * @return key declarations
+         */
+        Key[] value();
+    }
+
+    /**
+     * Declarative result mapper contract.
+     * <p>
+     * Providers may generate mapper implementations from this annotation and companion {@link Data.Map} declarations.
+     * The annotated type describes mapping metadata only; applications are not expected to implement JDBC row-reading logic.
+     */
+    @Target(ElementType.TYPE)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Mapper {
+        /**
+         * Target model type created by the generated mapper.
+         *
+         * @return target model type
+         */
+        Class<?> target();
+    }
+
+    /**
+     * Selects a result mapper for a repository method.
+     * <p>
+     * The selected type may be a declarative {@link Data.Mapper} contract whose implementation is generated at build time.
+     * Providers may also use this annotation later for explicit mapper service extension points.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface MapWith {
+        /**
+         * Mapper contract or mapper service type.
+         *
+         * @return mapper type
+         */
+        Class<?> value();
+    }
+
+    /**
+     * Selects a result reducer for a repository method.
+     * <p>
+     * The selected type may be a declarative {@link Data.Mapper} contract whose reducer implementation is generated at
+     * build time. Providers may also use this annotation later for explicit reducer service extension points.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ReduceWith {
+        /**
+         * Reducer contract or reducer service type.
+         *
+         * @return reducer type
+         */
+        Class<?> value();
+    }
+
+    /**
+     * Generated keys requested by a repository method.
+     * <p>
+     * This annotation is provider-neutral. JDBC providers may translate the supplied column names to
+     * {@link java.sql.Connection#prepareStatement(String, String[])} generated-key handling.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface GeneratedKeys {
+        /**
+         * Generated-key column names. When empty, the provider default generated-key behavior is used.
+         *
+         * @return generated-key column names
+         */
+        String[] value() default {};
     }
 
     /**
