@@ -16,21 +16,29 @@
 package io.helidon.data.jdbc;
 
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import javax.sql.DataSource;
 
 import io.helidon.common.Api;
 import io.helidon.data.DataException;
+import io.helidon.data.jdbc.namedparameters.NamedParameters;
 
 import static java.util.Objects.requireNonNull;
 
 /**
- * Minimal fluent JDBC client backed by the Helidon Data JDBC execution kernel.
+ * Fluent JDBC client backed by the Helidon Data JDBC execution kernel.
+ *
+ * <p>{@link JdbcClient} instances are safe for concurrent use. Statement builders returned by this client are mutable
+ * and are intended for single-statement use by one thread.</p>
  */
-@Api.Preview
 @SuppressWarnings(Api.SUPPRESS_INTERNAL)
 public final class JdbcClient {
 
@@ -71,11 +79,10 @@ public final class JdbcClient {
     }
 
     /**
-     * Maps a JDBC row to a result value.
+     * Maps a row to a result value.
      *
      * @param <T> mapped value type
      */
-    @Api.Preview
     @FunctionalInterface
     public interface Mapper<T> {
 
@@ -89,9 +96,8 @@ public final class JdbcClient {
     }
 
     /**
-     * Public row view for fluent JDBC mapping.
+     * Row view for JDBC mapping.
      */
-    @Api.Preview
     public interface Row {
 
         /**
@@ -153,13 +159,28 @@ public final class JdbcClient {
          * @return column value
          */
         long longValue(String columnLabel);
+
+        /**
+         * Test whether a column value is {@code SQL NULL}.
+         *
+         * @param columnIndex column index
+         * @return {@code true} when the column value is {@code SQL NULL}
+         */
+        boolean isNull(int columnIndex);
+
+        /**
+         * Test whether a column value is {@code SQL NULL}.
+         *
+         * @param columnLabel column label
+         * @return {@code true} when the column value is {@code SQL NULL}
+         */
+        boolean isNull(String columnLabel);
     }
 
     /**
      * Fluent query builder.
      */
-    @Api.Preview
-    public static final class Query extends StatementBuilder<Query> {
+    public static final class Query extends Statement<Query> {
 
         private Query(JdbcOperations operations, String sql) {
             super(operations, sql);
@@ -173,7 +194,20 @@ public final class JdbcClient {
          * @return mapped rows
          */
         public <T> List<T> list(Mapper<? extends T> mapper) {
-            return operations().list(plan(JdbcStatementKind.QUERY), binder(), adapter(mapper));
+            StatementExecution execution = statement(JdbcStatementKind.QUERY);
+            return operations().list(execution.plan(), execution.binder(), adapter(mapper));
+        }
+
+        /**
+         * Execute the query and map the first column of all rows.
+         *
+         * @param type result item type
+         * @param <T> result item type
+         * @return mapped rows
+         */
+        public <T> List<T> list(Class<T> type) {
+            requireNonNull(type, "type");
+            return list(row -> row.get(1, type));
         }
 
         /**
@@ -184,7 +218,20 @@ public final class JdbcClient {
          * @return mapped row, or empty if none was returned
          */
         public <T> Optional<T> optional(Mapper<? extends T> mapper) {
-            return operations().optional(plan(JdbcStatementKind.QUERY), binder(), adapter(mapper));
+            StatementExecution execution = statement(JdbcStatementKind.QUERY);
+            return operations().optional(execution.plan(), execution.binder(), adapter(mapper));
+        }
+
+        /**
+         * Execute the query and map the first column of at most one row.
+         *
+         * @param type result item type
+         * @param <T> result item type
+         * @return mapped row, or empty if none was returned
+         */
+        public <T> Optional<T> optional(Class<T> type) {
+            requireNonNull(type, "type");
+            return optional(row -> row.get(1, type));
         }
 
         /**
@@ -195,15 +242,27 @@ public final class JdbcClient {
          * @return mapped row
          */
         public <T> T one(Mapper<? extends T> mapper) {
-            return operations().one(plan(JdbcStatementKind.QUERY), binder(), adapter(mapper));
+            StatementExecution execution = statement(JdbcStatementKind.QUERY);
+            return operations().one(execution.plan(), execution.binder(), adapter(mapper));
+        }
+
+        /**
+         * Execute the query and map the first column of exactly one row.
+         *
+         * @param type result item type
+         * @param <T> result item type
+         * @return mapped row
+         */
+        public <T> T one(Class<T> type) {
+            requireNonNull(type, "type");
+            return one(row -> row.get(1, type));
         }
     }
 
     /**
      * Fluent update builder.
      */
-    @Api.Preview
-    public static final class Update extends StatementBuilder<Update> {
+    public static final class Update extends Statement<Update> {
 
         private Update(JdbcOperations operations, String sql) {
             super(operations, sql);
@@ -215,7 +274,8 @@ public final class JdbcClient {
          * @return update count
          */
         public long execute() {
-            return operations().update(plan(JdbcStatementKind.UPDATE), binder());
+            StatementExecution execution = statement(JdbcStatementKind.UPDATE);
+            return operations().update(execution.plan(), execution.binder());
         }
 
         /**
@@ -227,21 +287,39 @@ public final class JdbcClient {
          * @return mapped generated key, or empty if none was returned
          */
         public <T> Optional<T> generatedKey(Mapper<? extends T> mapper, String... columnNames) {
-            JdbcStatementPlan plan = JdbcStatementPlan.generatedKeys(sql(), columnNames)
-                    .withOptions(options());
-            return operations().generatedKey(plan, binder(), adapter(mapper));
+            StatementExecution execution = generatedKeysStatement(columnNames);
+            return operations().generatedKey(execution.plan(), execution.binder(), adapter(mapper));
+        }
+
+        /**
+         * Execute the update and map the first column of at most one generated-key row.
+         *
+         * @param type generated-key item type
+         * @param columnNames generated-key column names
+         * @param <T> generated-key item type
+         * @return mapped generated key, or empty if none was returned
+         */
+        public <T> Optional<T> generatedKey(Class<T> type, String... columnNames) {
+            requireNonNull(type, "type");
+            return generatedKey(row -> row.get(1, type), columnNames);
         }
     }
 
-    private abstract static class StatementBuilder<B extends StatementBuilder<B>> {
+    /**
+     * Base class for fluent JDBC statement builders.
+     *
+     * @param <B> builder type
+     */
+    public abstract static class Statement<B extends Statement<B>> {
         private final JdbcOperations operations;
         private final String sql;
-        private final List<Binding> bindings = new ArrayList<>();
+        private final Map<Integer, Object> indexedBindings = new LinkedHashMap<>();
+        private final Map<String, Object> namedBindings = new LinkedHashMap<>();
         private int queryTimeoutSeconds;
         private int fetchSize;
         private long maxRows;
 
-        StatementBuilder(JdbcOperations operations, String sql) {
+        Statement(JdbcOperations operations, String sql) {
             this.operations = requireNonNull(operations, "operations");
             this.sql = requireNonNull(sql, "sql");
         }
@@ -253,11 +331,35 @@ public final class JdbcClient {
          * @param value parameter value
          * @return this builder
          */
-        public B bind(int index, Object value) {
+        public final B bind(int index, Object value) {
             if (index < 1) {
                 throw new IllegalArgumentException("index must be greater than zero");
             }
-            bindings.add(new Binding(index, value));
+            indexedBindings.put(index, value);
+            return self();
+        }
+
+        /**
+         * Bind a named parameter.
+         *
+         * @param name parameter name, with or without a leading colon
+         * @param value parameter value
+         * @return this builder
+         */
+        public final B bind(String name, Object value) {
+            namedBindings.put(normalizeName(name), value);
+            return self();
+        }
+
+        /**
+         * Bind named parameters from a map.
+         *
+         * @param values named parameter values
+         * @return this builder
+         */
+        public final B bindAll(Map<String, ?> values) {
+            requireNonNull(values, "values")
+                    .forEach(this::bind);
             return self();
         }
 
@@ -267,8 +369,24 @@ public final class JdbcClient {
          * @param seconds timeout in seconds
          * @return this builder
          */
-        public B queryTimeoutSeconds(int seconds) {
+        public final B queryTimeoutSeconds(int seconds) {
+            requireNotNegative(seconds, "seconds");
             this.queryTimeoutSeconds = seconds;
+            return self();
+        }
+
+        /**
+         * Set the query timeout.
+         *
+         * @param timeout timeout duration
+         * @return this builder
+         */
+        public final B queryTimeout(Duration timeout) {
+            requireNonNull(timeout, "timeout");
+            if (timeout.isNegative()) {
+                throw new IllegalArgumentException("timeout must not be negative");
+            }
+            this.queryTimeoutSeconds = timeoutSeconds(timeout);
             return self();
         }
 
@@ -278,7 +396,8 @@ public final class JdbcClient {
          * @param fetchSize fetch size
          * @return this builder
          */
-        public B fetchSize(int fetchSize) {
+        public final B fetchSize(int fetchSize) {
+            requireNotNegative(fetchSize, "fetchSize");
             this.fetchSize = fetchSize;
             return self();
         }
@@ -289,7 +408,8 @@ public final class JdbcClient {
          * @param maxRows maximum row count
          * @return this builder
          */
-        public B maxRows(long maxRows) {
+        public final B maxRows(long maxRows) {
+            requireNotNegative(maxRows, "maxRows");
             this.maxRows = maxRows;
             return self();
         }
@@ -298,31 +418,44 @@ public final class JdbcClient {
             return operations;
         }
 
-        final String sql() {
-            return sql;
-        }
-
         final JdbcStatementOptions options() {
             return new JdbcStatementOptions(queryTimeoutSeconds, fetchSize, maxRows);
         }
 
-        final JdbcStatementPlan plan(JdbcStatementKind kind) {
+        final StatementExecution statement(JdbcStatementKind kind) {
+            ParsedStatement parsed = parse();
             JdbcStatementPlan plan = switch (kind) {
-            case QUERY -> JdbcStatementPlan.query(sql);
-            case UPDATE -> JdbcStatementPlan.update(sql);
+            case QUERY -> JdbcStatementPlan.query(parsed.sql());
+            case UPDATE -> JdbcStatementPlan.update(parsed.sql());
             case CALL, BATCH -> throw new DataException("Unsupported fluent JDBC statement kind: " + kind);
             };
-            return plan.withOptions(options());
+            return new StatementExecution(plan.withOptions(options()), binder(parsed));
         }
 
-        final JdbcBinder binder() {
-            if (bindings.isEmpty()) {
+        final StatementExecution generatedKeysStatement(String... columnNames) {
+            ParsedStatement parsed = parse();
+            JdbcStatementPlan plan = JdbcStatementPlan.generatedKeys(parsed.sql(), columnNames)
+                    .withOptions(options());
+            return new StatementExecution(plan, binder(parsed));
+        }
+
+        final JdbcBinder binder(ParsedStatement parsed) {
+            if (indexedBindings.isEmpty() && namedBindings.isEmpty()) {
                 return JdbcBinder.none();
             }
-            List<Binding> copy = List.copyOf(bindings);
+            if (parsed.named()) {
+                List<String> markers = parsed.markers();
+                Map<String, Object> copy = new LinkedHashMap<>(namedBindings);
+                return statement -> {
+                    for (int i = 0; i < markers.size(); i++) {
+                        statement.setObject(i + 1, copy.get(markers.get(i).substring(1)));
+                    }
+                };
+            }
+            Map<Integer, Object> copy = new LinkedHashMap<>(indexedBindings);
             return statement -> {
-                for (Binding binding : copy) {
-                    statement.setObject(binding.index(), binding.value());
+                for (Map.Entry<Integer, Object> binding : copy.entrySet()) {
+                    statement.setObject(binding.getKey(), binding.getValue());
                 }
             };
         }
@@ -336,9 +469,108 @@ public final class JdbcClient {
         private B self() {
             return (B) this;
         }
+
+        private ParsedStatement parse() {
+            if (!indexedBindings.isEmpty() && !namedBindings.isEmpty()) {
+                throw new IllegalArgumentException("Named and positional JDBC parameters cannot be mixed");
+            }
+
+            List<String> markers = new ArrayList<>();
+            String rewritten = NamedParameters.rewrite(sql, markers::add);
+            boolean named = markers.stream()
+                    .anyMatch(marker -> !"?".equals(marker));
+            boolean positional = markers.stream()
+                    .anyMatch("?"::equals);
+            if (named && positional) {
+                throw new IllegalArgumentException("JDBC statement must not mix named and positional parameter markers");
+            }
+            if (named) {
+                validateNamedMarkers(markers);
+            } else {
+                validatePositionalMarkers(markers.size());
+            }
+            return new ParsedStatement(rewritten, List.copyOf(markers), named);
+        }
+
+        private void validateNamedMarkers(List<String> markers) {
+            if (namedBindings.isEmpty()) {
+                throw new IllegalArgumentException("JDBC statement uses named parameters but no named values were bound");
+            }
+            Set<String> used = new HashSet<>();
+            for (String marker : markers) {
+                String name = marker.substring(1);
+                if (!namedBindings.containsKey(name)) {
+                    throw new IllegalArgumentException("Missing JDBC named parameter: " + name);
+                }
+                used.add(name);
+            }
+            namedBindings.keySet()
+                    .stream()
+                    .filter(name -> !used.contains(name))
+                    .findFirst()
+                    .ifPresent(name -> {
+                        throw new IllegalArgumentException("JDBC named parameter is not used by SQL: " + name);
+                    });
+        }
+
+        private void validatePositionalMarkers(int markerCount) {
+            if (markerCount == 0 && !indexedBindings.isEmpty()) {
+                throw new IllegalArgumentException("JDBC statement has no positional parameter markers");
+            }
+            for (int i = 1; i <= markerCount; i++) {
+                if (!indexedBindings.containsKey(i)) {
+                    throw new IllegalArgumentException("Missing JDBC positional parameter at index " + i);
+                }
+            }
+            indexedBindings.keySet()
+                    .stream()
+                    .filter(index -> index > markerCount)
+                    .findFirst()
+                    .ifPresent(index -> {
+                        throw new IllegalArgumentException("JDBC positional parameter is not used by SQL: " + index);
+                    });
+        }
+
+        private static String normalizeName(String name) {
+            requireNonNull(name, "name");
+            String normalized = name.startsWith(":") ? name.substring(1) : name;
+            if (normalized.isBlank()) {
+                throw new IllegalArgumentException("name must not be blank");
+            }
+            return normalized;
+        }
+
+        private static int timeoutSeconds(Duration timeout) {
+            if (timeout.isZero()) {
+                return 0;
+            }
+            long seconds = timeout.toSeconds();
+            if (timeout.getNano() > 0) {
+                seconds++;
+            }
+            if (seconds > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("timeout is too large");
+            }
+            return (int) seconds;
+        }
+
+        private static void requireNotNegative(int value, String name) {
+            if (value < 0) {
+                throw new IllegalArgumentException(name + " must not be negative");
+            }
+        }
+
+        private static void requireNotNegative(long value, String name) {
+            if (value < 0) {
+                throw new IllegalArgumentException(name + " must not be negative");
+            }
+        }
     }
 
-    private record Binding(int index, Object value) {
+    private record ParsedStatement(String sql, List<String> markers, boolean named) {
+    }
+
+    private record StatementExecution(JdbcStatementPlan plan, JdbcBinder binder) {
     }
 
     private static final class RowImpl implements Row {
@@ -409,6 +641,16 @@ public final class JdbcClient {
             } catch (SQLException e) {
                 throw new DataException("Failed to read JDBC long column value.", e);
             }
+        }
+
+        @Override
+        public boolean isNull(int columnIndex) {
+            return get(columnIndex) == null;
+        }
+
+        @Override
+        public boolean isNull(String columnLabel) {
+            return get(columnLabel) == null;
         }
     }
 }

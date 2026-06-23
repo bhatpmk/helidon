@@ -25,6 +25,7 @@ module io.helidon.data.jdbc {
     requires io.helidon.common.types;
     requires io.helidon.config;
     requires io.helidon.data;
+    requires io.helidon.data.jdbc.namedparameters;
     requires io.helidon.data.sql.common;
     requires transitive io.helidon.data.runtime;
     requires io.helidon.service.registry;

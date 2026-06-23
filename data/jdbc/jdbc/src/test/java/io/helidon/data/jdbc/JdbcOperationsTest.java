@@ -271,6 +271,44 @@ final class JdbcOperationsTest {
     }
 
     @Test
+    void testFluentClientNamedParameters() {
+        insert("Bulbasaur");
+        insert("Ivysaur");
+
+        List<String> names = client.query("""
+                                                  SELECT name
+                                                  FROM pokemon
+                                                  WHERE name = :name
+                                                     OR name = :name
+                                                  ORDER BY id
+                                          """)
+                .bind("name", "Bulbasaur")
+                .list(String.class);
+
+        assertThat(names, is(List.of("Bulbasaur")));
+    }
+
+    @Test
+    void testFluentClientNamedUpdateAndScalarQuery() {
+        Optional<Integer> id = client.update("""
+                                                     INSERT INTO pokemon (name)
+                                                     VALUES (:name)
+                                             """)
+                .bindAll(Map.of("name", "Charmander"))
+                .generatedKey(Integer.class, "id");
+
+        String name = client.query("""
+                                           SELECT name
+                                           FROM pokemon
+                                           WHERE id = :id
+                                   """)
+                .bind(":id", id.orElseThrow())
+                .one(String.class);
+
+        assertThat(name, is("Charmander"));
+    }
+
+    @Test
     void testFluentGeneratedKey() {
         Optional<Integer> id = client.update("""
                                                      INSERT INTO pokemon (name)
@@ -280,6 +318,34 @@ final class JdbcOperationsTest {
                 .generatedKey(row -> row.intValue("id"), "id");
 
         assertThat(id.orElseThrow(), is(1));
+    }
+
+    @Test
+    void testFluentClientRejectsMissingNamedParameter() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                                                   () -> client.query("""
+                                                                              SELECT name
+                                                                              FROM pokemon
+                                                                              WHERE name = :name
+                                                                      """)
+                                                           .list(String.class));
+
+        assertThat(ex.getMessage(), containsString("no named values"));
+    }
+
+    @Test
+    void testFluentClientRejectsMixedMarkers() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                                                   () -> client.query("""
+                                                                              SELECT name
+                                                                              FROM pokemon
+                                                                              WHERE name = :name
+                                                                                 OR id = ?
+                                                                      """)
+                                                           .bind("name", "Bulbasaur")
+                                                           .list(String.class));
+
+        assertThat(ex.getMessage(), containsString("must not mix named and positional"));
     }
 
     @Test

@@ -65,6 +65,10 @@
             <artifactId>helidon-data-runtime</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc-named-parameters</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.helidon.data.sql</groupId>
             <artifactId>helidon-data-sql-common</artifactId>
         </dependency>
