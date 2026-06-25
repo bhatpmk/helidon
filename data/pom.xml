@@ -40,6 +40,7 @@
         <module>codegen</module>
         <module>sql</module>
         <module>jakarta-persistence</module>
+        <module>jdbc</module>
     </modules>
 
     <profiles>

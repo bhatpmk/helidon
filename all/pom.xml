@@ -335,6 +335,10 @@
             <artifactId>helidon-transaction</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.helidon.transaction</groupId>
+            <artifactId>helidon-transaction-jdbc</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.helidon.data</groupId>
             <artifactId>helidon-data</artifactId>
         </dependency>
@@ -357,6 +361,22 @@
         <dependency>
             <groupId>io.helidon.data.codegen</groupId>
             <artifactId>helidon-data-codegen-query</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc-codegen</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc-named-parameters</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.helidon.data.jdbc</groupId>
+            <artifactId>helidon-data-jdbc-plan</artifactId>
         </dependency>
         <dependency>
             <groupId>io.helidon.data.sql</groupId>
