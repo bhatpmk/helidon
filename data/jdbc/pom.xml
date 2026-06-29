@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    Copyright (c) 2025, 2026 Oracle and/or its affiliates.
+    Copyright (c) 2026 Oracle and/or its affiliates.
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -18,42 +18,22 @@
 <project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xmlns="http://maven.apache.org/POM/4.0.0"
         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>io.helidon.data</groupId>
+        <artifactId>helidon-data-project</artifactId>
+        <version>27.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <parent>
-        <groupId>io.helidon</groupId>
-        <artifactId>helidon-project</artifactId>
-        <version>27.0.0-SNAPSHOT</version>
-    </parent>
-
-    <groupId>io.helidon.transaction</groupId>
-    <artifactId>helidon-transaction-project</artifactId>
+    <groupId>io.helidon.data.jdbc</groupId>
+    <artifactId>helidon-data-jdbc-project</artifactId>
+    <name>Helidon Data JDBC Project</name>
     <packaging>pom</packaging>
-    <name>Helidon Transaction Project</name>
-
-    <properties>
-        <javadoc.fail-on-warnings>true</javadoc.fail-on-warnings>
-    </properties>
 
     <modules>
-        <module>transaction</module>
         <module>jdbc</module>
-        <module>jta</module>
-        <module>narayana</module>
+        <module>codegen</module>
     </modules>
 
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>check-dependencies</id>
-                        <phase>verify</phase>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
 </project>
