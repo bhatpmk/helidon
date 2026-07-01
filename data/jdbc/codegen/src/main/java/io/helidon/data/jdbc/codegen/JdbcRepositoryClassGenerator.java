@@ -32,6 +32,7 @@ import io.helidon.common.types.TypedElementInfo;
 import io.helidon.data.codegen.common.RepositoryInfo;
 
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.GENERATOR;
+import static io.helidon.data.jdbc.codegen.JdbcTypes.CALL_ANNOTATION;
 import static io.helidon.data.jdbc.codegen.JdbcTypes.CLIENT;
 import static io.helidon.data.jdbc.codegen.JdbcTypes.GENERIC_REPOSITORY;
 import static io.helidon.data.jdbc.codegen.JdbcTypes.INJECTION_SINGLETON;
@@ -87,9 +88,10 @@ final class JdbcRepositoryClassGenerator {
                 .filter(method -> !method.elementModifiers().contains(Modifier.DEFAULT))
                 .filter(method -> !method.elementModifiers().contains(Modifier.STATIC))
                 .filter(method -> !method.hasAnnotation(QUERY_ANNOTATION))
+                .filter(method -> !method.hasAnnotation(CALL_ANNOTATION))
                 .findFirst()
                 .ifPresent(method -> {
-                    throw methodError(method, "JDBC repository methods must be annotated with @Data.Query: "
+                    throw methodError(method, "JDBC repository methods must be annotated with @Data.Query or @Data.Call: "
                             + method.elementName());
                 });
     }

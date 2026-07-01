@@ -13,18 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.helidon.data.jdbc;
+package io.helidon.data.jdbc.codegen;
 
-/**
- * Event containing generated-key rows returned by JDBC.
- * <p>
- * Generated keys are exposed by JDBC through {@code PreparedStatement#getGeneratedKeys()}. The provider copies that
- * result set into a {@link RowSet} while the statement is still open, then closes JDBC resources before reducers map
- * the keys to the caller's declared return type.
- *
- * @param step owning transcript step
- * @param ordinal event order within the step
- * @param rowSet detached generated-key rows
- */
-record GeneratedKeysEvent(StepRef step, int ordinal, RowSet rowSet) implements JdbcEvent {
+record JdbcCallParameter(int index, String name, int sqlType, boolean cursor, boolean inOut) {
 }

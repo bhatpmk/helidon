@@ -15,16 +15,20 @@
  */
 package io.helidon.data.jdbc;
 
-/**
- * Event containing generated-key rows returned by JDBC.
- * <p>
- * Generated keys are exposed by JDBC through {@code PreparedStatement#getGeneratedKeys()}. The provider copies that
- * result set into a {@link RowSet} while the statement is still open, then closes JDBC resources before reducers map
- * the keys to the caller's declared return type.
- *
- * @param step owning transcript step
- * @param ordinal event order within the step
- * @param rowSet detached generated-key rows
- */
-record GeneratedKeysEvent(StepRef step, int ordinal, RowSet rowSet) implements JdbcEvent {
+import java.util.List;
+import java.util.Objects;
+
+record JdbcPlan(List<JdbcOperation> operations) {
+
+    JdbcPlan {
+        Objects.requireNonNull(operations, "Operations must not be null");
+        if (operations.isEmpty()) {
+            throw new IllegalArgumentException("JDBC plan must contain at least one operation");
+        }
+        operations = List.copyOf(operations);
+    }
+
+    static JdbcPlan of(JdbcOperation operation) {
+        return new JdbcPlan(List.of(operation));
+    }
 }

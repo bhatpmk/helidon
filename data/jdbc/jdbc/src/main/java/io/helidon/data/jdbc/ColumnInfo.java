@@ -15,5 +15,18 @@
  */
 package io.helidon.data.jdbc;
 
+/**
+ * Detached metadata for one JDBC result-set column.
+ * <p>
+ * Column metadata is copied while the {@link java.sql.ResultSet} is open and then shared by all materialized rows in
+ * the same {@link RowSet}. Both label and name are retained because JDBC drivers can expose aliases and physical names
+ * differently.
+ *
+ * @param label result-set column label, usually the SQL alias used for row lookup
+ * @param name physical column name reported by the driver when available
+ * @param jdbcType JDBC SQL type from {@link java.sql.Types}
+ * @param typeName database-specific SQL type name
+ * @param nullable whether the column may contain SQL {@code NULL}
+ */
 record ColumnInfo(String label, String name, int jdbcType, String typeName, boolean nullable) {
 }

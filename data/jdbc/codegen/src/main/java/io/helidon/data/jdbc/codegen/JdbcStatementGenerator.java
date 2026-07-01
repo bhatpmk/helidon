@@ -16,6 +16,7 @@
 package io.helidon.data.jdbc.codegen;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 import io.helidon.codegen.CodegenContext;
@@ -97,7 +98,9 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                     .addContent(repositoryInfo.idName())
                     .addContent("\", ")
                     .addContent(identifier)
-                    .addContent("))).single(");
+                    .addContent(")))");
+            readColumns(b, entity);
+            b.addContent(".single(");
             mapper(b, entity);
             b.addContent(")");
         });
@@ -318,6 +321,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                 List<PersistenceGenerator.QuerySettings> settings,
                                 TypeName returnType) {
         statement(builder, sql, settings);
+        readColumns(builder, returnType);
         builder.addContent(".optional(");
         mapper(builder, returnType);
         builder.addContent(")");
@@ -341,6 +345,73 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                               String sql,
                               List<PersistenceGenerator.QuerySettings> settings) {
         addUpdateCall(builder, sql, settings);
+    }
+
+    void addDirectCallVoid(Method.Builder builder,
+                           String sql,
+                           List<PersistenceGenerator.QuerySettings> settings,
+                           List<JdbcCallParameter> outParameters) {
+        callableStatement(builder, sql, settings, outParameters);
+        builder.addContent(".outParams()");
+    }
+
+    void addDirectCallOutParams(Method.Builder builder,
+                                String sql,
+                                List<PersistenceGenerator.QuerySettings> settings,
+                                List<JdbcCallParameter> outParameters) {
+        callableStatement(builder, sql, settings, outParameters);
+        builder.addContent(".outParams()");
+    }
+
+    void addDirectCallOutParam(Method.Builder builder,
+                               String sql,
+                               List<PersistenceGenerator.QuerySettings> settings,
+                               List<JdbcCallParameter> outParameters,
+                               String name,
+                               TypeName returnType) {
+        callableStatement(builder, sql, settings, outParameters);
+        builder.addContent(".outParam(\"")
+                .addContent(escape(name))
+                .addContent("\", ")
+                .addContent(JdbcTypes.wrapper(returnType))
+                .addContent(".class)");
+    }
+
+    void addDirectCallOptionalOutParam(Method.Builder builder,
+                                       String sql,
+                                       List<PersistenceGenerator.QuerySettings> settings,
+                                       List<JdbcCallParameter> outParameters,
+                                       String name,
+                                       TypeName returnType) {
+        builder.addContent(Optional.class)
+                .addContent(".ofNullable(");
+        addDirectCallOutParam(builder, sql, settings, outParameters, name, returnType);
+        builder.addContent(")");
+    }
+
+    void addDirectCallOutCursor(Method.Builder builder,
+                                String sql,
+                                List<PersistenceGenerator.QuerySettings> settings,
+                                List<JdbcCallParameter> outParameters,
+                                String name,
+                                TypeName rowType) {
+        callableStatement(builder, sql, settings, outParameters);
+        readColumns(builder, rowType);
+        builder.addContent(".outCursor(\"")
+                .addContent(escape(name))
+                .addContent("\", ");
+        mapper(builder, rowType);
+        builder.addContent(")");
+    }
+
+    void addDirectCallOutCursorStream(Method.Builder builder,
+                                      String sql,
+                                      List<PersistenceGenerator.QuerySettings> settings,
+                                      List<JdbcCallParameter> outParameters,
+                                      String name,
+                                      TypeName rowType) {
+        addDirectCallOutCursor(builder, sql, settings, outParameters, name, rowType);
+        builder.addContent(".stream()");
     }
 
     private void addQueryItemLambda(Method.Builder builder,
@@ -376,6 +447,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                   List<PersistenceGenerator.QuerySettings> settings,
                                   TypeName returnType) {
         statement(builder, sql, settings);
+        readColumns(builder, returnType);
         builder.addContent(".single(");
         mapper(builder, returnType);
         builder.addContent(")");
@@ -386,6 +458,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                         List<PersistenceGenerator.QuerySettings> settings,
                                         TypeName returnType) {
         statement(builder, sql, settings);
+        readColumns(builder, returnType);
         builder.addContent(".singleOrNull(");
         mapper(builder, returnType);
         builder.addContent(")");
@@ -396,6 +469,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                   List<PersistenceGenerator.QuerySettings> settings,
                                   TypeName returnType) {
         statement(builder, sql, settings);
+        readColumns(builder, returnType);
         builder.addContent(".list(");
         mapper(builder, returnType);
         builder.addContent(")");
@@ -406,6 +480,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                     List<PersistenceGenerator.QuerySettings> settings,
                                     TypeName returnType) {
         statement(builder, sql, settings);
+        readColumns(builder, returnType);
         builder.addContent(".stream(");
         mapper(builder, returnType);
         builder.addContent(")");
@@ -460,6 +535,26 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
         }
     }
 
+    private static void callableStatement(Method.Builder builder,
+                                          String sql,
+                                          List<PersistenceGenerator.QuerySettings> settings,
+                                          List<JdbcCallParameter> outParameters) {
+        statement(builder, sql, settings);
+        for (JdbcCallParameter outParameter : outParameters) {
+            if (outParameter.cursor()) {
+                builder.addContent(".outCursor(");
+            } else {
+                builder.addContent(".outParam(");
+            }
+            builder.addContent(String.valueOf(outParameter.index()))
+                    .addContent(", \"")
+                    .addContent(escape(outParameter.name()))
+                    .addContent("\", ")
+                    .addContent(String.valueOf(outParameter.sqlType()))
+                    .addContent(")");
+        }
+    }
+
     private static void parameters(Method.Builder builder, List<PersistenceGenerator.QuerySettings> settings) {
         builder.addContent(List.class)
                 .addContent(".of(");
@@ -506,7 +601,49 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                            + ". Use a scalar return type or a record projection.");
     }
 
+    private void readColumns(Method.Builder builder, TypeName returnType) {
+        TypeName type = JdbcTypes.wrapper(returnType);
+        if (JdbcTypes.isScalar(type)) {
+            builder.addContent(".readColumns(1)");
+            return;
+        }
+        Optional<TypeInfo> typeInfo = codegenContext.typeInfo(type);
+        if (typeInfo.isEmpty() || typeInfo.get().kind() != ElementKind.RECORD) {
+            return;
+        }
+        List<TypedElementInfo> components = recordComponents(type, typeInfo.get());
+        builder.addContent(".readColumns(");
+        for (int i = 0; i < components.size(); i++) {
+            if (i > 0) {
+                builder.addContent(", ");
+            }
+            builder.addContent("\"")
+                    .addContent(escape(components.get(i).elementName()))
+                    .addContent("\"");
+        }
+        builder.addContent(")");
+    }
+
     private void recordMapper(Method.Builder builder, TypeName type, TypeInfo typeInfo) {
+        List<TypedElementInfo> components = recordComponents(type, typeInfo);
+        builder.addContent("row -> new ")
+                .addContent(type)
+                .addContent("(");
+        for (int i = 0; i < components.size(); i++) {
+            if (i > 0) {
+                builder.addContent(", ");
+            }
+            TypedElementInfo component = components.get(i);
+            builder.addContent("row.value(\"")
+                    .addContent(component.elementName())
+                    .addContent("\", ")
+                    .addContent(JdbcTypes.wrapper(component.typeName()))
+                    .addContent(".class)");
+        }
+        builder.addContent(")");
+    }
+
+    private static List<TypedElementInfo> recordComponents(TypeName type, TypeInfo typeInfo) {
         List<TypedElementInfo> components = typeInfo.elementInfo()
                 .stream()
                 .filter(it -> it.kind() == ElementKind.RECORD_COMPONENT)
@@ -523,21 +660,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
         if (components.isEmpty()) {
             throw new CodegenException("JDBC provider cannot map record " + type + " because record components are not visible");
         }
-        builder.addContent("row -> new ")
-                .addContent(type)
-                .addContent("(");
-        for (int i = 0; i < components.size(); i++) {
-            if (i > 0) {
-                builder.addContent(", ");
-            }
-            TypedElementInfo component = components.get(i);
-            builder.addContent("row.value(\"")
-                    .addContent(component.elementName())
-                    .addContent("\", ")
-                    .addContent(JdbcTypes.wrapper(component.typeName()))
-                    .addContent(".class)");
-        }
-        builder.addContent(")");
+        return components;
     }
 
     private static void unsupportedLambda(Method.Builder builder, String message) {

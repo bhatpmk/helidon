@@ -82,23 +82,27 @@ class JdbcCodegenTest {
         assertThat(generated,
                    containsString("return jdbcClient.execute(\"SELECT id, name FROM PokemonRow WHERE id = :id\")"
                                           + ".params(List.of(io.helidon.data.jdbc.JdbcParameter.create(\"id\", id)))"
+                                          + ".readColumns(\"id\", \"name\")"
                                           + ".single(row -> new PokemonRow(row.value(\"id\", Long.class), "
                                           + "row.value(\"name\", String.class)));"));
         assertThat(generated, containsString("public Optional<PokemonRow> findOptional(long id)"));
         assertThat(generated,
                    containsString("return jdbcClient.execute(\"SELECT id, name FROM PokemonRow WHERE id = :id\")"
                                           + ".params(List.of(io.helidon.data.jdbc.JdbcParameter.create(\"id\", id)))"
+                                          + ".readColumns(\"id\", \"name\")"
                                           + ".optional(row -> new PokemonRow(row.value(\"id\", Long.class), "
                                           + "row.value(\"name\", String.class)));"));
         assertThat(generated, containsString("public List<PokemonRow> list()"));
         assertThat(generated,
                    containsString("return jdbcClient.execute(\"SELECT id, name FROM PokemonRow\")"
+                                          + ".readColumns(\"id\", \"name\")"
                                           + ".list(row -> new PokemonRow(row.value(\"id\", Long.class), "
                                           + "row.value(\"name\", String.class)));"));
         assertThat(generated, containsString("public List<PokemonRow> listWithCte()"));
         assertThat(generated,
                    containsString("return jdbcClient.execute(\"WITH rows AS (SELECT id, name "
                                           + "FROM PokemonRow) SELECT id, name FROM rows\")"
+                                          + ".readColumns(\"id\", \"name\")"
                                           + ".list(row -> new PokemonRow(row.value(\"id\", Long.class), "
                                           + "row.value(\"name\", String.class)));"));
         assertThat(generated, not(containsString("private static final class Executor")));
@@ -141,11 +145,11 @@ class JdbcCodegenTest {
         assertThat(generated, CodegenMatchers.matches("""
                 //...
                     public int delete(long id) {
-                        return jdbcClient.execute("/* leading comment */ DELETE FROM PokemonRow WHERE id = :id").params(List.of(io.helidon.data.jdbc.JdbcParameter.create("id", id))).single(row -> row.value(1, Integer.class));
+                        return jdbcClient.execute("/* leading comment */ DELETE FROM PokemonRow WHERE id = :id").params(List.of(io.helidon.data.jdbc.JdbcParameter.create("id", id))).readColumns(1).single(row -> row.value(1, Integer.class));
                     }
                 //...
                     public long deleteByName(String name) {
-                        return jdbcClient.execute("WITH stale AS (SELECT id FROM PokemonRow WHERE name = :name) DELETE FROM PokemonRow WHERE id IN (SELECT id FROM stale)").params(List.of(io.helidon.data.jdbc.JdbcParameter.create("name", name))).single(row -> row.value(1, Long.class));
+                        return jdbcClient.execute("WITH stale AS (SELECT id FROM PokemonRow WHERE name = :name) DELETE FROM PokemonRow WHERE id IN (SELECT id FROM stale)").params(List.of(io.helidon.data.jdbc.JdbcParameter.create("name", name))).readColumns(1).single(row -> row.value(1, Long.class));
                     }
                 //...
                     public void createAuditTable() {
@@ -186,10 +190,98 @@ class JdbcCodegenTest {
         assertThat(generated, CodegenMatchers.matches("""
                 //...
                     public int updateWithCte(String name) {
-                        return jdbcClient.execute("WITH rows AS (SELECT id, name FROM PokemonRow) UPDATE PokemonRow SET name = :name WHERE id IN (SELECT id FROM rows)").params(List.of(io.helidon.data.jdbc.JdbcParameter.create("name", name))).single(row -> row.value(1, Integer.class));
+                        return jdbcClient.execute("WITH rows AS (SELECT id, name FROM PokemonRow) UPDATE PokemonRow SET name = :name WHERE id IN (SELECT id FROM rows)").params(List.of(io.helidon.data.jdbc.JdbcParameter.create("name", name))).readColumns(1).single(row -> row.value(1, Integer.class));
                     }
                 //...
                 """));
+    }
+
+    @Test
+    void generatesJdbcRepositoryForStoredProcedureCalls() throws IOException {
+        var result = TestCompiler.builder()
+                .addProcessor(new AptProcessor())
+                .currentRelease()
+                .printDiagnostics(false)
+                .addClasspathEntries(testClasspath())
+                .addSource("com/example/PokemonRepository.java", """
+                        package com.example;
+
+                        import java.sql.Types;
+                        import java.util.List;
+                        import java.util.Map;
+                        import java.util.Optional;
+                        import java.util.stream.Stream;
+
+                        import io.helidon.data.Data;
+
+                        @Data.Repository
+                        @Data.Provider("jdbc")
+                        interface PokemonRepository extends Data.GenericRepository<PokemonRow, Long> {
+
+                            @Data.Call("{? = call ABS(?)}")
+                            @Data.Out(index = 1, name = "absolute", type = Types.INTEGER)
+                            int absolute(int value);
+
+                            @Data.Call("{call increment(?)}")
+                            Integer increment(@Data.InOut(index = 1, name = "value", type = Types.INTEGER) int value);
+
+                            @Data.Call("{call status(?)}")
+                            @Data.Out(index = 1, name = "status", type = Types.INTEGER)
+                            Optional<Integer> status();
+
+                            @Data.Call("{call out_values(?)}")
+                            @Data.Out(index = 1, name = "status", type = Types.INTEGER)
+                            Map<String, Object> outValues();
+
+                            @Data.Call("{call list_pokemon(?)}")
+                            @Data.OutCursor(index = 1, name = "rows")
+                            List<PokemonRow> listFromCursor();
+
+                            @Data.Call("{call stream_pokemon(?)}")
+                            @Data.OutCursor(index = 1, name = "rows")
+                            Stream<PokemonRow> streamFromCursor();
+                        }
+
+                        record PokemonRow(long id, String name) {
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+        String generated = Files.readString(result.sourceOutput().resolve("com/example/PokemonRepository__Jdbc.java"));
+        assertThat(generated, containsString("private final JdbcClient jdbcClient;"));
+        assertThat(generated,
+                   containsString("return jdbcClient.execute(\"{? = call ABS(?)}\")"
+                                          + ".params(List.of(io.helidon.data.jdbc.JdbcParameter.create(value)))"
+                                          + ".outParam(1, \"absolute\", 4)"
+                                          + ".outParam(\"absolute\", Integer.class);"));
+        assertThat(generated,
+                   containsString("return jdbcClient.execute(\"{call increment(?)}\")"
+                                          + ".params(List.of(io.helidon.data.jdbc.JdbcParameter.create(value)))"
+                                          + ".outParam(1, \"value\", 4)"
+                                          + ".outParam(\"value\", Integer.class);"));
+        assertThat(generated,
+                   containsString("return Optional.ofNullable(jdbcClient.execute(\"{call status(?)}\")"
+                                          + ".outParam(1, \"status\", 4)"
+                                          + ".outParam(\"status\", Integer.class));"));
+        assertThat(generated,
+                   containsString("return jdbcClient.execute(\"{call out_values(?)}\")"
+                                          + ".outParam(1, \"status\", 4)"
+                                          + ".outParams();"));
+        assertThat(generated,
+                   containsString("return jdbcClient.execute(\"{call list_pokemon(?)}\")"
+                                          + ".outCursor(1, \"rows\", 2012)"
+                                          + ".readColumns(\"id\", \"name\")"
+                                          + ".outCursor(\"rows\", row -> new PokemonRow(row.value(\"id\", Long.class), "
+                                          + "row.value(\"name\", String.class)));"));
+        assertThat(generated,
+                   containsString("return jdbcClient.execute(\"{call stream_pokemon(?)}\")"
+                                          + ".outCursor(1, \"rows\", 2012)"
+                                          + ".readColumns(\"id\", \"name\")"
+                                          + ".outCursor(\"rows\", row -> new PokemonRow(row.value(\"id\", Long.class), "
+                                          + "row.value(\"name\", String.class))).stream();"));
+        assertThat(generated, not(containsString("private final Executor executor;")));
     }
 
     private static List<Path> testClasspath() {

@@ -54,9 +54,23 @@ class MaterializedRowTest {
         assertThrows(DataException.class, () -> row.value("missing"));
     }
 
+    @Test
+    void copiesCallerOwnedValues() {
+        Object[] values = {1L, "Pikachu"};
+        MaterializedRow row = new MaterializedRow(columns(), values);
+
+        values[1] = "Raichu";
+
+        assertThat(row.value("name", String.class), is("Pikachu"));
+    }
+
     private static MaterializedRow row(Object id, Object name) {
-        return new MaterializedRow(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),
-                                          new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true)),
+        return new MaterializedRow(columns(),
                                    new Object[] {id, name});
+    }
+
+    private static List<ColumnInfo> columns() {
+        return List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),
+                       new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true));
     }
 }

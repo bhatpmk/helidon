@@ -18,19 +18,55 @@ package io.helidon.data.jdbc;
 import java.util.List;
 import java.util.OptionalLong;
 
+/**
+ * Event containing per-item outcomes from a JDBC batch execution.
+ * <p>
+ * JDBC batch results are not a single update count. Drivers return one count or sentinel per attempted batch item, and
+ * a {@link java.sql.BatchUpdateException} may contain partial counts when execution fails partway through the batch.
+ * This event preserves those per-item outcomes so reducers can return count arrays and exceptions can carry partial
+ * progress.
+ *
+ * @param step owning transcript step
+ * @param ordinal event order within the step
+ * @param items ordered batch item outcomes
+ */
 record BatchEvent(StepRef step, int ordinal, List<BatchItem> items) implements JdbcEvent {
 
     BatchEvent {
         items = List.copyOf(items);
     }
 
+    /**
+     * Outcome for one batch item.
+     *
+     * @param status normalized JDBC batch item status
+     * @param updateCount update count when the driver reported one
+     */
     record BatchItem(BatchStatus status, OptionalLong updateCount) {
     }
 
+    /**
+     * Normalized JDBC batch status for one batch item.
+     */
     enum BatchStatus {
+        /**
+         * The item succeeded and JDBC reported an update count.
+         */
         UPDATED,
+
+        /**
+         * The item succeeded, but the driver did not report a count.
+         */
         SUCCESS_NO_INFO,
+
+        /**
+         * The driver reported that this item failed.
+         */
         EXECUTE_FAILED,
+
+        /**
+         * Batch execution failed before this item was attempted.
+         */
         NOT_ATTEMPTED
     }
 }

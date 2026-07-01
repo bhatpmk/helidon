@@ -15,5 +15,15 @@
  */
 package io.helidon.data.jdbc;
 
+/**
+ * Detached copy of one {@link java.sql.SQLWarning}.
+ * <p>
+ * JDBC warning objects are linked and tied to live statement or connection objects. The runner copies stable warning
+ * fields into this value so warnings can be inspected after JDBC resources have been closed.
+ *
+ * @param sqlState SQL state reported by the driver
+ * @param vendorCode database vendor-specific warning code
+ * @param message warning message
+ */
 record JdbcWarningInfo(String sqlState, int vendorCode, String message) {
 }

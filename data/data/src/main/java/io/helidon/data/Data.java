@@ -16,6 +16,7 @@
 package io.helidon.data;
 
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
@@ -132,6 +133,145 @@ public final class Data {
          * @return the query string
          */
         String value();
+    }
+
+    /**
+     * User supplied stored procedure or stored function call.
+     * <p>
+     * Used in repository methods with callable SQL text. JDBC providers interpret the value as JDBC call syntax,
+     * for example {@code {call my_procedure(?, ?)}} or {@code {? = call my_function(?)}}.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Call {
+        /**
+         * The JDBC call statement.
+         *
+         * @return the call statement
+         */
+        String value();
+    }
+
+    /**
+     * Scalar OUT parameter of a {@link Data.Call} method.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    @Repeatable(Out.List.class)
+    public @interface Out {
+        /**
+         * One-based JDBC parameter index.
+         *
+         * @return JDBC parameter index
+         */
+        int index();
+
+        /**
+         * Name used by generated code and map results. When unset, the parameter index is used as the name.
+         *
+         * @return output name
+         */
+        String name() default "";
+
+        /**
+         * SQL type from {@code java.sql.Types}.
+         *
+         * @return SQL type
+         */
+        int type();
+
+        /**
+         * Repeatable container for {@link Data.Out}.
+         */
+        @Target(ElementType.METHOD)
+        @Retention(RetentionPolicy.SOURCE)
+        @interface List {
+            /**
+             * Repeated scalar OUT parameters.
+             *
+             * @return OUT parameters
+             */
+            Out[] value();
+        }
+    }
+
+    /**
+     * INOUT parameter of a {@link Data.Call} method.
+     * <p>
+     * This annotation is placed on the Java method parameter that supplies the input value. The generated JDBC code binds
+     * that Java parameter and also registers the same JDBC index as an OUT parameter.
+     */
+    @Target(ElementType.PARAMETER)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface InOut {
+        /**
+         * One-based JDBC parameter index.
+         *
+         * @return JDBC parameter index
+         */
+        int index();
+
+        /**
+         * Name used by generated code and map results. When unset, the Java parameter name is used.
+         *
+         * @return output name
+         */
+        String name() default "";
+
+        /**
+         * SQL type from {@code java.sql.Types}.
+         *
+         * @return SQL type
+         */
+        int type();
+    }
+
+    /**
+     * Cursor OUT parameter of a {@link Data.Call} method.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    @Repeatable(OutCursor.List.class)
+    public @interface OutCursor {
+        /**
+         * Default JDBC {@code REF_CURSOR} SQL type value.
+         */
+        int REF_CURSOR = 2012;
+
+        /**
+         * One-based JDBC parameter index.
+         *
+         * @return JDBC parameter index
+         */
+        int index();
+
+        /**
+         * Name used by generated code. When unset, the parameter index is used as the name.
+         *
+         * @return cursor name
+         */
+        String name() default "";
+
+        /**
+         * SQL type from {@code java.sql.Types}. Defaults to the JDBC {@code REF_CURSOR} value.
+         *
+         * @return SQL type
+         */
+        int type() default REF_CURSOR;
+
+        /**
+         * Repeatable container for {@link Data.OutCursor}.
+         */
+        @Target(ElementType.METHOD)
+        @Retention(RetentionPolicy.SOURCE)
+        @interface List {
+            /**
+             * Repeated cursor OUT parameters.
+             *
+             * @return cursor OUT parameters
+             */
+            OutCursor[] value();
+        }
     }
 
     /**

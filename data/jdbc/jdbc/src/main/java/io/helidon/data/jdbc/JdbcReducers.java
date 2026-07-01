@@ -15,8 +15,11 @@
  */
 package io.helidon.data.jdbc;
 
+import java.sql.Statement;
 import java.sql.Types;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 import io.helidon.data.DataException;
@@ -76,6 +79,45 @@ final class JdbcReducers {
             return 0L;
         }
         return count;
+    }
+
+    static long[] batchUpdateCounts(JdbcTranscript transcript) {
+        BatchEvent batch = batchEvent(transcript);
+        long[] counts = new long[batch.items().size()];
+        for (int i = 0; i < counts.length; i++) {
+            BatchEvent.BatchItem item = batch.items().get(i);
+            counts[i] = switch (item.status()) {
+            case UPDATED -> item.updateCount().orElseThrow();
+            case SUCCESS_NO_INFO -> Statement.SUCCESS_NO_INFO;
+            case EXECUTE_FAILED, NOT_ATTEMPTED -> Statement.EXECUTE_FAILED;
+            };
+        }
+        return counts;
+    }
+
+    static Map<String, Object> outParams(JdbcTranscript transcript) {
+        return outParamsEvent(transcript).values();
+    }
+
+    static <T> T outParam(JdbcTranscript transcript, String name, Class<T> type) {
+        Objects.requireNonNull(name, "OUT parameter name must not be null");
+        Objects.requireNonNull(type, "OUT parameter type must not be null");
+        Map<String, Object> values = outParamsEvent(transcript).values();
+        if (!values.containsKey(name)) {
+            throw new DataException("JDBC transcript contains no OUT parameter named \"" + name + "\".");
+        }
+        return JdbcValues.convert(values.get(name), type);
+    }
+
+    static <T> List<T> outCursor(JdbcTranscript transcript, String name, JdbcRowMapper<T> mapper) {
+        Objects.requireNonNull(name, "OUT cursor name must not be null");
+        Objects.requireNonNull(mapper, "OUT cursor row mapper must not be null");
+        RowsEvent rows = outCursorEvent(transcript, name);
+        return rows.rowSet()
+                .rows()
+                .stream()
+                .map(mapper::map)
+                .toList();
     }
 
     static <T> List<T> generatedKeys(JdbcTranscript transcript, JdbcRowMapper<T> mapper) {
@@ -159,6 +201,58 @@ final class JdbcReducers {
         }
         if (found == null) {
             throw new DataException("JDBC transcript contains no generated-key result set.");
+        }
+        return found;
+    }
+
+    private static BatchEvent batchEvent(JdbcTranscript transcript) {
+        BatchEvent found = null;
+        for (JdbcEvent event : transcript.onlyStep().events()) {
+            if (event instanceof BatchEvent batch) {
+                if (found != null) {
+                    throw new DataException("JDBC transcript contains more than one batch result.");
+                }
+                found = batch;
+            }
+        }
+        if (found == null) {
+            throw new DataException("JDBC transcript contains no batch result.");
+        }
+        return found;
+    }
+
+    private static OutParamsEvent outParamsEvent(JdbcTranscript transcript) {
+        OutParamsEvent found = null;
+        for (JdbcEvent event : transcript.onlyStep().events()) {
+            if (event instanceof OutParamsEvent outParams) {
+                if (found != null) {
+                    throw new DataException("JDBC transcript contains more than one OUT parameter result.");
+                }
+                found = outParams;
+            }
+        }
+        if (found == null) {
+            throw new DataException("JDBC transcript contains no OUT parameter result.");
+        }
+        return found;
+    }
+
+    private static RowsEvent outCursorEvent(JdbcTranscript transcript, String name) {
+        RowsEvent found = null;
+        for (JdbcEvent event : transcript.onlyStep().events()) {
+            if (event instanceof RowsEvent rows
+                    && rows.role() == RowsEvent.RowRole.OUT_CURSOR
+                    && rows.name().filter(name::equals).isPresent()) {
+                if (found != null) {
+                    throw new DataException("JDBC transcript contains more than one OUT cursor named \""
+                                                    + name
+                                                    + "\".");
+                }
+                found = rows;
+            }
+        }
+        if (found == null) {
+            throw new DataException("JDBC transcript contains no OUT cursor named \"" + name + "\".");
         }
         return found;
     }

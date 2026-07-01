@@ -29,6 +29,12 @@ final class JdbcTypes {
 
     static final TypeName PU_NAME_ANNOTATION = TypeName.create("io.helidon.data.Data.PersistenceUnit");
     static final TypeName QUERY_ANNOTATION = TypeName.create("io.helidon.data.Data.Query");
+    static final TypeName CALL_ANNOTATION = TypeName.create("io.helidon.data.Data.Call");
+    static final TypeName OUT_ANNOTATION = TypeName.create("io.helidon.data.Data.Out");
+    static final TypeName OUT_LIST_ANNOTATION = TypeName.create("io.helidon.data.Data.Out.List");
+    static final TypeName IN_OUT_ANNOTATION = TypeName.create("io.helidon.data.Data.InOut");
+    static final TypeName OUT_CURSOR_ANNOTATION = TypeName.create("io.helidon.data.Data.OutCursor");
+    static final TypeName OUT_CURSOR_LIST_ANNOTATION = TypeName.create("io.helidon.data.Data.OutCursor.List");
     static final TypeName GENERIC_REPOSITORY = TypeName.create("io.helidon.data.Data.GenericRepository");
     static final TypeName CLIENT = TypeName.create("io.helidon.data.jdbc.JdbcClient");
     static final TypeName PARAMETER = TypeName.create("io.helidon.data.jdbc.JdbcParameter");

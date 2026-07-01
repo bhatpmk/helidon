@@ -15,5 +15,17 @@
  */
 package io.helidon.data.jdbc;
 
+/**
+ * Event form for one SQL warning.
+ * <p>
+ * The current transcript stores warning chains on {@link StepTranscript#warnings()} because JDBC warnings are usually
+ * statement metadata rather than a result in the normal result sequence. This event remains part of the sealed event
+ * hierarchy for cases where a future reducer or diagnostic API needs warning order to be represented alongside other
+ * events.
+ *
+ * @param step owning transcript step
+ * @param ordinal event order within the step
+ * @param warning detached warning details
+ */
 record WarningEvent(StepRef step, int ordinal, JdbcWarningInfo warning) implements JdbcEvent {
 }

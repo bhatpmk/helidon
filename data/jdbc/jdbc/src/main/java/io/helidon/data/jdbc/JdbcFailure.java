@@ -15,5 +15,15 @@
  */
 package io.helidon.data.jdbc;
 
+/**
+ * Detached failure metadata captured from a {@link java.sql.SQLException}.
+ * <p>
+ * Runtime exceptions still keep the original {@code SQLException} as their cause. This value exists so a partial
+ * transcript can describe the failed JDBC step without retaining mutable or driver-owned exception state.
+ *
+ * @param sqlState SQL state reported by the driver
+ * @param vendorCode database vendor-specific error code
+ * @param message failure message
+ */
 record JdbcFailure(String sqlState, int vendorCode, String message) {
 }

@@ -21,40 +21,124 @@ import java.util.Objects;
 record JdbcOperation(SqlKind kind,
                      String sql,
                      List<JdbcParameter> parameters,
-                     int fetchSize,
-                     GeneratedKeysRequest generatedKeys) {
+                     List<List<JdbcParameter>> batchParameters,
+                     List<JdbcOutParameter> outParameters,
+                     JdbcStatementOptions options,
+                     GeneratedKeysRequest generatedKeys,
+                     JdbcColumnSelection columnSelection,
+                     long resultLimit) {
 
     JdbcOperation {
         Objects.requireNonNull(kind, "SQL kind must not be null");
         Objects.requireNonNull(sql, "SQL must not be null");
         Objects.requireNonNull(parameters, "Parameters must not be null");
+        Objects.requireNonNull(batchParameters, "Batch parameters must not be null");
+        Objects.requireNonNull(outParameters, "OUT parameters must not be null");
+        Objects.requireNonNull(options, "Statement options must not be null");
         Objects.requireNonNull(generatedKeys, "Generated keys request must not be null");
-        if (fetchSize < 0) {
-            throw new IllegalArgumentException("Fetch size must not be negative");
+        Objects.requireNonNull(columnSelection, "Column selection must not be null");
+        if (resultLimit < 0) {
+            throw new IllegalArgumentException("Result limit must not be negative");
         }
         parameters = List.copyOf(parameters);
+        batchParameters = batchParameters.stream()
+                .map(List::copyOf)
+                .toList();
+        outParameters = List.copyOf(outParameters);
     }
 
     static JdbcOperation query(String sql, List<JdbcParameter> parameters) {
-        return query(sql, parameters, 0);
+        return query(sql, parameters, JdbcStatementOptions.DEFAULT);
     }
 
-    static JdbcOperation query(String sql, List<JdbcParameter> parameters, int fetchSize) {
-        return new JdbcOperation(SqlKind.QUERY, sql, parameters, fetchSize, GeneratedKeysRequest.none());
+    static JdbcOperation query(String sql, List<JdbcParameter> parameters, JdbcStatementOptions options) {
+        return query(sql, parameters, options, JdbcColumnSelection.ALL, 0);
+    }
+
+    static JdbcOperation query(String sql,
+                               List<JdbcParameter> parameters,
+                               JdbcStatementOptions options,
+                               JdbcColumnSelection columnSelection,
+                               long resultLimit) {
+        return new JdbcOperation(SqlKind.QUERY,
+                                 sql,
+                                 parameters,
+                                 List.of(),
+                                 List.of(),
+                                 options,
+                                 GeneratedKeysRequest.none(),
+                                 columnSelection,
+                                 resultLimit);
     }
 
     static JdbcOperation update(String sql, List<JdbcParameter> parameters) {
-        return update(sql, parameters, 0);
+        return update(sql, parameters, JdbcStatementOptions.DEFAULT);
     }
 
-    static JdbcOperation update(String sql, List<JdbcParameter> parameters, int fetchSize) {
-        return update(sql, parameters, fetchSize, GeneratedKeysRequest.none());
+    static JdbcOperation update(String sql, List<JdbcParameter> parameters, JdbcStatementOptions options) {
+        return update(sql, parameters, options, GeneratedKeysRequest.none());
     }
 
     static JdbcOperation update(String sql,
                                 List<JdbcParameter> parameters,
-                                int fetchSize,
+                                JdbcStatementOptions options,
                                 GeneratedKeysRequest generatedKeys) {
-        return new JdbcOperation(SqlKind.UPDATE, sql, parameters, fetchSize, generatedKeys);
+        return update(sql, parameters, options, generatedKeys, JdbcColumnSelection.ALL, 0);
+    }
+
+    static JdbcOperation update(String sql,
+                                List<JdbcParameter> parameters,
+                                JdbcStatementOptions options,
+                                GeneratedKeysRequest generatedKeys,
+                                JdbcColumnSelection columnSelection,
+                                long resultLimit) {
+        return new JdbcOperation(SqlKind.UPDATE,
+                                 sql,
+                                 parameters,
+                                 List.of(),
+                                 List.of(),
+                                 options,
+                                 generatedKeys,
+                                 columnSelection,
+                                 resultLimit);
+    }
+
+    static JdbcOperation batch(String sql, List<List<JdbcParameter>> batchParameters, JdbcStatementOptions options) {
+        if (batchParameters.isEmpty()) {
+            throw new IllegalArgumentException("JDBC batch operation must contain at least one batch item");
+        }
+        return new JdbcOperation(SqlKind.BATCH,
+                                 sql,
+                                 List.of(),
+                                 batchParameters,
+                                 List.of(),
+                                 options,
+                                 GeneratedKeysRequest.none(),
+                                 JdbcColumnSelection.ALL,
+                                 0);
+    }
+
+    static JdbcOperation call(String sql,
+                              List<JdbcParameter> parameters,
+                              List<JdbcOutParameter> outParameters,
+                              JdbcStatementOptions options) {
+        return call(sql, parameters, outParameters, options, JdbcColumnSelection.ALL, 0);
+    }
+
+    static JdbcOperation call(String sql,
+                              List<JdbcParameter> parameters,
+                              List<JdbcOutParameter> outParameters,
+                              JdbcStatementOptions options,
+                              JdbcColumnSelection columnSelection,
+                              long resultLimit) {
+        return new JdbcOperation(SqlKind.CALL,
+                                 sql,
+                                 parameters,
+                                 List.of(),
+                                 outParameters,
+                                 options,
+                                 GeneratedKeysRequest.none(),
+                                 columnSelection,
+                                 resultLimit);
     }
 }

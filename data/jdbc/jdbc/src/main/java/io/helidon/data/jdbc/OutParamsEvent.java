@@ -15,11 +15,26 @@
  */
 package io.helidon.data.jdbc;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
+/**
+ * Event containing scalar OUT and INOUT parameter values from a callable statement.
+ * <p>
+ * Values are keyed by the generated or user-provided OUT parameter name, not by JDBC position. Cursor OUT parameters
+ * are represented separately as {@link RowsEvent} instances so row mapping and cursor reduction can use the same path
+ * as ordinary result sets.
+ *
+ * @param step owning transcript step
+ * @param ordinal event order within the step
+ * @param values detached scalar OUT parameter values keyed by output name
+ */
 record OutParamsEvent(StepRef step, int ordinal, Map<String, Object> values) implements JdbcEvent {
 
     OutParamsEvent {
-        values = Map.copyOf(values);
+        Objects.requireNonNull(values, "OUT parameter values must not be null");
+        values = Collections.unmodifiableMap(new LinkedHashMap<>(values));
     }
 }

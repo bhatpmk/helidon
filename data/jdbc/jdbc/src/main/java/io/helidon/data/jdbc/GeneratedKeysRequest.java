@@ -18,18 +18,28 @@ package io.helidon.data.jdbc;
 import java.util.List;
 import java.util.Objects;
 
-record GeneratedKeysRequest(boolean requested, List<String> columnNames) {
+record GeneratedKeysRequest(boolean requested, List<Integer> columnIndexes, List<String> columnNames) {
 
-    private static final GeneratedKeysRequest NONE = new GeneratedKeysRequest(false, List.of());
-    private static final GeneratedKeysRequest ANY = new GeneratedKeysRequest(true, List.of());
+    private static final GeneratedKeysRequest NONE = new GeneratedKeysRequest(false, List.of(), List.of());
+    private static final GeneratedKeysRequest ANY = new GeneratedKeysRequest(true, List.of(), List.of());
 
     GeneratedKeysRequest {
+        Objects.requireNonNull(columnIndexes, "Generated-key column indexes must not be null");
         Objects.requireNonNull(columnNames, "Generated-key column names must not be null");
+        if (!columnIndexes.isEmpty() && !columnNames.isEmpty()) {
+            throw new IllegalArgumentException("Generated-key column indexes and names must not both be specified");
+        }
+        columnIndexes.forEach(columnIndex -> {
+            if (columnIndex == null || columnIndex < 1) {
+                throw new IllegalArgumentException("Generated-key column index must be positive");
+            }
+        });
         columnNames.forEach(columnName -> {
             if (columnName == null || columnName.isBlank()) {
                 throw new IllegalArgumentException("Generated-key column name must not be blank");
             }
         });
+        columnIndexes = List.copyOf(columnIndexes);
         columnNames = List.copyOf(columnNames);
     }
 
@@ -41,7 +51,11 @@ record GeneratedKeysRequest(boolean requested, List<String> columnNames) {
         return ANY;
     }
 
-    static GeneratedKeysRequest columns(List<String> columnNames) {
-        return new GeneratedKeysRequest(true, columnNames);
+    static GeneratedKeysRequest columnIndexes(List<Integer> columnIndexes) {
+        return new GeneratedKeysRequest(true, columnIndexes, List.of());
+    }
+
+    static GeneratedKeysRequest columnNames(List<String> columnNames) {
+        return new GeneratedKeysRequest(true, List.of(), columnNames);
     }
 }

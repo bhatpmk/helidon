@@ -17,16 +17,61 @@ package io.helidon.data.jdbc;
 
 import java.util.Optional;
 
+/**
+ * Stable identifier for one step inside a {@link JdbcTranscript}.
+ * <p>
+ * Steps are ordered by their zero-based index. A name is optional and is intended for future multi-operation plans
+ * where a generated repository method or imperative plan may want to refer to a step by a stable logical name.
+ *
+ * @param index zero-based step index
+ * @param name optional logical step name
+ */
 record StepRef(int index, Optional<String> name) {
 
+    private static final boolean TRACE = Boolean.getBoolean("io.helidon.data.jdbc.trace");
+
+    /**
+     * Validate and normalize a step reference created by the runtime.
+     */
     StepRef {
+        // Reject negative indexes because transcript steps are always ordered from zero upward.
         if (index < 0) {
             throw new IllegalArgumentException("Step index must not be negative");
         }
+
+        // Normalize a null optional to an empty optional so callers never need null checks.
         name = name == null ? Optional.empty() : name;
+
+        // Print the normalized step reference when JDBC tracing is enabled.
+        trace("created step reference index=" + index + ", name=" + name.orElse("<none>"));
     }
 
+    /**
+     * Create an unnamed step reference for the supplied zero-based step index.
+     *
+     * @param index zero-based step index
+     * @return unnamed step reference
+     */
     static StepRef create(int index) {
+        // Print the requested index before building the step reference.
+        trace("creating unnamed step reference for index=" + index);
+
+        // Build a step reference without a name for the common single-step path.
         return new StepRef(index, Optional.empty());
+    }
+
+    /**
+     * Print a trace message when JDBC tracing is enabled.
+     *
+     * @param message message to print
+     */
+    private static void trace(String message) {
+        // Skip printing unless the user explicitly enables JDBC tracing.
+        if (!TRACE) {
+            return;
+        }
+
+        // Print the trace message with the class name for easier reading.
+        System.out.println("[StepRef] " + message);
     }
 }

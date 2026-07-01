@@ -15,5 +15,15 @@
  */
 package io.helidon.data.jdbc;
 
+/**
+ * Event marking an explicit no-result outcome.
+ * <p>
+ * JDBC commonly signals the end of result traversal with an update count of {@code -1}. Most reducers do not need an
+ * event for that sentinel, but this event type is available for operation shapes where recording an explicit no-result
+ * outcome is more useful than omitting an event.
+ *
+ * @param step owning transcript step
+ * @param ordinal event order within the step
+ */
 record NoResultEvent(StepRef step, int ordinal) implements JdbcEvent {
 }

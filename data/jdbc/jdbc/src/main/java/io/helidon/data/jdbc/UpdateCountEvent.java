@@ -15,5 +15,16 @@
  */
 package io.helidon.data.jdbc;
 
+/**
+ * Event containing one JDBC update count.
+ * <p>
+ * JDBC can interleave update counts with result sets when a statement returns multiple outcomes. This event preserves
+ * each count in the order reported by the driver. Reducers can sum counts for update-oriented return values or keep the
+ * individual event when a future API needs more detailed diagnostics.
+ *
+ * @param step owning transcript step
+ * @param ordinal event order within the step
+ * @param count update count reported by JDBC
+ */
 record UpdateCountEvent(StepRef step, int ordinal, long count) implements JdbcEvent {
 }

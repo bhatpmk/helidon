@@ -117,6 +117,27 @@ class JdbcReducersTest {
         assertThat(JdbcReducers.optionalGeneratedKey(transcript, row -> row.value("id", Long.class)), is(Optional.of(1L)));
     }
 
+    @Test
+    void mapsOutCursorRows() {
+        StepRef step = StepRef.create(0);
+        RowSet rowSet = new RowSet(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),
+                                           new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true)),
+                                   List.of(row(1L, "Pikachu"), row(2L, "Raichu")));
+        JdbcTranscript transcript = new JdbcTranscript(List.of(new StepTranscript(step,
+                                                                                  SqlKind.CALL,
+                                                                                  List.of(new RowsEvent(step,
+                                                                                                        0,
+                                                                                                        RowsEvent.RowRole.OUT_CURSOR,
+                                                                                                        Optional.of("rows"),
+                                                                                                        rowSet)),
+                                                                                  List.of(),
+                                                                                  Optional.empty())));
+
+        List<String> names = JdbcReducers.outCursor(transcript, "rows", row -> row.value("name", String.class));
+
+        assertThat(names, contains("Pikachu", "Raichu"));
+    }
+
     private static JdbcTranscript rows(MaterializedRow... rows) {
         StepRef step = StepRef.create(0);
         RowSet rowSet = new RowSet(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),

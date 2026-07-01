@@ -15,23 +15,72 @@
  */
 package io.helidon.data.jdbc;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.Objects;
 
 import io.helidon.data.DataException;
 
+/**
+ * Detached implementation of {@link JdbcRow}.
+ * <p>
+ * A materialized row stores the values copied from one JDBC {@link java.sql.ResultSet} row and reads labels through a
+ * shared {@link RowLayout}. The row does not retain a {@code ResultSet}, statement, or connection. This is the object
+ * generated mappers and imperative row mappers read after {@code JdbcRunner} has closed JDBC resources.
+ */
 final class MaterializedRow implements JdbcRow {
 
-    private final List<ColumnInfo> columns;
+    private final RowLayout layout;
     private final Object[] values;
-    private final Map<String, Integer> labels;
 
+    /**
+     * Create a row from caller-owned column metadata and values.
+     * <p>
+     * The values array is defensively copied because the caller may still own and mutate it.
+     *
+     * @param columns row columns
+     * @param values row values
+     */
     MaterializedRow(List<ColumnInfo> columns, Object[] values) {
-        this.columns = List.copyOf(columns);
-        this.values = values.clone();
-        this.labels = labels(columns);
+        this(new RowLayout(columns), values);
+    }
+
+    /**
+     * Create a row from a shared layout and caller-owned values.
+     * <p>
+     * The values array is defensively copied because the caller may still own and mutate it.
+     *
+     * @param layout shared row layout
+     * @param values row values
+     */
+    MaterializedRow(RowLayout layout, Object[] values) {
+        this(layout, values, true);
+    }
+
+    /**
+     * Create a row from values already owned by the transcript materialization path.
+     * <p>
+     * This method intentionally skips the defensive array copy. It must only be used when the caller created the values
+     * array for this row and will not mutate it after passing it here.
+     *
+     * @param layout shared row layout
+     * @param values row values owned by this row after the call
+     * @return materialized row
+     */
+    static MaterializedRow trusted(RowLayout layout, Object[] values) {
+        return new MaterializedRow(layout, values, false);
+    }
+
+    private MaterializedRow(RowLayout layout, Object[] values, boolean copyValues) {
+        this.layout = Objects.requireNonNull(layout, "Row layout must not be null");
+        Objects.requireNonNull(values, "Row values must not be null");
+        if (layout.columnCount() != values.length) {
+            throw new DataException("JDBC row has "
+                                            + values.length
+                                            + " values, but row layout has "
+                                            + layout.columnCount()
+                                            + " columns");
+        }
+        this.values = copyValues ? values.clone() : values;
     }
 
     @Override
@@ -54,14 +103,7 @@ final class MaterializedRow implements JdbcRow {
 
     @Override
     public Object value(String label) {
-        Integer index = labels.get(label);
-        if (index == null) {
-            index = labels.get(label.toLowerCase(Locale.ROOT));
-        }
-        if (index == null) {
-            throw new DataException("Column label \"" + label + "\" is not present in JDBC row");
-        }
-        return values[index];
+        return values[layout.columnIndex(label)];
     }
 
     @Override
@@ -69,20 +111,4 @@ final class MaterializedRow implements JdbcRow {
         return JdbcValues.convert(value(label), type);
     }
 
-    private static Map<String, Integer> labels(List<ColumnInfo> columns) {
-        Map<String, Integer> result = new HashMap<>();
-        for (int i = 0; i < columns.size(); i++) {
-            String label = columns.get(i).label();
-            if (label != null && !label.isBlank()) {
-                result.putIfAbsent(label, i);
-                result.putIfAbsent(label.toLowerCase(Locale.ROOT), i);
-            }
-            String name = columns.get(i).name();
-            if (name != null && !name.isBlank()) {
-                result.putIfAbsent(name, i);
-                result.putIfAbsent(name.toLowerCase(Locale.ROOT), i);
-            }
-        }
-        return Map.copyOf(result);
-    }
 }

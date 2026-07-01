@@ -18,13 +18,29 @@ package io.helidon.data.jdbc;
 import java.util.List;
 import java.util.Objects;
 
-record RowSet(List<ColumnInfo> columns, List<MaterializedRow> rows) {
+/**
+ * Detached rows from one JDBC result set or cursor.
+ * <p>
+ * A row set combines a shared {@link RowLayout} with the materialized row values that use that layout. It is the
+ * payload stored by row-shaped transcript events such as {@link RowsEvent} and {@link GeneratedKeysEvent}.
+ *
+ * @param layout shared column layout for all rows
+ * @param rows detached rows in JDBC encounter order
+ */
+record RowSet(RowLayout layout, List<MaterializedRow> rows) {
+
+    RowSet(List<ColumnInfo> columns, List<MaterializedRow> rows) {
+        this(new RowLayout(columns), rows);
+    }
 
     RowSet {
-        Objects.requireNonNull(columns, "Columns must not be null");
+        Objects.requireNonNull(layout, "Row layout must not be null");
         Objects.requireNonNull(rows, "Rows must not be null");
-        columns = List.copyOf(columns);
         rows = List.copyOf(rows);
+    }
+
+    List<ColumnInfo> columns() {
+        return layout.columns();
     }
 
     boolean isEmpty() {
