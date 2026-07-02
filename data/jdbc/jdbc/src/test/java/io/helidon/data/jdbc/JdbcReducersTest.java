@@ -18,7 +18,9 @@ package io.helidon.data.jdbc;
 import java.sql.Types;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 
+import io.helidon.data.DataException;
 import io.helidon.data.NoResultException;
 import io.helidon.data.NonUniqueResultException;
 
@@ -33,18 +35,18 @@ class JdbcReducersTest {
 
     @Test
     void mapsListRows() {
-        JdbcTranscript transcript = rows(row(1L, "Pikachu"), row(2L, "Raichu"));
+        JdbcExecutionResult result = rows(row(1L, "Pikachu"), row(2L, "Raichu"));
 
-        List<String> names = JdbcReducers.list(transcript, row -> row.value("name", String.class));
+        List<String> names = JdbcReducers.list(result, row -> row.value("name", String.class));
 
         assertThat(names, contains("Pikachu", "Raichu"));
     }
 
     @Test
     void mapsSingleRow() {
-        JdbcTranscript transcript = rows(row(1L, "Pikachu"));
+        JdbcExecutionResult result = rows(row(1L, "Pikachu"));
 
-        String name = JdbcReducers.item(transcript, row -> row.value("name", String.class));
+        String name = JdbcReducers.item(result, row -> row.value("name", String.class));
 
         assertThat(name, is("Pikachu"));
     }
@@ -63,41 +65,43 @@ class JdbcReducersTest {
         assertThat(JdbcReducers.optional(rows(row(1L, "Pikachu")), row -> row.value("name", String.class)),
                    is(Optional.of("Pikachu")));
         assertThrows(NonUniqueResultException.class, () -> JdbcReducers.optional(rows(row(1L, "Pikachu"),
-                                                                                     row(2L, "Raichu")),
-                                                                                 row -> row));
+                                                                                      row(2L, "Raichu")),
+                                                                                  row -> row));
     }
 
     @Test
-    void sumsUpdateCounts() {
-        StepRef step = StepRef.create(0);
-        JdbcTranscript transcript = new JdbcTranscript(List.of(new StepTranscript(step,
-                                                                                  SqlKind.UPDATE,
-                                                                                  List.of(new UpdateCountEvent(step, 0, 2),
-                                                                                          new UpdateCountEvent(step, 1, 3)),
-                                                                                  List.of(),
-                                                                                  Optional.empty())));
-
-        assertThat(JdbcReducers.updateCount(transcript).longValue(), is(5L));
+    void mapsScalarRowAndUpdateCountWithoutSqlClassification() {
+        assertThat(JdbcReducers.scalar(rows(row(5L, "ignored")), Integer.class), is(5));
+        assertThat(JdbcReducers.scalar(result(SqlKind.UPDATE, capture -> capture.addUpdateCount(7)), Integer.class),
+                   is(7));
     }
 
     @Test
-    void mapsUpdateCountsAsScalarRow() {
-        StepRef step = StepRef.create(0);
-        JdbcTranscript transcript = new JdbcTranscript(List.of(new StepTranscript(step,
-                                                                                  SqlKind.QUERY,
-                                                                                  List.of(new UpdateCountEvent(step, 0, 2),
-                                                                                          new UpdateCountEvent(step, 1, 3)),
-                                                                                  List.of(),
-                                                                                  Optional.empty())));
+    void returnsOneUpdateCount() {
+        JdbcExecutionResult result = result(SqlKind.UPDATE, capture -> capture.addUpdateCount(5));
 
-        assertThat(JdbcReducers.item(transcript, row -> row.value(1, Integer.class)), is(5));
-        assertThat(JdbcReducers.item(transcript, row -> row.value("updateCount", Long.class)), is(5L));
-        assertThat(JdbcReducers.item(transcript, row -> row.value(1, Boolean.class)), is(true));
+        assertThat(JdbcReducers.updateCount(result).longValue(), is(5L));
+    }
+
+    @Test
+    void rejectsMultipleUpdateCountsInsteadOfSumming() {
+        JdbcExecutionResult result = result(SqlKind.UPDATE, capture -> {
+            capture.addUpdateCount(2);
+            capture.addUpdateCount(3);
+        });
+
+        assertThrows(DataException.class, () -> JdbcReducers.updateCount(result));
+    }
+
+    @Test
+    void rejectsUpdateCountAsRows() {
+        JdbcExecutionResult result = result(SqlKind.UPDATE, capture -> capture.addUpdateCount(5));
+
+        assertThrows(DataException.class, () -> JdbcReducers.item(result, row -> row));
     }
 
     @Test
     void mapsGeneratedKeys() {
-        StepRef step = StepRef.create(0);
         RowSet rowSet = new RowSet(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false)),
                                    List.of(new MaterializedRow(List.of(new ColumnInfo("id",
                                                                                      "ID",
@@ -105,58 +109,46 @@ class JdbcReducersTest {
                                                                                      "BIGINT",
                                                                                      false)),
                                                                new Object[] {1L})));
-        JdbcTranscript transcript = new JdbcTranscript(List.of(new StepTranscript(step,
-                                                                                  SqlKind.UPDATE,
-                                                                                  List.of(new UpdateCountEvent(step, 0, 1),
-                                                                                          new GeneratedKeysEvent(step, 1, rowSet)),
-                                                                                  List.of(),
-                                                                                  Optional.empty())));
+        JdbcExecutionResult result = result(SqlKind.UPDATE, capture -> {
+            capture.addUpdateCount(1);
+            capture.addGeneratedKeys(rowSet);
+        });
 
-        assertThat(JdbcReducers.generatedKeys(transcript, row -> row.value("id", Long.class)), contains(1L));
-        assertThat(JdbcReducers.generatedKey(transcript, row -> row.value("id", Long.class)), is(1L));
-        assertThat(JdbcReducers.optionalGeneratedKey(transcript, row -> row.value("id", Long.class)), is(Optional.of(1L)));
+        assertThat(JdbcReducers.generatedKeys(result, row -> row.value("id", Long.class)), contains(1L));
+        assertThat(JdbcReducers.generatedKey(result, row -> row.value("id", Long.class)), is(1L));
+        assertThat(JdbcReducers.optionalGeneratedKey(result, row -> row.value("id", Long.class)),
+                   is(Optional.of(1L)));
     }
 
     @Test
     void mapsOutCursorRows() {
-        StepRef step = StepRef.create(0);
         RowSet rowSet = new RowSet(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),
                                            new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true)),
                                    List.of(row(1L, "Pikachu"), row(2L, "Raichu")));
-        JdbcTranscript transcript = new JdbcTranscript(List.of(new StepTranscript(step,
-                                                                                  SqlKind.CALL,
-                                                                                  List.of(new RowsEvent(step,
-                                                                                                        0,
-                                                                                                        RowsEvent.RowRole.OUT_CURSOR,
-                                                                                                        Optional.of("rows"),
-                                                                                                        rowSet)),
-                                                                                  List.of(),
-                                                                                  Optional.empty())));
+        JdbcExecutionResult result = result(SqlKind.CALL, capture -> capture.addCursor("rows", rowSet));
 
-        List<String> names = JdbcReducers.outCursor(transcript, "rows", row -> row.value("name", String.class));
+        List<String> names = JdbcReducers.outCursor(result, "rows", row -> row.value("name", String.class));
 
         assertThat(names, contains("Pikachu", "Raichu"));
     }
 
-    private static JdbcTranscript rows(MaterializedRow... rows) {
+    private static JdbcExecutionResult rows(MaterializedRow... rows) {
         StepRef step = StepRef.create(0);
         RowSet rowSet = new RowSet(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),
                                            new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true)),
-                                    List.of(rows));
-        return new JdbcTranscript(List.of(new StepTranscript(step,
-                                                             SqlKind.QUERY,
-                                                             List.of(new RowsEvent(step,
-                                                                                   0,
-                                                                                   RowsEvent.RowRole.DIRECT_RESULT_SET,
-                                                                                   Optional.empty(),
-                                                                                   rowSet)),
-                                                             List.of(),
-                                                             Optional.empty())));
+                                   List.of(rows));
+        return result(SqlKind.QUERY, capture -> capture.addRows(rowSet));
+    }
+
+    private static JdbcExecutionResult result(SqlKind kind, Consumer<JdbcOperationResult.Builder> capture) {
+        JdbcOperationResult.Builder builder = JdbcOperationResult.builder(StepRef.create(0), kind);
+        capture.accept(builder);
+        return new JdbcExecutionResult(List.of(builder.build(List.of(), Optional.empty())));
     }
 
     private static MaterializedRow row(Object id, Object name) {
         return new MaterializedRow(List.of(new ColumnInfo("id", "ID", Types.BIGINT, "BIGINT", false),
-                                          new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true)),
+                                           new ColumnInfo("name", "NAME", Types.VARCHAR, "VARCHAR", true)),
                                    new Object[] {id, name});
     }
 }

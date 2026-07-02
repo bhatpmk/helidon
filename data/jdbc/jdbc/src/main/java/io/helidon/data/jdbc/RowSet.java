@@ -22,21 +22,32 @@ import java.util.Objects;
  * Detached rows from one JDBC result set or cursor.
  * <p>
  * A row set combines a shared {@link RowLayout} with the materialized row values that use that layout. It is the
- * payload stored by row-shaped transcript events such as {@link RowsEvent} and {@link GeneratedKeysEvent}.
+ * payload stored by direct row results, generated-key results, and callable cursor attachments.
  *
- * @param layout shared column layout for all rows
- * @param rows detached rows in JDBC encounter order
+ * The explicit fields make the ownership boundary clear: a row set owns detached values and shares one immutable
+ * layout across them.
  */
-record RowSet(RowLayout layout, List<MaterializedRow> rows) {
+final class RowSet {
+    private final RowLayout layout;
+    private final List<MaterializedRow> rows;
 
     RowSet(List<ColumnInfo> columns, List<MaterializedRow> rows) {
         this(new RowLayout(columns), rows);
     }
 
-    RowSet {
+    RowSet(RowLayout layout, List<MaterializedRow> rows) {
         Objects.requireNonNull(layout, "Row layout must not be null");
         Objects.requireNonNull(rows, "Rows must not be null");
-        rows = List.copyOf(rows);
+        this.layout = layout;
+        this.rows = List.copyOf(rows);
+    }
+
+    RowLayout layout() {
+        return layout;
+    }
+
+    List<MaterializedRow> rows() {
+        return rows;
     }
 
     List<ColumnInfo> columns() {

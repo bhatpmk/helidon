@@ -16,15 +16,18 @@
 package io.helidon.data.jdbc;
 
 /**
- * Event containing generated-key rows returned by JDBC.
+ * One result in the ordered JDBC direct-result sequence.
  * <p>
- * Generated keys are exposed by JDBC through {@code PreparedStatement#getGeneratedKeys()}. The provider copies that
- * result set into a {@link RowSet} while the statement is still open, then closes JDBC resources before reducers map
- * the keys to the caller's declared return type.
- *
- * @param step owning transcript step
- * @param ordinal event order within the step
- * @param rowSet detached generated-key rows
+ * Only result sets and update counts belong to this sequence. Generated keys, callable outputs, batch results, warnings,
+ * and failures are obtained through separate JDBC APIs and are represented as attachments on the operation result.
  */
-record GeneratedKeysEvent(StepRef step, int ordinal, RowSet rowSet) implements JdbcEvent {
+sealed interface JdbcDirectResult
+        permits JdbcRowsResult, JdbcUpdateCountResult {
+
+    /**
+     * Zero-based position in the direct JDBC result sequence.
+     *
+     * @return direct-result ordinal
+     */
+    int ordinal();
 }

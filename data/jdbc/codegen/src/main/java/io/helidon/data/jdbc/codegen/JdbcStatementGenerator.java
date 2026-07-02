@@ -132,7 +132,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
 
     @Override
     public void addExecuteSimpleQueryStream(Method.Builder builder, String query, TypeName entity) {
-        addQueryStreamLambda(builder, query, List.of(), entity);
+        throw new CodegenException("JDBC direct Stream<T> returns are not resource-safe; use callback streaming");
     }
 
     @Override
@@ -193,10 +193,7 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
 
     @Override
     public void addExecuteQueryStream(Method.Builder builder, PersistenceGenerator.Query query, TypeName returnType) {
-        if (query.isDml()) {
-            throw new CodegenException("JDBC DML SQL cannot return a stream");
-        }
-        addQueryStreamLambda(builder, query.query(), query.settings(), returnType);
+        throw new CodegenException("JDBC direct Stream<T> returns are not resource-safe; use callback streaming");
     }
 
     @Override
@@ -316,6 +313,17 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
         addQueryItemCall(builder, sql, settings, returnType);
     }
 
+    void addDirectQueryScalar(Method.Builder builder,
+                              String sql,
+                              List<PersistenceGenerator.QuerySettings> settings,
+                              TypeName returnType) {
+        statement(builder, sql, settings);
+        builder.addContent(".readColumns(1)");
+        builder.addContent(".resultScalar(")
+                .addContent(returnType.className())
+                .addContent(".class)");
+    }
+
     void addDirectQueryOptional(Method.Builder builder,
                                 String sql,
                                 List<PersistenceGenerator.QuerySettings> settings,
@@ -334,17 +342,89 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
         addQueryListCall(builder, sql, settings, returnType);
     }
 
-    void addDirectQueryStream(Method.Builder builder,
-                              String sql,
-                              List<PersistenceGenerator.QuerySettings> settings,
-                              TypeName returnType) {
-        addQueryStreamCall(builder, sql, settings, returnType);
+    void addDirectWithRows(Method.Builder builder,
+                           String sql,
+                           List<PersistenceGenerator.QuerySettings> settings,
+                           String callback,
+                           TypeName rowType) {
+        statement(builder, sql, settings);
+        readColumns(builder, rowType);
+        builder.addContent(".withRows(");
+        mapper(builder, rowType);
+        builder.addContent(", ")
+                .addContent(callback)
+                .addContent(")");
     }
 
-    void addDirectUpdateCount(Method.Builder builder,
-                              String sql,
-                              List<PersistenceGenerator.QuerySettings> settings) {
-        addUpdateCall(builder, sql, settings);
+    void addDirectSlice(Method.Builder builder,
+                        String sql,
+                        List<PersistenceGenerator.QuerySettings> settings,
+                        String pageRequest,
+                        TypeName returnType) {
+        statement(builder, sql, settings);
+        readColumns(builder, returnType);
+        builder.addContent(".slice(")
+                .addContent(pageRequest)
+                .addContent(", ");
+        mapper(builder, returnType);
+        builder.addContent(")");
+    }
+
+    void addDirectPage(Method.Builder builder,
+                       String sql,
+                       String countSql,
+                       List<PersistenceGenerator.QuerySettings> settings,
+                       String pageRequest,
+                       TypeName returnType) {
+        statement(builder, sql, settings);
+        readColumns(builder, returnType);
+        builder.addContent(".page(")
+                .addContent(pageRequest)
+                .addContent(", \"")
+                .addContent(escape(countSql))
+                .addContent("\", ");
+        mapper(builder, returnType);
+        builder.addContent(")");
+    }
+
+    void addDirectGeneratedKey(Method.Builder builder,
+                               String sql,
+                               List<PersistenceGenerator.QuerySettings> settings,
+                               List<String> columns,
+                               TypeName returnType) {
+        generatedKeysStatement(builder, sql, settings, columns, returnType);
+        builder.addContent(".generatedKey(");
+        mapper(builder, returnType);
+        builder.addContent(")");
+    }
+
+    void addDirectOptionalGeneratedKey(Method.Builder builder,
+                                       String sql,
+                                       List<PersistenceGenerator.QuerySettings> settings,
+                                       List<String> columns,
+                                       TypeName returnType) {
+        generatedKeysStatement(builder, sql, settings, columns, returnType);
+        builder.addContent(".optionalGeneratedKey(");
+        mapper(builder, returnType);
+        builder.addContent(")");
+    }
+
+    void addDirectGeneratedKeys(Method.Builder builder,
+                                String sql,
+                                List<PersistenceGenerator.QuerySettings> settings,
+                                List<String> columns,
+                                TypeName returnType) {
+        generatedKeysStatement(builder, sql, settings, columns, returnType);
+        builder.addContent(".generatedKeys(");
+        mapper(builder, returnType);
+        builder.addContent(")");
+    }
+
+    void addDirectDiscard(Method.Builder builder,
+                          String sql,
+                          List<PersistenceGenerator.QuerySettings> settings) {
+        statement(builder, sql, settings);
+        builder.addContent(".discard()");
     }
 
     void addDirectCallVoid(Method.Builder builder,
@@ -404,16 +484,6 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
         builder.addContent(")");
     }
 
-    void addDirectCallOutCursorStream(Method.Builder builder,
-                                      String sql,
-                                      List<PersistenceGenerator.QuerySettings> settings,
-                                      List<JdbcCallParameter> outParameters,
-                                      String name,
-                                      TypeName rowType) {
-        addDirectCallOutCursor(builder, sql, settings, outParameters, name, rowType);
-        builder.addContent(".stream()");
-    }
-
     private void addQueryItemLambda(Method.Builder builder,
                                     String sql,
                                     List<PersistenceGenerator.QuerySettings> settings,
@@ -433,13 +503,6 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                                     List<PersistenceGenerator.QuerySettings> settings,
                                     TypeName returnType) {
         lambda(builder, b -> addQueryListCall(b, sql, settings, returnType));
-    }
-
-    private void addQueryStreamLambda(Method.Builder builder,
-                                      String sql,
-                                      List<PersistenceGenerator.QuerySettings> settings,
-                                      TypeName returnType) {
-        lambda(builder, b -> addQueryStreamCall(b, sql, settings, returnType));
     }
 
     private void addQueryItemCall(Method.Builder builder,
@@ -471,17 +534,6 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
         statement(builder, sql, settings);
         readColumns(builder, returnType);
         builder.addContent(".list(");
-        mapper(builder, returnType);
-        builder.addContent(")");
-    }
-
-    private void addQueryStreamCall(Method.Builder builder,
-                                    String sql,
-                                    List<PersistenceGenerator.QuerySettings> settings,
-                                    TypeName returnType) {
-        statement(builder, sql, settings);
-        readColumns(builder, returnType);
-        builder.addContent(".stream(");
         mapper(builder, returnType);
         builder.addContent(")");
     }
@@ -553,6 +605,27 @@ final class JdbcStatementGenerator extends BaseGenerator implements PersistenceG
                     .addContent(String.valueOf(outParameter.sqlType()))
                     .addContent(")");
         }
+    }
+
+    private void generatedKeysStatement(Method.Builder builder,
+                                        String sql,
+                                        List<PersistenceGenerator.QuerySettings> settings,
+                                        List<String> columns,
+                                        TypeName returnType) {
+        statement(builder, sql, settings);
+        if (!columns.isEmpty()) {
+            builder.addContent(".generatedKeyColumns(");
+            for (int i = 0; i < columns.size(); i++) {
+                if (i > 0) {
+                    builder.addContent(", ");
+                }
+                builder.addContent("\"")
+                        .addContent(escape(columns.get(i)))
+                        .addContent("\"");
+            }
+            builder.addContent(")");
+        }
+        readColumns(builder, returnType);
     }
 
     private static void parameters(Method.Builder builder, List<PersistenceGenerator.QuerySettings> settings) {

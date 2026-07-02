@@ -27,9 +27,12 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -39,7 +42,10 @@ import javax.sql.DataSource;
 import io.helidon.data.DataException;
 
 /**
- * Executes JDBC operations and turns JDBC results into detached transcript objects.
+ * Executes JDBC operations using either a materialized or streaming lifecycle.
+ * <p>
+ * Materialized execution captures detached {@link JdbcExecutionResult} data before resources close. Streaming execution
+ * transfers one live row operation to an internal cursor that maps rows on demand and owns resource closure.
  */
 final class JdbcRunner {
 
@@ -54,68 +60,125 @@ final class JdbcRunner {
      */
     JdbcRunner(DataSource dataSource) {
         // Store the data source used by every operation this runner executes.
-        this.dataSource = dataSource;
-
-        // Print runner creation when JDBC tracing is enabled.
-        trace("created runner for data source " + dataSource.getClass().getName());
+        this.dataSource = Objects.requireNonNull(dataSource, "Data source must not be null");
     }
 
     /**
-     * Execute a single JDBC operation and return its transcript.
+     * Execute a single JDBC operation and return its detached execution result.
      *
      * @param operation operation to execute
-     * @return transcript produced by the operation
+     * @return detached result produced by the operation
      */
-    JdbcTranscript execute(JdbcOperation operation) {
+    JdbcExecutionResult execute(JdbcOperation operation) {
         // Wrap the single operation in a plan so all execution paths use the same plan logic.
-        trace("executing single operation kind=" + operation.kind());
         return execute(JdbcPlan.of(operation));
     }
 
     /**
-     * Execute every operation in a JDBC plan and return one transcript with ordered steps.
+     * Open a single-use cursor over one row-producing operation.
+     * <p>
+     * Ownership of the connection, statement, and result set transfers to the returned result only after all three
+     * resources and the selected column layout have been created successfully. Any failure before that transfer closes
+     * the resources already acquired. Streaming does not create a {@link JdbcExecutionResult}.
+     *
+     * @param operation row-producing JDBC operation
+     * @param mapper row mapper
+     * @param <T> mapped row type
+     * @return closeable streaming rows
+     */
+    <T> JdbcResultIterable<T> openRows(JdbcOperation operation, JdbcRowMapper<T> mapper) {
+        Objects.requireNonNull(operation, "JDBC operation must not be null");
+        Objects.requireNonNull(mapper, "Row mapper must not be null");
+        if (operation.kind() != SqlKind.QUERY) {
+            throw new DataException("JDBC streaming requires a query operation");
+        }
+
+        ParsedSql parsed = NamedSqlParser.parse(operation.sql());
+        Connection connection = null;
+        PreparedStatement statement = null;
+        ResultSet resultSet = null;
+        try {
+            connection = dataSource.getConnection();
+            statement = prepareStatement(connection,
+                                         parsed.sql(),
+                                         operation.options(),
+                                         GeneratedKeysRequest.none());
+            applyOptions(statement, operation.options(), operation.resultLimit());
+            bind(statement, parsed, operation.parameters());
+            resultSet = statement.executeQuery();
+
+            SelectedColumns selectedColumns = selectedColumns(resultSet.getMetaData(), operation.columnSelection());
+            long rowLimit = effectiveMaxRows(operation.options(), operation.resultLimit());
+            trace("opened streaming rows, selected columns=" + selectedColumns.indexes.length);
+            return new JdbcStreamingCursor<>(connection,
+                                             statement,
+                                             resultSet,
+                                             selectedColumns,
+                                             mapper,
+                                             rowLimit);
+        } catch (SQLException e) {
+            DataException failure = new DataException("Execution of JDBC streaming operation failed.", e);
+            closeResources(failure, resultSet, statement, connection);
+            throw failure;
+        } catch (RuntimeException | Error failure) {
+            closeResources(failure, resultSet, statement, connection);
+            throw failure;
+        }
+    }
+
+    /**
+     * Execute every operation in a JDBC plan and return one result with ordered operation results.
      *
      * @param plan plan to execute
-     * @return transcript containing all completed steps
+     * @return result containing all completed operations
      */
-    JdbcTranscript execute(JdbcPlan plan) {
-        // Allocate room for one transcript step per planned operation.
-        trace("executing plan with operations=" + plan.operations().size());
-        List<StepTranscript> steps = new ArrayList<>(plan.operations().size());
+    JdbcExecutionResult execute(JdbcPlan plan) {
+        // TODO: Remove this
+        // Allocate room for one operation result per planned operation.
+        System.out.println("executing plan with operations=" + plan.operations().size());
+        List<JdbcOperationResult> operations = new ArrayList<>(plan.operations().size());
 
         // Execute each planned operation in order.
         for (int i = 0; i < plan.operations().size(); i++) {
             try {
-                // Execute the current operation and append its step transcript.
-                trace("executing plan step index=" + i + ", kind=" + plan.operations().get(i).kind());
-                steps.add(executeStep(plan.operations().get(i), StepRef.create(i)));
+                // Execute the current operation and append its detached result.
+                operations.add(executeStep(plan.operations().get(i), StepRef.create(i)));
             } catch (JdbcExecutionException e) {
-                // Preserve completed steps before attaching the failed step transcript.
+                // Preserve completed operations before attaching the failed operation result.
                 trace("plan step failed at index=" + i);
-                List<StepTranscript> failedSteps = new ArrayList<>(steps);
+                List<JdbcOperationResult> failedSteps = new ArrayList<>(operations);
 
-                // Add the failed step transcript carried by the lower-level exception.
-                failedSteps.addAll(e.transcript().steps());
+                // Add the failed operation result carried by the lower-level exception.
+                failedSteps.addAll(e.result().operations());
 
-                // Rethrow with a transcript that contains both completed steps and the failed step.
-                throw new JdbcExecutionException("JDBC plan execution failed.", (SQLException) e.getCause(),
-                                                 new JdbcTranscript(failedSteps));
+                // Build one result containing both completed and failed operations.
+                JdbcExecutionResult result = new JdbcExecutionResult(failedSteps);
+
+                // Print the complete detached result only when temporary JDBC tracing is enabled.
+                traceResult(result);
+
+                // Rethrow with the complete detached partial result.
+                throw new JdbcExecutionException("JDBC plan execution failed.", (SQLException) e.getCause(), result);
             }
         }
 
-        // Return the transcript for the successfully completed plan.
-        trace("plan completed with steps=" + steps.size());
-        return new JdbcTranscript(steps);
+        // Return the detached result for the successfully completed plan.
+        trace("plan completed with operations=" + operations.size());
+        JdbcExecutionResult result = new JdbcExecutionResult(operations);
+
+        // Print the complete detached result only when temporary JDBC tracing is enabled.
+        traceResult(result);
+        return result;
     }
 
     /**
-     * Execute one operation and return one transcript step.
+     * Execute one operation and return one detached operation result.
      *
      * @param operation operation to execute
-     * @param stepRef   transcript step reference
-     * @return transcript step for the operation
+     * @param stepRef   operation reference
+     * @return operation result
      */
-    private StepTranscript executeStep(JdbcOperation operation, StepRef stepRef) {
+    private JdbcOperationResult executeStep(JdbcOperation operation, StepRef stepRef) {
         // Route batch operations to the batch-specific execution path.
         trace("executing step index=" + stepRef.index() + ", kind=" + operation.kind());
         if (operation.kind() == SqlKind.BATCH) {
@@ -127,8 +190,8 @@ final class JdbcRunner {
             return executeCallStep(operation, stepRef);
         }
 
-        // Collect JDBC events observed during the operation.
-        List<JdbcEvent> events = new ArrayList<>();
+        // Capture detached values directly in the typed operation builder.
+        JdbcOperationResult.Builder capture = JdbcOperationResult.builder(stepRef, operation.kind());
 
         // Collect JDBC warnings observed during the operation.
         List<JdbcWarningInfo> warnings = new ArrayList<>();
@@ -151,9 +214,6 @@ final class JdbcRunner {
             // Execute the statement and learn whether the first outcome is a result set.
             boolean hasResultSet = statement.execute();
 
-            // Track the event order within this step.
-            int ordinal = 0;
-
             // Track whether generated keys have already been collected.
             boolean generatedKeysCollected = false;
 
@@ -167,13 +227,11 @@ final class JdbcRunner {
                                                     operation.columnSelection(),
                                                     effectiveMaxRows(operation.options(), operation.resultLimit()));
 
-                        // Record the materialized result set as a rows event.
-                        trace("step index=" + stepRef.index() + " captured result set rows=" + rowSet.size());
-                        events.add(new RowsEvent(stepRef,
-                                                 ordinal++,
-                                                 RowsEvent.RowRole.DIRECT_RESULT_SET,
-                                                 java.util.Optional.empty(),
-                                                 rowSet));
+                        // Add the materialized result set to the ordered direct-result sequence.
+                        trace("step index=" + stepRef.index() + " captured direct result ordinal="
+                                      + capture.directResultCount() + ", rows=" + rowSet.size()
+                                      + ", columns=" + rowSet.columns().size());
+                        capture.addRows(rowSet);
                     }
                 } else {
                     // Read the current update count.
@@ -184,19 +242,18 @@ final class JdbcRunner {
                         break;
                     }
 
-                    // Record the update count as an event.
+                    // Add the update count to the ordered direct-result sequence.
                     trace("step index=" + stepRef.index() + " captured update count=" + updateCount);
-                    events.add(new UpdateCountEvent(stepRef, ordinal++, updateCount));
+                    capture.addUpdateCount(updateCount);
                 }
 
                 // Collect generated keys once after execution when the operation requested them.
                 if (operation.generatedKeys().requested() && !generatedKeysCollected) {
-                    ordinal = collectGeneratedKeys(statement,
-                                                   stepRef,
-                                                   events,
-                                                   ordinal,
-                                                   operation.columnSelection(),
-                                                   effectiveMaxRows(operation.options(), operation.resultLimit()));
+                    collectGeneratedKeys(statement,
+                                         stepRef,
+                                         capture,
+                                         operation.columnSelection(),
+                                         effectiveMaxRows(operation.options(), operation.resultLimit()));
                     generatedKeysCollected = true;
                 }
 
@@ -208,8 +265,7 @@ final class JdbcRunner {
             if (operation.generatedKeys().requested() && !generatedKeysCollected) {
                 collectGeneratedKeys(statement,
                                      stepRef,
-                                     events,
-                                     ordinal,
+                                     capture,
                                      operation.columnSelection(),
                                      effectiveMaxRows(operation.options(), operation.resultLimit()));
             }
@@ -217,31 +273,23 @@ final class JdbcRunner {
             // Copy SQL warnings after execution while the statement is still open.
             warnings.addAll(warnings(statement.getWarnings()));
 
-            // Build the successful transcript step.
-            trace("step index=" + stepRef.index() + " completed with events=" + events.size()
+            // Build the successful detached operation result.
+            trace("step index=" + stepRef.index() + " completed, direct results=" + capture.directResultCount()
                           + ", warnings=" + warnings.size());
-            StepTranscript step = new StepTranscript(stepRef,
-                                                     operation.kind(),
-                                                     events,
-                                                     warnings,
-                                                     java.util.Optional.empty());
+            JdbcOperationResult step = capture.build(warnings, java.util.Optional.empty());
 
             // Return the completed step to the plan executor.
             return step;
         } catch (SQLException e) {
-            // Build a failed transcript step with all events collected before the exception.
+            // Build a failed operation result with all detached values collected before the exception.
             trace("step index=" + stepRef.index() + " failed with SQL state=" + e.getSQLState());
-            StepTranscript step = new StepTranscript(stepRef,
-                                                     operation.kind(),
-                                                     events,
-                                                     warnings,
-                                                     java.util.Optional.of(failure(e)));
+            JdbcOperationResult step = capture.build(warnings, java.util.Optional.of(failure(e)));
 
-            // Wrap the failed step in a transcript for the exception.
-            JdbcTranscript transcript = new JdbcTranscript(List.of(step));
+            // Wrap the failed operation result for the exception.
+            JdbcExecutionResult result = new JdbcExecutionResult(List.of(step));
 
             // Throw a runtime exception that keeps the original SQLException as cause.
-            throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.", e, transcript);
+            throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.", e, result);
         }
     }
 
@@ -249,13 +297,13 @@ final class JdbcRunner {
      * Execute a callable statement and capture scalar OUT parameter values.
      *
      * @param operation callable operation to execute
-     * @param stepRef   transcript step reference
-     * @return transcript step for the callable operation
+     * @param stepRef   operation reference
+     * @return operation result for the callable operation
      */
-    private StepTranscript executeCallStep(JdbcOperation operation, StepRef stepRef) {
-        // Collect callable events observed during execution.
+    private JdbcOperationResult executeCallStep(JdbcOperation operation, StepRef stepRef) {
+        // Capture callable results directly in the typed operation builder.
         trace("executing callable step index=" + stepRef.index());
-        List<JdbcEvent> events = new ArrayList<>();
+        JdbcOperationResult.Builder capture = JdbcOperationResult.builder(stepRef, operation.kind());
 
         // Collect callable warnings observed during execution.
         List<JdbcWarningInfo> warnings = new ArrayList<>();
@@ -278,49 +326,75 @@ final class JdbcRunner {
             // Execute the callable statement and learn whether the first outcome is a result set.
             boolean hasResultSet = statement.execute();
 
-            // Capture scalar OUT parameter values and cursor OUT result sets in detached transcript events.
-            trace("callable step index=" + stepRef.index() + " captured out params="
-                          + operation.outParameters().size());
-            int ordinal = collectOutParameterEvents(statement,
-                                                    operation.outParameters(),
-                                                    stepRef,
-                                                    events,
-                                                    0,
+            if (hasResultSet) {
+                // Some drivers expose a function return and its OUT parameters through the current result-set row.
+                // Detach callable outputs before advancing that row, while the result set is still open.
+                try (ResultSet currentResultSet = statement.getResultSet()) {
+                    // H2, for example, requires getObject to read the current row before materialization advances it.
+                    trace("callable step index=" + stepRef.index() + " captured out params="
+                                  + operation.outParameters().size());
+                    collectOutParameters(statement,
+                                              operation.outParameters(),
+                                              capture,
+                                              operation.columnSelection(),
+                                              effectiveMaxRows(operation.options(), operation.resultLimit()));
+
+                    // Now consume and detach the current direct result. The final typed result model keeps direct
+                    // results separate from callable attachments, so capture order here does not change reduction.
+                    if (currentResultSet != null) {
+                        RowSet rowSet = materialize(currentResultSet,
                                                     operation.columnSelection(),
                                                     effectiveMaxRows(operation.options(), operation.resultLimit()));
+                        trace("callable step index=" + stepRef.index() + " captured direct result ordinal="
+                                      + capture.directResultCount() + ", rows=" + rowSet.size()
+                                      + ", columns=" + rowSet.columns().size());
+                        capture.addRows(rowSet);
+                    }
+                }
 
-            // Capture direct result sets and update counts returned by the call itself.
-            collectStatementResults(statement,
-                                    stepRef,
-                                    events,
-                                    ordinal,
-                                    hasResultSet,
-                                    operation.columnSelection(),
-                                    effectiveMaxRows(operation.options(), operation.resultLimit()));
+                // Continue with later direct results after the current result and callable attachments are detached.
+                collectStatementResults(statement,
+                                        capture,
+                                        stepRef,
+                                        statement.getMoreResults(Statement.CLOSE_CURRENT_RESULT),
+                                        operation.columnSelection(),
+                                        effectiveMaxRows(operation.options(), operation.resultLimit()));
+            } else {
+                // With no current result set, consume update counts and later direct results before reading OUT values.
+                collectStatementResults(statement,
+                                        capture,
+                                        stepRef,
+                                        false,
+                                        operation.columnSelection(),
+                                        effectiveMaxRows(operation.options(), operation.resultLimit()));
+
+                trace("callable step index=" + stepRef.index() + " captured out params="
+                              + operation.outParameters().size());
+                collectOutParameters(statement,
+                                          operation.outParameters(),
+                                          capture,
+                                          operation.columnSelection(),
+                                          effectiveMaxRows(operation.options(), operation.resultLimit()));
+            }
 
             // Copy SQL warnings while the callable statement is still open.
             warnings.addAll(warnings(statement.getWarnings()));
 
-            // Return the successful callable transcript step.
-            return new StepTranscript(stepRef,
-                                      operation.kind(),
-                                      events,
-                                      warnings,
-                                      java.util.Optional.empty());
-        } catch (SQLException e) {
-            // Build a failed callable step with any events collected before the exception.
-            trace("callable step index=" + stepRef.index() + " failed with SQL state=" + e.getSQLState());
-            StepTranscript step = new StepTranscript(stepRef,
-                                                     operation.kind(),
-                                                     events,
-                                                     warnings,
-                                                     java.util.Optional.of(failure(e)));
+            trace("callable step index=" + stepRef.index() + " completed, direct results="
+                          + capture.directResultCount() + ", warnings=" + warnings.size());
 
-            // Wrap the failed step in a transcript for the exception.
-            JdbcTranscript transcript = new JdbcTranscript(List.of(step));
+            // Return the successful callable operation result.
+            return capture.build(warnings, java.util.Optional.empty());
+        } catch (SQLException e) {
+            // Build a failed callable operation result with detached values collected before the exception.
+            trace("callable step index=" + stepRef.index() + " failed with SQL state=" + e.getSQLState());
+            JdbcOperationResult step = capture.build(warnings, java.util.Optional.of(failure(e)));
+
+            // Wrap the failed callable operation result for the exception.
+            JdbcExecutionResult result = new JdbcExecutionResult(List.of(step));
 
             // Throw a runtime exception that keeps the original SQLException as cause.
-            throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.", e, transcript);
+            throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.", e, result);
         }
     }
 
@@ -328,14 +402,14 @@ final class JdbcRunner {
      * Execute a prepared statement batch and capture per-item batch outcomes.
      *
      * @param operation batch operation to execute
-     * @param stepRef   transcript step reference
-     * @return transcript step for the batch operation
+     * @param stepRef   operation reference
+     * @return operation result for the batch operation
      */
-    private StepTranscript executeBatchStep(JdbcOperation operation, StepRef stepRef) {
-        // Collect batch events observed during execution.
+    private JdbcOperationResult executeBatchStep(JdbcOperation operation, StepRef stepRef) {
+        // Capture batch outcomes directly in the typed operation builder.
         trace("executing batch step index=" + stepRef.index()
                       + ", batch items=" + operation.batchParameters().size());
-        List<JdbcEvent> events = new ArrayList<>();
+        JdbcOperationResult.Builder capture = JdbcOperationResult.builder(stepRef, operation.kind());
 
         // Collect batch warnings observed during execution.
         List<JdbcWarningInfo> warnings = new ArrayList<>();
@@ -369,51 +443,39 @@ final class JdbcRunner {
             } catch (BatchUpdateException e) {
                 // Preserve partial batch counts from the driver.
                 trace("batch step index=" + stepRef.index() + " failed after partial counts");
-                events.add(new BatchEvent(stepRef, 0, batchItems(batchUpdateCounts(e), operation.batchParameters().size())));
+                capture.addBatch(new JdbcBatchResult(batchItems(batchUpdateCounts(e), operation.batchParameters().size())));
 
                 // Copy SQL warnings while the statement is still open.
                 warnings.addAll(warnings(statement.getWarnings()));
 
                 // Build a failed batch step that carries partial batch information.
-                StepTranscript step = new StepTranscript(stepRef,
-                                                         operation.kind(),
-                                                         events,
-                                                         warnings,
-                                                         java.util.Optional.of(failure(e)));
+                JdbcOperationResult step = capture.build(warnings, java.util.Optional.of(failure(e)));
 
-                // Throw a transcript-carrying exception for the partial failure.
+                // Throw an execution-result-carrying exception for the partial failure.
                 throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.",
                                                  e,
-                                                 new JdbcTranscript(List.of(step)));
+                                                 new JdbcExecutionResult(List.of(step)));
             }
 
             // Record all successful batch item outcomes.
             trace("batch step index=" + stepRef.index() + " completed with counts=" + counts.length);
-            events.add(new BatchEvent(stepRef, 0, batchItems(counts, operation.batchParameters().size())));
+            capture.addBatch(new JdbcBatchResult(batchItems(counts, operation.batchParameters().size())));
 
             // Copy SQL warnings while the statement is still open.
             warnings.addAll(warnings(statement.getWarnings()));
 
-            // Return the successful batch transcript step.
-            return new StepTranscript(stepRef,
-                                      operation.kind(),
-                                      events,
-                                      warnings,
-                                      java.util.Optional.empty());
+            // Return the successful batch operation result.
+            return capture.build(warnings, java.util.Optional.empty());
         } catch (SQLException e) {
-            // Build a failed batch step with any events collected before the exception.
+            // Build a failed batch operation result with detached outcomes collected before the exception.
             trace("batch step index=" + stepRef.index() + " failed with SQL state=" + e.getSQLState());
-            StepTranscript step = new StepTranscript(stepRef,
-                                                     operation.kind(),
-                                                     events,
-                                                     warnings,
-                                                     java.util.Optional.of(failure(e)));
+            JdbcOperationResult step = capture.build(warnings, java.util.Optional.of(failure(e)));
 
-            // Wrap the failed step in a transcript for the exception.
-            JdbcTranscript transcript = new JdbcTranscript(List.of(step));
+            // Wrap the failed step in an execution result for the exception.
+            JdbcExecutionResult result = new JdbcExecutionResult(List.of(step));
 
             // Throw a runtime exception that keeps the original SQLException as cause.
-            throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.", e, transcript);
+            throw new JdbcExecutionException("JDBC " + operation.kind() + " execution failed.", e, result);
         }
     }
 
@@ -432,7 +494,6 @@ final class JdbcRunner {
                                                       JdbcStatementOptions options,
                                                       GeneratedKeysRequest generatedKeys) throws SQLException {
         // Use ordinary prepareStatement overloads when generated keys are not requested.
-        trace("preparing statement generatedKeys=" + generatedKeys.requested());
         if (!generatedKeys.requested()) {
             // Use the driver default result set shape when no shape was configured.
             if (!options.hasResultSetShape()) {
@@ -486,7 +547,6 @@ final class JdbcRunner {
                                                  String sql,
                                                  JdbcStatementOptions options) throws SQLException {
         // Use the driver default result set shape when no shape was configured.
-        trace("preparing callable statement");
         if (!options.hasResultSetShape()) {
             return connection.prepareCall(sql);
         }
@@ -632,24 +692,25 @@ final class JdbcRunner {
     }
 
     /**
-     * Convert JDBC batch counts into transcript batch items.
+     * Convert JDBC batch counts into execution-result batch items.
      *
      * @param counts    driver-reported counts
      * @param batchSize number of requested batch items
-     * @return transcript batch item list
+     * @return execution-result batch item list
      */
-    private static List<BatchEvent.BatchItem> batchItems(long[] counts, int batchSize) {
+    private static List<JdbcBatchResult.JdbcBatchItem> batchItems(long[] counts, int batchSize) {
         // Allocate room for one item per requested batch entry.
-        List<BatchEvent.BatchItem> items = new ArrayList<>(batchSize);
+        List<JdbcBatchResult.JdbcBatchItem> items = new ArrayList<>(batchSize);
 
-        // Convert every driver-reported count into a transcript item.
+        // Convert every driver-reported count into an execution-result item.
         for (long count : counts) {
             items.add(batchItem(count));
         }
 
-        // Fill missing driver results as not attempted after partial failures.
+        // Keep missing outcomes as not reported because JDBC does not prove that these items were not attempted.
         while (items.size() < batchSize) {
-            items.add(new BatchEvent.BatchItem(BatchEvent.BatchStatus.NOT_ATTEMPTED, java.util.OptionalLong.empty()));
+            items.add(new JdbcBatchResult.JdbcBatchItem(JdbcBatchResult.BatchStatus.NOT_REPORTED,
+                                                        java.util.OptionalLong.empty()));
         }
 
         // Return the normalized batch item list.
@@ -657,58 +718,59 @@ final class JdbcRunner {
     }
 
     /**
-     * Convert one JDBC batch count into one transcript item.
+     * Convert one JDBC batch count into one execution-result item.
      *
      * @param count JDBC batch count or sentinel
-     * @return transcript batch item
+     * @return execution-result batch item
      */
-    private static BatchEvent.BatchItem batchItem(long count) {
-        // Map the JDBC success-without-count sentinel to a transcript status.
+    private static JdbcBatchResult.JdbcBatchItem batchItem(long count) {
+        // Map the JDBC success-without-count sentinel to an execution-result status.
         if (count == Statement.SUCCESS_NO_INFO) {
-            return new BatchEvent.BatchItem(BatchEvent.BatchStatus.SUCCESS_NO_INFO, java.util.OptionalLong.empty());
+            return new JdbcBatchResult.JdbcBatchItem(JdbcBatchResult.BatchStatus.SUCCESS_NO_INFO,
+                                                     java.util.OptionalLong.empty());
         }
 
-        // Map the JDBC failure sentinel to a transcript status.
+        // Map the JDBC failure sentinel to an execution-result status.
         if (count == Statement.EXECUTE_FAILED) {
-            return new BatchEvent.BatchItem(BatchEvent.BatchStatus.EXECUTE_FAILED, java.util.OptionalLong.empty());
+            return new JdbcBatchResult.JdbcBatchItem(JdbcBatchResult.BatchStatus.EXECUTE_FAILED,
+                                                     java.util.OptionalLong.empty());
         }
 
         // Treat any non-sentinel value as an update count.
-        return new BatchEvent.BatchItem(BatchEvent.BatchStatus.UPDATED, java.util.OptionalLong.of(count));
+        return new JdbcBatchResult.JdbcBatchItem(JdbcBatchResult.BatchStatus.UPDATED,
+                                                 java.util.OptionalLong.of(count));
     }
 
     /**
      * Collect generated keys from a prepared statement.
      *
      * @param statement prepared statement
-     * @param stepRef   transcript step reference
-     * @param events    event list to append to
-     * @param ordinal   next event ordinal
+     * @param stepRef   operation reference
+     * @param capture   typed operation capture builder
      * @param columnSelection selected generated-key columns
      * @param resultLimit maximum generated-key rows to detach, or zero for no limit
-     * @return next event ordinal
      * @throws SQLException if generated keys cannot be read
      */
-    private static int collectGeneratedKeys(PreparedStatement statement,
-                                            StepRef stepRef,
-                                            List<JdbcEvent> events,
-                                            int ordinal,
-                                            JdbcColumnSelection columnSelection,
-                                            long resultLimit) throws SQLException {
+    private static void collectGeneratedKeys(PreparedStatement statement,
+                                             StepRef stepRef,
+                                             JdbcOperationResult.Builder capture,
+                                             JdbcColumnSelection columnSelection,
+                                             long resultLimit) throws SQLException {
         // Ask the JDBC driver for generated keys.
-        trace("collecting generated keys for step index=" + stepRef.index());
         ResultSet resultSet = statement.getGeneratedKeys();
 
         // Record an empty generated-key row set when the driver returns no result set.
         if (resultSet == null) {
-            events.add(new GeneratedKeysEvent(stepRef, ordinal, new RowSet(List.of(), List.of())));
-            return ordinal + 1;
+            trace("step index=" + stepRef.index() + " generated keys returned no result set");
+            capture.addGeneratedKeys(new RowSet(List.of(), List.of()));
+            return;
         }
 
         // Materialize and close the generated-key result set.
         try (resultSet) {
-            events.add(new GeneratedKeysEvent(stepRef, ordinal, materialize(resultSet, columnSelection, resultLimit)));
-            return ordinal + 1;
+            RowSet keys = materialize(resultSet, columnSelection, resultLimit);
+            trace("step index=" + stepRef.index() + " generated keys captured rows=" + keys.size());
+            capture.addGeneratedKeys(keys);
         }
     }
 
@@ -716,22 +778,19 @@ final class JdbcRunner {
      * Collect direct result sets and update counts from a JDBC statement.
      *
      * @param statement    statement to inspect
-     * @param stepRef      transcript step reference
-     * @param events       event list to append to
-     * @param ordinal      next event ordinal
+     * @param capture      typed operation capture builder
+     * @param stepRef      operation reference used for tracing
      * @param hasResultSet whether the first statement outcome is a result set
      * @param columnSelection selected result-set columns
      * @param resultLimit maximum rows to detach from each result set, or zero for no limit
-     * @return next event ordinal
      * @throws SQLException if a result set or update count cannot be read
      */
-    private static int collectStatementResults(Statement statement,
-                                               StepRef stepRef,
-                                               List<JdbcEvent> events,
-                                               int ordinal,
-                                               boolean hasResultSet,
-                                               JdbcColumnSelection columnSelection,
-                                               long resultLimit) throws SQLException {
+    private static void collectStatementResults(Statement statement,
+                                                JdbcOperationResult.Builder capture,
+                                                StepRef stepRef,
+                                                boolean hasResultSet,
+                                                JdbcColumnSelection columnSelection,
+                                                long resultLimit) throws SQLException {
         // Traverse every result set and update count returned by JDBC.
         while (true) {
             if (hasResultSet) {
@@ -742,12 +801,11 @@ final class JdbcRunner {
                         // Copy all result set data into detached row objects.
                         RowSet rowSet = materialize(resultSet, columnSelection, resultLimit);
 
-                        // Record the materialized result set as a direct rows event.
-                        events.add(new RowsEvent(stepRef,
-                                                 ordinal++,
-                                                 RowsEvent.RowRole.DIRECT_RESULT_SET,
-                                                 java.util.Optional.empty(),
-                                                 rowSet));
+                        // Add the materialized result set to the ordered direct-result sequence.
+                        trace("callable step index=" + stepRef.index() + " captured direct result ordinal="
+                                      + capture.directResultCount() + ", rows=" + rowSet.size()
+                                      + ", columns=" + rowSet.columns().size());
+                        capture.addRows(rowSet);
                     }
                 }
             } else {
@@ -759,16 +817,15 @@ final class JdbcRunner {
                     break;
                 }
 
-                // Record the update count as an event.
-                events.add(new UpdateCountEvent(stepRef, ordinal++, updateCount));
+                // Add the update count to the ordered direct-result sequence.
+                trace("callable step index=" + stepRef.index() + " captured update count=" + updateCount);
+                capture.addUpdateCount(updateCount);
             }
 
             // Move to the next JDBC outcome and close the current result set if one was open.
             hasResultSet = statement.getMoreResults(Statement.CLOSE_CURRENT_RESULT);
         }
 
-        // Return the next available ordinal for subsequent events in the same step.
-        return ordinal;
     }
 
     /**
@@ -780,13 +837,43 @@ final class JdbcRunner {
      * @throws SQLException if a parameter cannot be bound
      */
     private static void bind(PreparedStatement statement, ParsedSql parsed, List<JdbcParameter> parameters) throws SQLException {
-        // Resolve SQL placeholders into ordered JDBC values.
-        List<Object> values = values(parsed, parameters);
+        // Resolve SQL placeholders into ordered parameter descriptors without discarding type metadata.
+        List<JdbcParameter> bindings = bindings(parsed, parameters);
 
-        // Bind each value to the one-based JDBC parameter index.
-        trace("binding parameters count=" + values.size());
-        for (int i = 0; i < values.size(); i++) {
-            statement.setObject(i + 1, values.get(i));
+        // Bind each parameter to the one-based JDBC parameter index.
+        for (int i = 0; i < bindings.size(); i++) {
+            bindParameter(statement, i + 1, bindings.get(i));
+        }
+    }
+
+    /**
+     * Bind one parameter using the narrowest JDBC API selected by its metadata.
+     *
+     * @param statement JDBC prepared or callable statement
+     * @param index     one-based JDBC parameter index
+     * @param parameter detached binding descriptor
+     * @throws SQLException if the driver rejects the binding
+     */
+    private static void bindParameter(PreparedStatement statement, int index, JdbcParameter parameter) throws SQLException {
+        if (parameter.sqlType().isEmpty()) {
+            statement.setObject(index, parameter.value());
+            return;
+        }
+
+        int sqlType = parameter.sqlType().getAsInt();
+        if (parameter.value() == null) {
+            if (parameter.typeName().isPresent()) {
+                statement.setNull(index, sqlType, parameter.typeName().orElseThrow());
+            } else {
+                statement.setNull(index, sqlType);
+            }
+            return;
+        }
+
+        if (parameter.scale().isPresent()) {
+            statement.setObject(index, parameter.value(), sqlType, parameter.scale().getAsInt());
+        } else {
+            statement.setObject(index, parameter.value(), sqlType);
         }
     }
 
@@ -800,7 +887,7 @@ final class JdbcRunner {
     private static void registerOutParameters(CallableStatement statement, List<JdbcOutParameter> outParameters)
             throws SQLException {
         // Register each declared OUT parameter by JDBC index and SQL type.
-        trace("registering out parameters count=" + outParameters.size());
+        trace("registering callable OUT parameters count=" + outParameters.size());
         for (JdbcOutParameter outParameter : outParameters) {
             statement.registerOutParameter(outParameter.index(), outParameter.sqlType());
         }
@@ -823,7 +910,6 @@ final class JdbcRunner {
         Set<Integer> outIndexes = outIndexes(outParameters);
 
         // Dispatch binding based on the SQL placeholder style.
-        trace("binding callable parameters mode=" + parsed.parameterMode());
         switch (parsed.parameterMode()) {
         case NONE -> noParameters(parameters);
         case NAMED -> bindCallableNamed(statement, parsed, parameters, outIndexes);
@@ -878,8 +964,8 @@ final class JdbcRunner {
             // Remember that this named binding was used.
             used.add(parameterName);
 
-            // Bind the named value at the current JDBC index.
-            statement.setObject(jdbcIndex, parameter.value());
+            // Bind the named value at the current JDBC index while preserving explicit type metadata.
+            bindParameter(statement, jdbcIndex, parameter);
         }
 
         // Reject named method parameters that did not correspond to SQL placeholders.
@@ -925,7 +1011,7 @@ final class JdbcRunner {
             }
 
             // Bind the next input parameter at the current JDBC index.
-            statement.setObject(jdbcIndex, parameters.get(parameterIndex++).value());
+            bindParameter(statement, jdbcIndex, parameters.get(parameterIndex++));
         }
 
         // Reject extra method parameters that were not consumed by SQL placeholders.
@@ -968,7 +1054,7 @@ final class JdbcRunner {
             }
 
             // Bind the method parameter selected by the ordinal placeholder.
-            statement.setObject(jdbcIndex, parameters.get(sourceIndex - 1).value());
+            bindParameter(statement, jdbcIndex, parameters.get(sourceIndex - 1));
         }
     }
 
@@ -1010,46 +1096,34 @@ final class JdbcRunner {
     }
 
     /**
-     * Read callable OUT parameter values into transcript events.
+     * Read callable OUT parameter values into the typed operation capture.
      *
      * @param statement     callable statement
      * @param outParameters OUT parameter metadata
-     * @param stepRef       transcript step reference
-     * @param events        event list to append to
-     * @param ordinal       next event ordinal
+     * @param capture       typed operation capture builder
      * @param columnSelection selected OUT cursor columns
      * @param resultLimit   maximum OUT cursor rows to detach, or zero for no limit
-     * @return next event ordinal
      * @throws SQLException if an OUT value cannot be read
      */
-    private static int collectOutParameterEvents(CallableStatement statement,
-                                                 List<JdbcOutParameter> outParameters,
-                                                 StepRef stepRef,
-                                                 List<JdbcEvent> events,
-                                                 int ordinal,
-                                                 JdbcColumnSelection columnSelection,
-                                                 long resultLimit) throws SQLException {
+    private static void collectOutParameters(CallableStatement statement,
+                                             List<JdbcOutParameter> outParameters,
+                                             JdbcOperationResult.Builder capture,
+                                             JdbcColumnSelection columnSelection,
+                                             long resultLimit) throws SQLException {
         // Preserve OUT parameter encounter order in the returned map.
         Map<String, Object> values = new LinkedHashMap<>();
 
         // Read every registered OUT parameter by JDBC index.
         for (JdbcOutParameter outParameter : outParameters) {
             if (outParameter.cursor()) {
-                events.add(new RowsEvent(stepRef,
-                                         ordinal++,
-                                         RowsEvent.RowRole.OUT_CURSOR,
-                                         java.util.Optional.of(outParameter.name()),
-                                         outCursor(statement, outParameter, columnSelection, resultLimit)));
+                capture.addCursor(outParameter.name(), outCursor(statement, outParameter, columnSelection, resultLimit));
             } else {
                 values.put(outParameter.name(), statement.getObject(outParameter.index()));
             }
         }
 
-        // Record scalar OUT values as a single event even when no scalar OUT values were registered.
-        events.add(new OutParamsEvent(stepRef, ordinal++, values));
-
-        // Return the next available ordinal for direct result sets and update counts.
-        return ordinal;
+        // Add scalar OUT values as detached named outputs.
+        values.forEach(capture::addOutput);
     }
 
     /**
@@ -1071,13 +1145,17 @@ final class JdbcRunner {
 
         // A null cursor maps to an empty row set.
         if (cursor == null) {
+            trace("callable OUT cursor " + outParameter.name() + " returned no rows");
             return new RowSet(List.of(), List.of());
         }
 
         // JDBC drivers normally expose cursor OUT parameters as ResultSet instances.
         if (cursor instanceof ResultSet resultSet) {
             try (resultSet) {
-                return materialize(resultSet, columnSelection, resultLimit);
+                RowSet rows = materialize(resultSet, columnSelection, resultLimit);
+                trace("callable OUT cursor " + outParameter.name() + " captured rows=" + rows.size()
+                              + ", columns=" + rows.columns().size());
+                return rows;
             }
         }
 
@@ -1088,19 +1166,19 @@ final class JdbcRunner {
     }
 
     /**
-     * Resolve parsed SQL placeholders into JDBC values.
+     * Resolve parsed SQL placeholders into JDBC parameter descriptors.
      *
      * @param parsed     parsed SQL metadata
      * @param parameters operation parameters
-     * @return ordered JDBC parameter values
+     * @return ordered JDBC parameter descriptors
      */
-    private static List<Object> values(ParsedSql parsed, List<JdbcParameter> parameters) {
-        // Dispatch value resolution based on the SQL placeholder style.
+    private static List<JdbcParameter> bindings(ParsedSql parsed, List<JdbcParameter> parameters) {
+        // Dispatch parameter resolution based on the SQL placeholder style.
         return switch (parsed.parameterMode()) {
         case NONE -> noParameters(parameters);
-        case NAMED -> namedValues(parsed, parameters);
-        case POSITIONAL -> positionalValues(parsed, parameters);
-        case ORDINAL -> ordinalValues(parsed, parameters);
+        case NAMED -> namedBindings(parsed, parameters);
+        case POSITIONAL -> positionalBindings(parsed, parameters);
+        case ORDINAL -> ordinalBindings(parsed, parameters);
         };
     }
 
@@ -1110,7 +1188,7 @@ final class JdbcRunner {
      * @param parameters operation parameters
      * @return empty value list
      */
-    private static List<Object> noParameters(List<JdbcParameter> parameters) {
+    private static List<JdbcParameter> noParameters(List<JdbcParameter> parameters) {
         // Reject provided parameters when SQL declares no placeholders.
         if (!parameters.isEmpty()) {
             throw new DataException("SQL statement declares no parameters, but " + parameters.size()
@@ -1122,13 +1200,13 @@ final class JdbcRunner {
     }
 
     /**
-     * Resolve named SQL placeholders into ordered JDBC values.
+     * Resolve named SQL placeholders into ordered JDBC parameter descriptors.
      *
      * @param parsed     parsed SQL metadata
      * @param parameters operation parameters
-     * @return ordered JDBC parameter values
+     * @return ordered JDBC parameter descriptors
      */
-    private static List<Object> namedValues(ParsedSql parsed, List<JdbcParameter> parameters) {
+    private static List<JdbcParameter> namedBindings(ParsedSql parsed, List<JdbcParameter> parameters) {
         // Index method parameters by name for lookup during SQL placeholder traversal.
         Map<String, JdbcParameter> byName = parameters.stream()
                 .peek(parameter -> {
@@ -1139,8 +1217,8 @@ final class JdbcRunner {
                 })
                 .collect(Collectors.toMap(JdbcParameter::name, Function.identity(), (first, second) -> first));
 
-        // Allocate the JDBC value list in SQL placeholder order.
-        List<Object> values = new ArrayList<>(parsed.parameterNames().size());
+        // Allocate the JDBC binding list in SQL placeholder order.
+        List<JdbcParameter> bindings = new ArrayList<>(parsed.parameterNames().size());
 
         // Track which named bindings were consumed by SQL placeholders.
         Set<String> used = new HashSet<>();
@@ -1157,8 +1235,8 @@ final class JdbcRunner {
             // Remember that this named binding was used.
             used.add(parameterName);
 
-            // Append the value for this SQL placeholder occurrence.
-            values.add(parameter.value());
+            // Append the descriptor for this SQL placeholder occurrence.
+            bindings.add(parameter);
         }
 
         // Reject named method parameters that did not correspond to SQL placeholders.
@@ -1168,18 +1246,18 @@ final class JdbcRunner {
             throw new DataException("SQL statement has unused named parameter bindings: " + unused);
         }
 
-        // Return values ordered by JDBC placeholder position.
-        return values;
+        // Return descriptors ordered by JDBC placeholder position.
+        return bindings;
     }
 
     /**
-     * Resolve positional SQL placeholders into ordered JDBC values.
+     * Resolve positional SQL placeholders into ordered JDBC parameter descriptors.
      *
      * @param parsed     parsed SQL metadata
      * @param parameters operation parameters
-     * @return ordered JDBC parameter values
+     * @return ordered JDBC parameter descriptors
      */
-    private static List<Object> positionalValues(ParsedSql parsed, List<JdbcParameter> parameters) {
+    private static List<JdbcParameter> positionalBindings(ParsedSql parsed, List<JdbcParameter> parameters) {
         // Reject named bindings when the SQL uses positional placeholders.
         requirePositionalBindings(parameters);
 
@@ -1190,25 +1268,23 @@ final class JdbcRunner {
                                             + " bindings were provided");
         }
 
-        // Return method parameter values in encounter order.
-        return parameters.stream()
-                .map(JdbcParameter::value)
-                .toList();
+        // Return immutable parameter descriptors in encounter order.
+        return List.copyOf(parameters);
     }
 
     /**
-     * Resolve ordinal SQL placeholders into ordered JDBC values.
+     * Resolve ordinal SQL placeholders into ordered JDBC parameter descriptors.
      *
      * @param parsed     parsed SQL metadata
      * @param parameters operation parameters
-     * @return ordered JDBC parameter values
+     * @return ordered JDBC parameter descriptors
      */
-    private static List<Object> ordinalValues(ParsedSql parsed, List<JdbcParameter> parameters) {
+    private static List<JdbcParameter> ordinalBindings(ParsedSql parsed, List<JdbcParameter> parameters) {
         // Reject named bindings when the SQL uses ordinal placeholders.
         requirePositionalBindings(parameters);
 
-        // Allocate one JDBC value per ordinal placeholder occurrence.
-        List<Object> values = new ArrayList<>(parsed.parameterIndexes().size());
+        // Allocate one JDBC descriptor per ordinal placeholder occurrence.
+        List<JdbcParameter> bindings = new ArrayList<>(parsed.parameterIndexes().size());
 
         // Resolve every ordinal placeholder to the referenced method parameter.
         for (int parameterIndex : parsed.parameterIndexes()) {
@@ -1218,12 +1294,12 @@ final class JdbcRunner {
                                                 + " has no matching method parameter binding");
             }
 
-            // Append the method parameter value selected by this ordinal placeholder.
-            values.add(parameters.get(parameterIndex - 1).value());
+            // Append the method parameter descriptor selected by this ordinal placeholder.
+            bindings.add(parameters.get(parameterIndex - 1));
         }
 
-        // Return values ordered by JDBC placeholder position.
-        return values;
+        // Return descriptors ordered by JDBC placeholder position.
+        return bindings;
     }
 
     /**
@@ -1265,16 +1341,34 @@ final class JdbcRunner {
     private static RowSet materialize(ResultSet resultSet,
                                       JdbcColumnSelection columnSelection,
                                       long rowLimit) throws SQLException {
-        // Read result set metadata before copying rows.
-        ResultSetMetaData metaData = resultSet.getMetaData();
+        // Resolve and copy selected metadata once for all rows in this result set.
+        SelectedColumns selectedColumns = selectedColumns(resultSet.getMetaData(), columnSelection);
 
-        // Determine how many columns each row contains.
+        // Allocate the materialized row list with a small known capacity when a terminal bounded the result.
+        List<MaterializedRow> rows = rows(rowLimit);
+
+        // Copy result set rows while the JDBC result set is open.
+        while (resultSet.next()) {
+            // Store one detached row using the shared selected column layout.
+            rows.add(currentRow(resultSet, selectedColumns));
+
+            // Stop local copying after the terminal has enough rows to decide its result.
+            if (rowLimit > 0 && rows.size() >= rowLimit) {
+                break;
+            }
+        }
+
+        // Return a detached row set that no longer depends on JDBC resources.
+        return new RowSet(selectedColumns.layout, rows);
+    }
+
+    /**
+     * Resolve selected result-set columns and their shared detached metadata.
+     */
+    private static SelectedColumns selectedColumns(ResultSetMetaData metaData,
+                                                   JdbcColumnSelection columnSelection) throws SQLException {
         int columnCount = metaData.getColumnCount();
-
-        // Allocate column metadata using the JDBC column count.
         List<ColumnInfo> sourceColumns = new ArrayList<>(columnCount);
-
-        // Copy metadata for every one-based JDBC column index.
         for (int i = 1; i <= columnCount; i++) {
             String label = columnLabel(metaData, i);
             int type = columnType(metaData, i);
@@ -1285,47 +1379,23 @@ final class JdbcRunner {
                                              columnNullable(metaData, i)));
         }
 
-        // Resolve requested source result-set columns to one-based JDBC indexes.
         int[] selectedIndexes = columnSelection.selectedIndexes(sourceColumns);
-
-        // Allocate metadata only for the columns exposed to transcript readers.
         List<ColumnInfo> columns = new ArrayList<>(selectedIndexes.length);
-
-        // Copy metadata for every selected column in caller-requested order.
         for (int selectedIndex : selectedIndexes) {
             columns.add(sourceColumns.get(selectedIndex - 1));
         }
+        return new SelectedColumns(new RowLayout(columns), selectedIndexes);
+    }
 
-        // Share one immutable row layout across every materialized row in this result set.
-        RowLayout layout = new RowLayout(columns);
-
-        // Allocate the materialized row list with a small known capacity when a terminal bounded the result.
-        List<MaterializedRow> rows = rows(rowLimit);
-
-        // Copy result set rows while the JDBC result set is open.
-        while (resultSet.next()) {
-            // Allocate one value slot per selected column.
-            Object[] values = new Object[selectedIndexes.length];
-
-            // Copy selected column values by their original one-based JDBC column indexes.
-            for (int i = 0; i < selectedIndexes.length; i++) {
-                values[i] = resultSet.getObject(selectedIndexes[i]);
-            }
-
-            // Store one detached row with shared column metadata.
-            rows.add(MaterializedRow.trusted(layout, values));
-
-            // Stop local copying after the terminal has enough rows to decide its result.
-            if (rowLimit > 0 && rows.size() >= rowLimit) {
-                break;
-            }
+    /**
+     * Copy the current result-set row using the precomputed selected column indexes.
+     */
+    private static MaterializedRow currentRow(ResultSet resultSet, SelectedColumns selectedColumns) throws SQLException {
+        Object[] values = new Object[selectedColumns.indexes.length];
+        for (int i = 0; i < selectedColumns.indexes.length; i++) {
+            values[i] = resultSet.getObject(selectedColumns.indexes[i]);
         }
-
-        // Print the materialized row and column counts when JDBC tracing is enabled.
-        trace("materialized result set rows=" + rows.size() + ", columns=" + columns.size());
-
-        // Return a detached row set that no longer depends on JDBC resources.
-        return new RowSet(layout, rows);
+        return MaterializedRow.trusted(selectedColumns.layout, values);
     }
 
     /**
@@ -1345,6 +1415,176 @@ final class JdbcRunner {
     }
 
     /**
+     * Result-set metadata and source indexes shared by materialized and streaming row reads.
+     */
+    private static final class SelectedColumns {
+        private final RowLayout layout;
+        private final int[] indexes;
+
+        private SelectedColumns(RowLayout layout, int[] indexes) {
+            this.layout = layout;
+            this.indexes = indexes;
+        }
+    }
+
+    /**
+     * Single-use cursor that owns one live JDBC row operation.
+     */
+    private static final class JdbcStreamingCursor<T> implements JdbcResultIterable<T>, Iterator<T> {
+        private final SelectedColumns selectedColumns;
+        private final JdbcRowMapper<T> mapper;
+        private final long rowLimit;
+        private final Thread ownerThread;
+
+        private Connection connection;
+        private PreparedStatement statement;
+        private ResultSet resultSet;
+        private State state = State.OPEN;
+        private boolean iteratorClaimed;
+        private long returnedRows;
+        private T nextValue;
+
+        private JdbcStreamingCursor(Connection connection,
+                                    PreparedStatement statement,
+                                    ResultSet resultSet,
+                                    SelectedColumns selectedColumns,
+                                    JdbcRowMapper<T> mapper,
+                                    long rowLimit) {
+            this.connection = connection;
+            this.statement = statement;
+            this.resultSet = resultSet;
+            this.selectedColumns = selectedColumns;
+            this.mapper = mapper;
+            this.rowLimit = rowLimit;
+            this.ownerThread = Thread.currentThread();
+        }
+
+        @Override
+        public Iterator<T> iterator() {
+            requireOwnerThread();
+            if (iteratorClaimed) {
+                throw new IllegalStateException("JDBC streaming rows are single-use");
+            }
+            if (state == State.CLOSED) {
+                throw new IllegalStateException("JDBC streaming rows are closed");
+            }
+            iteratorClaimed = true;
+            return this;
+        }
+
+        @Override
+        public boolean hasNext() {
+            requireOwnerThread();
+            if (state == State.ROW_READY) {
+                return true;
+            }
+            if (state == State.CLOSED) {
+                return false;
+            }
+            if (rowLimit > 0 && returnedRows >= rowLimit) {
+                close();
+                return false;
+            }
+
+            try {
+                if (!resultSet.next()) {
+                    close();
+                    return false;
+                }
+                nextValue = mapper.map(currentRow(resultSet, selectedColumns));
+                state = State.ROW_READY;
+                return true;
+            } catch (SQLException e) {
+                DataException failure = new DataException("Reading JDBC streaming rows failed.", e);
+                closeAfterFailure(failure);
+                throw failure;
+            } catch (RuntimeException | Error failure) {
+                closeAfterFailure(failure);
+                throw failure;
+            }
+        }
+
+        @Override
+        public T next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException("JDBC streaming rows are exhausted");
+            }
+            T value = nextValue;
+            nextValue = null;
+            returnedRows++;
+            state = State.OPEN;
+            return value;
+        }
+
+        @Override
+        public void close() {
+            requireOwnerThread();
+            Throwable failure = release(null);
+            if (failure != null) {
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                if (failure instanceof DataException dataException) {
+                    throw dataException;
+                }
+                throw new DataException("Closing JDBC streaming resources failed.", failure);
+            }
+        }
+
+        private void closeAfterFailure(Throwable primaryFailure) {
+            release(primaryFailure);
+        }
+
+        private Throwable release(Throwable primaryFailure) {
+            if (state == State.CLOSED) {
+                return primaryFailure;
+            }
+            state = State.CLOSED;
+            nextValue = null;
+
+            primaryFailure = closeResources(primaryFailure, resultSet, statement, connection);
+            resultSet = null;
+            statement = null;
+            connection = null;
+            trace("closed streaming rows, returned rows=" + returnedRows);
+            return primaryFailure;
+        }
+
+        private void requireOwnerThread() {
+            if (Thread.currentThread() != ownerThread) {
+                throw new IllegalStateException("JDBC streaming rows must be used by their owning thread");
+            }
+        }
+
+        private enum State {
+            OPEN,
+            ROW_READY,
+            CLOSED
+        }
+    }
+
+    /**
+     * Close resources in dependency order while preserving the primary failure.
+     */
+    private static Throwable closeResources(Throwable primaryFailure, AutoCloseable... resources) {
+        for (AutoCloseable resource : resources) {
+            if (resource == null) {
+                continue;
+            }
+            try {
+                resource.close();
+            } catch (Throwable closeFailure) {
+                if (primaryFailure == null) {
+                    primaryFailure = closeFailure;
+                } else if (primaryFailure != closeFailure) {
+                    primaryFailure.addSuppressed(closeFailure);
+                }
+            }
+        }
+        return primaryFailure;
+    }
+
+    /**
      * Read a column label, falling back to a generated label when the driver cannot provide one.
      *
      * @param metaData JDBC result set metadata
@@ -1360,7 +1600,6 @@ final class JdbcRunner {
             return label == null || label.isBlank() ? "column" + index : label;
         } catch (SQLException e) {
             // Some callable function result sets have incomplete metadata; keep row materialization usable.
-            trace("column label metadata unavailable at index=" + index);
             return "column" + index;
         }
     }
@@ -1382,7 +1621,6 @@ final class JdbcRunner {
             return name == null || name.isBlank() ? label : name;
         } catch (SQLException e) {
             // Metadata failures should not prevent row values from being detached.
-            trace("column name metadata unavailable at index=" + index);
             return label;
         }
     }
@@ -1400,7 +1638,6 @@ final class JdbcRunner {
             return metaData.getColumnType(index);
         } catch (SQLException e) {
             // A generic type is enough for value conversion because actual values are still copied.
-            trace("column type metadata unavailable at index=" + index);
             return java.sql.Types.JAVA_OBJECT;
         }
     }
@@ -1421,8 +1658,7 @@ final class JdbcRunner {
             // Use a stable fallback name when the driver returns no type name.
             return typeName == null || typeName.isBlank() ? columnTypeName(type) : typeName;
         } catch (SQLException e) {
-            // Keep the transcript complete even when optional type-name metadata is unavailable.
-            trace("column type name metadata unavailable at index=" + index);
+            // Keep the execution result complete even when optional type-name metadata is unavailable.
             return columnTypeName(type);
         }
     }
@@ -1436,11 +1672,10 @@ final class JdbcRunner {
      */
     private static boolean columnNullable(ResultSetMetaData metaData, int index) {
         try {
-            // Convert JDBC nullability metadata into the transcript boolean.
+            // Convert JDBC nullability metadata into the execution-result boolean.
             return metaData.isNullable(index) != ResultSetMetaData.columnNoNulls;
         } catch (SQLException e) {
             // Nullable is the least surprising fallback for incomplete metadata.
-            trace("column nullability metadata unavailable at index=" + index);
             return true;
         }
     }
@@ -1500,10 +1735,12 @@ final class JdbcRunner {
             current = current.getNextWarning();
         }
 
-        // Print the warning count when JDBC tracing is enabled.
-        trace("captured warnings count=" + warnings.size());
+        // Report warnings because they are otherwise easy to miss after the JDBC resources close.
+        if (!warnings.isEmpty()) {
+            trace("captured warnings count=" + warnings.size());
+        }
 
-        // Return detached warning records.
+        // Return detached warning information.
         return warnings;
     }
 
@@ -1514,8 +1751,7 @@ final class JdbcRunner {
      * @return detached failure metadata
      */
     private static JdbcFailure failure(SQLException e) {
-        // Copy stable SQLException fields into transcript failure metadata.
-        trace("captured failure sqlState=" + e.getSQLState() + ", vendorCode=" + e.getErrorCode());
+        // Copy stable SQLException fields into execution-result failure metadata.
         return new JdbcFailure(e.getSQLState(), e.getErrorCode(), e.getMessage());
     }
 
@@ -1532,5 +1768,24 @@ final class JdbcRunner {
 
         // Print the trace message with the class name for easier reading.
         System.out.println("[JdbcRunner] " + message);
+    }
+
+    /**
+     * Print every value in the detached execution result when temporary JDBC tracing is enabled.
+     * <p>
+     * The property guard is intentionally evaluated before string concatenation. This guarantees that normal
+     * execution does not call {@link JdbcExecutionResult#toString()} or pay its formatting cost. The resulting output
+     * contains application data and must not be enabled outside the current architecture demonstration.
+     *
+     * @param result detached result to dump
+     */
+    private static void traceResult(JdbcExecutionResult result) {
+        // Avoid invoking toString unless the user explicitly enables the temporary diagnostic.
+        if (!TRACE) {
+            return;
+        }
+
+        // TODO: Remove this exhaustive demonstration dump before check-in.
+        System.out.println("[JdbcRunner] result:" + System.lineSeparator() + result);
     }
 }

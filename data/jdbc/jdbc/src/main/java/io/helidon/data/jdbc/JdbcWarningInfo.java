@@ -21,9 +21,28 @@ package io.helidon.data.jdbc;
  * JDBC warning objects are linked and tied to live statement or connection objects. The runner copies stable warning
  * fields into this value so warnings can be inspected after JDBC resources have been closed.
  *
- * @param sqlState SQL state reported by the driver
- * @param vendorCode database vendor-specific warning code
- * @param message warning message
+ * The fields are copied while JDBC resources are open and remain immutable afterward.
  */
-record JdbcWarningInfo(String sqlState, int vendorCode, String message) {
+final class JdbcWarningInfo {
+    private final String sqlState;
+    private final int vendorCode;
+    private final String message;
+
+    JdbcWarningInfo(String sqlState, int vendorCode, String message) {
+        this.sqlState = sqlState;
+        this.vendorCode = vendorCode;
+        this.message = message;
+    }
+
+    String sqlState() {
+        return sqlState;
+    }
+
+    int vendorCode() {
+        return vendorCode;
+    }
+
+    String message() {
+        return message;
+    }
 }

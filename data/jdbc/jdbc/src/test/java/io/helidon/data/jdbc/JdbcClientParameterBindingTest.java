@@ -15,6 +15,9 @@
  */
 package io.helidon.data.jdbc;
 
+import java.math.BigDecimal;
+import java.sql.Types;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -24,7 +27,9 @@ import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JdbcClientParameterBindingTest {
@@ -73,6 +78,58 @@ class JdbcClientParameterBindingTest {
                              .param("name", "Pikachu")
                              .param("Raichu")
                              .single(row -> row.value(1, String.class)));
+    }
+
+    @Test
+    void bindsTypedNull() {
+        JdbcClient client = client();
+
+        Integer value = client.execute("SELECT COALESCE(?, 42)")
+                .params(List.of(JdbcParameter.create(null).withSqlType(Types.INTEGER)))
+                .single(row -> row.value(1, Integer.class));
+
+        assertThat(value, is(42));
+    }
+
+    @Test
+    void bindsTypedValueWithScale() {
+        JdbcClient client = client();
+
+        BigDecimal value = client.execute("SELECT CAST(? AS DECIMAL(10, 2))")
+                .params(List.of(JdbcParameter.create(new BigDecimal("12.345"))
+                                        .withSqlType(Types.DECIMAL)
+                                        .withScale(2)))
+                .single(row -> row.value(1, BigDecimal.class));
+
+        assertThat(value, is(new BigDecimal("12.35")));
+    }
+
+    @Test
+    void bindsTypedNullWithDatabaseTypeName() {
+        JdbcClient client = client();
+
+        String value = client.execute("SELECT COALESCE(?, 'fallback')")
+                .params(List.of(JdbcParameter.create(null)
+                                        .withSqlType(Types.VARCHAR)
+                                        .withTypeName("VARCHAR")))
+                .single(row -> row.value(1, String.class));
+
+        assertThat(value, is("fallback"));
+    }
+
+    @Test
+    void rejectsScaleWithoutSqlType() {
+        assertThrows(IllegalArgumentException.class, () -> JdbcParameter.create("value").withScale(2));
+    }
+
+    @Test
+    void parameterDescriptionDoesNotExposeValue() {
+        String description = JdbcParameter.create("password", "changeit")
+                .withSqlType(Types.VARCHAR)
+                .toString();
+
+        assertThat(description, containsString("password"));
+        assertThat(description, not(containsString("changeit")));
     }
 
     private static JdbcClient client() {

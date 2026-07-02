@@ -16,7 +16,11 @@
 package io.helidon.data.jdbc;
 
 /**
- * Maps one materialized JDBC row to a user return type.
+ * Maps one JDBC row snapshot to an application value.
+ * <p>
+ * Materialized terminals invoke the mapper over detached rows after JDBC resources close. Streaming terminals invoke
+ * it as each row is read while the provider-owned streaming scope is open. A mapper must return an application-owned
+ * value and must not retain resource-backed JDBC values.
  *
  * @param <T> mapped type
  */
@@ -24,7 +28,7 @@ package io.helidon.data.jdbc;
 public interface JdbcRowMapper<T> {
 
     /**
-     * Map a row.
+     * Map a row snapshot.
      *
      * @param row row to map
      * @return mapped value

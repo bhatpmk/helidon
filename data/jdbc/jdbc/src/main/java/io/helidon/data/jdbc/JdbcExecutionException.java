@@ -21,14 +21,14 @@ import io.helidon.data.DataException;
 
 final class JdbcExecutionException extends DataException {
 
-    private final JdbcTranscript transcript;
+    private final JdbcExecutionResult result;
 
-    JdbcExecutionException(String message, SQLException cause, JdbcTranscript transcript) {
+    JdbcExecutionException(String message, SQLException cause, JdbcExecutionResult result) {
         super(message, cause);
-        this.transcript = transcript;
+        this.result = result;
     }
 
-    JdbcTranscript transcript() {
-        return transcript;
+    JdbcExecutionResult result() {
+        return result;
     }
 }

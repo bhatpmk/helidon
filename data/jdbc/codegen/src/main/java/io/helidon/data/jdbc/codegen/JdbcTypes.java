@@ -29,7 +29,9 @@ final class JdbcTypes {
 
     static final TypeName PU_NAME_ANNOTATION = TypeName.create("io.helidon.data.Data.PersistenceUnit");
     static final TypeName QUERY_ANNOTATION = TypeName.create("io.helidon.data.Data.Query");
+    static final TypeName GENERATED_KEYS_ANNOTATION = TypeName.create("io.helidon.data.Data.GeneratedKeys");
     static final TypeName CALL_ANNOTATION = TypeName.create("io.helidon.data.Data.Call");
+    static final TypeName IN_ANNOTATION = TypeName.create("io.helidon.data.Data.In");
     static final TypeName OUT_ANNOTATION = TypeName.create("io.helidon.data.Data.Out");
     static final TypeName OUT_LIST_ANNOTATION = TypeName.create("io.helidon.data.Data.Out.List");
     static final TypeName IN_OUT_ANNOTATION = TypeName.create("io.helidon.data.Data.InOut");

@@ -41,6 +41,7 @@ class JdbcSqlParametersTest {
         assertThat(parameters.mode(), is(NAMED));
         assertThat(parameters.names(), is(List.of("pokemonName", "typeId")));
         assertThat(parameters.indexes(), is(List.of()));
+        assertThat(parameters.count(), is(2));
     }
 
     @Test

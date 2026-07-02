@@ -57,7 +57,7 @@ final class MaterializedRow implements JdbcRow {
     }
 
     /**
-     * Create a row from values already owned by the transcript materialization path.
+     * Create a row from values already owned by the execution-result materialization path.
      * <p>
      * This method intentionally skips the defensive array copy. It must only be used when the caller created the values
      * array for this row and will not mutate it after passing it here.

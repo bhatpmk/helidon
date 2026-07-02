@@ -21,10 +21,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import javax.sql.DataSource;
 
 import io.helidon.data.DataException;
+import io.helidon.data.Page;
+import io.helidon.data.PageRequest;
+import io.helidon.data.Slice;
 
 final class JdbcClientImpl implements JdbcClient {
 
@@ -193,12 +197,92 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> List<T> list(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.query(sql,
-                                                                               parameters,
-                                                                               options,
-                                                                               columnSelection,
-                                                                               0));
-                return JdbcReducers.list(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.query(sql,
+                                                                                parameters,
+                                                                                options,
+                                                                                columnSelection,
+                                                                                0));
+                return JdbcReducers.list(result, mapper);
+            });
+        }
+
+        @Override
+        public <T> JdbcResultIterable<T> openRows(JdbcRowMapper<T> mapper) {
+            Objects.requireNonNull(mapper, "Row mapper must not be null");
+            return execute(() -> runner.openRows(JdbcOperation.query(sql,
+                                                                     parameters,
+                                                                     options,
+                                                                     columnSelection,
+                                                                     0),
+                                                  mapper));
+        }
+
+        @Override
+        public <T> void withRows(JdbcRowMapper<T> mapper, Consumer<? super Iterable<T>> action) {
+            Objects.requireNonNull(mapper, "Row mapper must not be null");
+            Objects.requireNonNull(action, "Row action must not be null");
+            try (JdbcResultIterable<T> rows = openRows(mapper)) {
+                action.accept(rows);
+            }
+        }
+
+        @Override
+        public <T> Slice<T> slice(PageRequest request, JdbcRowMapper<T> mapper) {
+            Objects.requireNonNull(mapper, "Row mapper must not be null");
+            return execute(() -> {
+                List<JdbcParameter> pageParameters = JdbcPagination.sliceParameters(sql, parameters, request);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.query(sql,
+                                                                                pageParameters,
+                                                                                options,
+                                                                                columnSelection,
+                                                                                request.size()));
+                return Slice.create(request, JdbcReducers.list(result, mapper));
+            });
+        }
+
+        @Override
+        public <T> Page<T> page(PageRequest request, String countSql, JdbcRowMapper<T> mapper) {
+            Objects.requireNonNull(mapper, "Row mapper must not be null");
+            return execute(() -> {
+                JdbcPagination.PageParameters pageParameters =
+                        JdbcPagination.pageParameters(sql, countSql, parameters, request);
+                JdbcExecutionResult countResult = runner.execute(JdbcOperation.query(countSql,
+                                                                                      pageParameters.countParameters(),
+                                                                                      options,
+                                                                                      JdbcColumnSelection.indexes(1),
+                                                                                      2));
+                int totalSize = JdbcReducers.pageTotal(countResult);
+                if (totalSize == 0 || pageParameters.offset() >= totalSize) {
+                    return Page.create(request, List.of(), totalSize);
+                }
+
+                JdbcExecutionResult pageResult = runner.execute(JdbcOperation.query(sql,
+                                                                                     pageParameters.pageParameters(),
+                                                                                     options,
+                                                                                     columnSelection,
+                                                                                     request.size()));
+                return Page.create(request, JdbcReducers.list(pageResult, mapper), totalSize);
+            });
+        }
+
+        @Override
+        public void discard() {
+            execute(() -> {
+                runner.execute(JdbcOperation.update(sql, parameters, options));
+                return null;
+            });
+        }
+
+        @Override
+        public <T> T resultScalar(Class<T> type) {
+            Objects.requireNonNull(type, "Scalar type must not be null");
+            return execute(() -> {
+                JdbcExecutionResult result = runner.execute(JdbcOperation.query(sql,
+                                                                                parameters,
+                                                                                options,
+                                                                                columnSelection,
+                                                                                2));
+                return JdbcReducers.scalar(result, type);
             });
         }
 
@@ -206,12 +290,12 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> T single(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.query(sql,
-                                                                               parameters,
-                                                                               options,
-                                                                               columnSelection,
-                                                                               2));
-                return JdbcReducers.item(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.query(sql,
+                                                                                parameters,
+                                                                                options,
+                                                                                columnSelection,
+                                                                                2));
+                return JdbcReducers.item(result, mapper);
             });
         }
 
@@ -219,12 +303,12 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> T singleOrNull(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.query(sql,
-                                                                               parameters,
-                                                                               options,
-                                                                               columnSelection,
-                                                                               2));
-                return JdbcReducers.itemOrNull(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.query(sql,
+                                                                                parameters,
+                                                                                options,
+                                                                                columnSelection,
+                                                                                2));
+                return JdbcReducers.itemOrNull(result, mapper);
             });
         }
 
@@ -232,41 +316,41 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> Optional<T> optional(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.query(sql,
-                                                                               parameters,
-                                                                               options,
-                                                                               columnSelection,
-                                                                               2));
-                return JdbcReducers.optional(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.query(sql,
+                                                                                parameters,
+                                                                                options,
+                                                                                columnSelection,
+                                                                                2));
+                return JdbcReducers.optional(result, mapper);
             });
         }
 
         @Override
         public Number updateCount() {
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.update(sql, parameters, options));
-                return JdbcReducers.updateCount(transcript);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.update(sql, parameters, options));
+                return JdbcReducers.updateCount(result);
             });
         }
 
         @Override
         public long[] batchUpdateCounts() {
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.batch(sql, batchParameters, options));
-                return JdbcReducers.batchUpdateCounts(transcript);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.batch(sql, batchParameters, options));
+                return JdbcReducers.batchUpdateCounts(result);
             });
         }
 
         @Override
         public Map<String, Object> outParams() {
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.call(sql,
-                                                                              parameters,
-                                                                              outParameters,
-                                                                              options,
-                                                                              columnSelection,
-                                                                              0));
-                return JdbcReducers.outParams(transcript);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.call(sql,
+                                                                               parameters,
+                                                                               outParameters,
+                                                                               options,
+                                                                               columnSelection,
+                                                                               0));
+                return JdbcReducers.outParams(result);
             });
         }
 
@@ -275,13 +359,13 @@ final class JdbcClientImpl implements JdbcClient {
             Objects.requireNonNull(name, "OUT parameter name must not be null");
             Objects.requireNonNull(type, "OUT parameter type must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.call(sql,
-                                                                              parameters,
-                                                                              outParameters,
-                                                                              options,
-                                                                              columnSelection,
-                                                                              0));
-                return JdbcReducers.outParam(transcript, name, type);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.call(sql,
+                                                                               parameters,
+                                                                               outParameters,
+                                                                               options,
+                                                                               columnSelection,
+                                                                               0));
+                return JdbcReducers.outParam(result, name, type);
             });
         }
 
@@ -290,13 +374,13 @@ final class JdbcClientImpl implements JdbcClient {
             Objects.requireNonNull(name, "OUT cursor name must not be null");
             Objects.requireNonNull(mapper, "OUT cursor row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.call(sql,
-                                                                              parameters,
-                                                                              outParameters,
-                                                                              options,
-                                                                              columnSelection,
-                                                                              0));
-                return JdbcReducers.outCursor(transcript, name, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.call(sql,
+                                                                               parameters,
+                                                                               outParameters,
+                                                                               options,
+                                                                               columnSelection,
+                                                                               0));
+                return JdbcReducers.outCursor(result, name, mapper);
             });
         }
 
@@ -304,13 +388,13 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> List<T> generatedKeys(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Generated-key row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.update(sql,
-                                                                                parameters,
-                                                                                options,
-                                                                                generatedKeysRequest(),
-                                                                                columnSelection,
-                                                                                0));
-                return JdbcReducers.generatedKeys(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.update(sql,
+                                                                                 parameters,
+                                                                                 options,
+                                                                                 generatedKeysRequest(),
+                                                                                 columnSelection,
+                                                                                 0));
+                return JdbcReducers.generatedKeys(result, mapper);
             });
         }
 
@@ -318,13 +402,13 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> T generatedKey(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Generated-key row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.update(sql,
-                                                                                parameters,
-                                                                                options,
-                                                                                generatedKeysRequest(),
-                                                                                columnSelection,
-                                                                                2));
-                return JdbcReducers.generatedKey(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.update(sql,
+                                                                                 parameters,
+                                                                                 options,
+                                                                                 generatedKeysRequest(),
+                                                                                 columnSelection,
+                                                                                 2));
+                return JdbcReducers.generatedKey(result, mapper);
             });
         }
 
@@ -332,13 +416,13 @@ final class JdbcClientImpl implements JdbcClient {
         public <T> Optional<T> optionalGeneratedKey(JdbcRowMapper<T> mapper) {
             Objects.requireNonNull(mapper, "Generated-key row mapper must not be null");
             return execute(() -> {
-                JdbcTranscript transcript = runner.execute(JdbcOperation.update(sql,
-                                                                                parameters,
-                                                                                options,
-                                                                                generatedKeysRequest(),
-                                                                                columnSelection,
-                                                                                2));
-                return JdbcReducers.optionalGeneratedKey(transcript, mapper);
+                JdbcExecutionResult result = runner.execute(JdbcOperation.update(sql,
+                                                                                 parameters,
+                                                                                 options,
+                                                                                 generatedKeysRequest(),
+                                                                                 columnSelection,
+                                                                                 2));
+                return JdbcReducers.optionalGeneratedKey(result, mapper);
             });
         }
 

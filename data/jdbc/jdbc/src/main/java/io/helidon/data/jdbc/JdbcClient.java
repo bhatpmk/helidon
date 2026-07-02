@@ -19,27 +19,35 @@ import java.sql.Types;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Stream;
+import java.util.function.Consumer;
 
+import io.helidon.data.Page;
+import io.helidon.data.PageRequest;
+import io.helidon.data.Slice;
 import io.helidon.service.registry.Service;
 
 /**
  * JDBC client used by generated Helidon Data JDBC repositories and imperative JDBC Data applications.
  * <p>
- * The client does not expose live JDBC resources. A statement created by {@link #execute(String)} only captures SQL,
- * parameters, batch entries, OUT parameter registrations, generated-key settings, and statement options. It does not
- * acquire a JDBC connection or send SQL to the database.
+ * The client is thread-safe and does not expose live JDBC resources. Each fluent {@link Statement} is mutable,
+ * thread-confined, and intended to describe one execution at a time. A statement created by {@link #execute(String)}
+ * only captures SQL, parameters, batch entries, OUT parameter registrations, generated-key settings, and statement
+ * options. It does not acquire a JDBC connection or send SQL to the database.
  * <p>
  * A database call happens when a terminal method is invoked, such as {@link Statement#list(JdbcRowMapper)},
- * {@link Statement#single(JdbcRowMapper)}, {@link Statement#optional(JdbcRowMapper)}, {@link Statement#updateCount()},
- * {@link Statement#batchUpdateCounts()}, {@link Statement#outParams()},
+ * {@link Statement#single(JdbcRowMapper)}, {@link Statement#optional(JdbcRowMapper)},
+ * {@link Statement#slice(PageRequest, JdbcRowMapper)}, {@link Statement#page(PageRequest, String, JdbcRowMapper)},
+ * {@link Statement#openRows(JdbcRowMapper)}, {@link Statement#withRows(JdbcRowMapper, Consumer)},
+ * {@link Statement#updateCount()}, {@link Statement#batchUpdateCounts()}, {@link Statement#outParams()},
  * {@link Statement#outCursor(String, JdbcRowMapper)}, or {@link Statement#generatedKeys(JdbcRowMapper)}. The terminal
  * method asks the runtime runner to obtain a connection from the configured data source, create a prepared or callable
- * statement, apply statement options, bind parameters, execute the JDBC operation, and copy JDBC results into an
- * internal transcript. Result sets, generated keys, OUT cursors, update counts, OUT parameters, warnings, and partial
- * failure metadata are detached from JDBC resources before the terminal method returns. The connection, statement, and
- * result set objects are closed by the runtime; reducers then traverse the transcript to return the type requested by
- * the caller.
+ * statement, apply statement options, bind parameters, and execute the JDBC operation.
+ * <p>
+ * Materialized terminals copy required JDBC results into an internal execution result, close JDBC resources, and then
+ * reduce the detached result to the requested type. Streaming terminals use a separate cursor lifecycle and do not
+ * create that internal materialized result. {@link Statement#withRows(JdbcRowMapper, Consumer)} closes the cursor before
+ * returning. The caller of {@link Statement#openRows(JdbcRowMapper)} owns the returned closeable result and must close
+ * it, normally with try-with-resources.
  * <p>
  * Example:
  * <pre>{@code
@@ -56,11 +64,11 @@ import io.helidon.service.registry.Service;
  *         .fetchSize(32)
  *         .readColumns("id", "name");
  *
- * // The list terminal opens JDBC resources, materializes rows, closes resources, and maps the transcript.
+ * // The list terminal opens JDBC resources, materializes rows, closes resources, and maps the execution result.
  * List<Pokemon> pokemon = statement.list(row -> new Pokemon(row.value("id", Long.class),
  *                                                           row.value("name", String.class)));
  *
- * // Update terminals follow the same lifecycle and reduce the transcript to an update count.
+ * // Update terminals follow the same lifecycle and reduce the execution result to an update count.
  * long updated = jdbcClient.execute("UPDATE pokemon SET name = :name WHERE id = :id")
  *         .param("name", "Raichu")
  *         .param("id", 25)
@@ -79,7 +87,10 @@ public interface JdbcClient {
     Statement execute(String sql);
 
     /**
-     * Fluent JDBC statement operation.
+     * Mutable, thread-confined description of one JDBC statement execution.
+     * <p>
+     * Configuration methods do not access the database. A terminal snapshots the configured values before execution.
+     * Do not modify or execute the same instance concurrently.
      */
     interface Statement {
 
@@ -109,10 +120,10 @@ public interface JdbcClient {
         Statement params(List<JdbcParameter> parameters);
 
         /**
-         * Limit row materialization to selected result-set column labels.
+         * Limit row reads to selected result-set column labels.
          * <p>
-         * This is an optimization for generated mappers and imperative callers that know exactly which columns they read.
-         * The resulting {@link JdbcRow} exposes only the selected columns.
+         * This is an optimization for generated mappers and imperative callers that know exactly which columns they
+         * read. Materialized and streaming row mappers see only the selected columns.
          *
          * @param labels selected column labels
          * @return this statement
@@ -120,10 +131,10 @@ public interface JdbcClient {
         Statement readColumns(String... labels);
 
         /**
-         * Limit row materialization to selected one-based result-set column indexes.
+         * Limit row reads to selected one-based result-set column indexes.
          * <p>
-         * This is an optimization for scalar and generated-key mappers that read known column positions. The resulting
-         * {@link JdbcRow} exposes only the selected columns.
+         * This is an optimization for scalar, generated-key, and streaming mappers that read known column positions.
+         * Materialized and streaming row mappers see only the selected columns.
          *
          * @param firstIndex        first selected column index
          * @param additionalIndexes additional selected column indexes
@@ -283,15 +294,87 @@ public interface JdbcClient {
         <T> List<T> list(JdbcRowMapper<T> mapper);
 
         /**
-         * Execute a query and return a materialized stream of mapped rows.
+         * Execute a row-producing operation and return a closeable, pull-based result.
+         * <p>
+         * This terminal acquires a logical connection, prepares and executes the statement, and keeps the JDBC operation
+         * open while rows are consumed. The returned result is single-use, sequential, and thread-confined. It closes
+         * automatically on exhaustion, but callers must use try-with-resources to cover early termination and failures.
+         * <p>
+         * The mapper receives a snapshot of the current row rather than the live JDBC result set and runs inside the
+         * cursor's resource scope. This terminal does not create a materialized {@code JdbcExecutionResult}.
          *
          * @param mapper row mapper
          * @param <T>    mapped row type
-         * @return mapped row stream
+         * @return closeable streaming rows
          */
-        default <T> Stream<T> stream(JdbcRowMapper<T> mapper) {
-            return list(mapper).stream();
-        }
+        <T> JdbcResultIterable<T> openRows(JdbcRowMapper<T> mapper);
+
+        /**
+         * Execute a row-producing operation and consume its rows inside a provider-owned resource scope.
+         * <p>
+         * The action receives a single-use sequential iterable. The result set, statement, and logical connection handle
+         * are closed before this method returns, including when the action stops early or throws. This is the preferred
+         * streaming terminal for generated declarative repository methods. The action must consume the iterable during
+         * the call and must not retain it for later use.
+         *
+         * @param mapper row mapper
+         * @param action scoped row action
+         * @param <T>    mapped row type
+         */
+        <T> void withRows(JdbcRowMapper<T> mapper, Consumer<? super Iterable<T>> action);
+
+        /**
+         * Execute repository-provided, SQL-level pagination and return one materialized slice.
+         * <p>
+         * The SQL must contain the named parameter {@code :__helidon_page_size}. Offset pagination must also contain
+         * {@code :__helidon_page_offset}. If the offset parameter is absent, the statement is treated as a keyset query:
+         * application parameters define the cursor predicate and {@link PageRequest#page()} must be {@code 0}.
+         * Pagination syntax remains part of the SQL so the database, rather than this client, selects the requested rows.
+         * The SQL must define deterministic ordering suitable for its offset or keyset predicate.
+         *
+         * @param request pagination request
+         * @param mapper  row mapper
+         * @param <T>     mapped row type
+         * @return materialized slice
+         */
+        <T> Slice<T> slice(PageRequest request, JdbcRowMapper<T> mapper);
+
+        /**
+         * Execute repository-provided, SQL-level offset pagination and return one materialized page.
+         * <p>
+         * The page SQL must contain {@code :__helidon_page_offset} and {@code :__helidon_page_size}. The count SQL must
+         * apply the same application filters, omit pagination, and return exactly one non-null, non-negative integral
+         * value. The two statements participate in the caller's transaction when the configured data source is
+         * transaction aware. Without a transaction, they are independent database operations and need not observe the
+         * same database snapshot. The page SQL must define deterministic ordering.
+         *
+         * @param request  pagination request
+         * @param countSql SQL that returns the total number of matching rows
+         * @param mapper   row mapper
+         * @param <T>      mapped row type
+         * @return materialized page
+         */
+        <T> Page<T> page(PageRequest request, String countSql, JdbcRowMapper<T> mapper);
+
+        /**
+         * Execute the operation, consume all JDBC results, and discard the detached values.
+         * <p>
+         * This terminal is useful for declarative {@code void} methods and SQL whose result shape is intentionally not
+         * part of the application contract.
+         */
+        void discard();
+
+        /**
+         * Execute ordinary SQL and reduce exactly one scalar row or one update count.
+         * <p>
+         * This terminal does not classify SQL by its text. A row result is read from its first column; an update result
+         * is converted from its single JDBC update count. Multiple or mixed direct results are rejected.
+         *
+         * @param type requested scalar type
+         * @param <T> scalar type
+         * @return mapped scalar value
+         */
+        <T> T resultScalar(Class<T> type);
 
         /**
          * Execute a query and return the only mapped row.
@@ -323,14 +406,14 @@ public interface JdbcClient {
         /**
          * Execute an update, DDL, or other statement whose result is reduced to update counts.
          *
-         * @return summed update count
+         * @return the single update count
          */
         Number updateCount();
 
         /**
          * Execute an update, DDL, or other statement and return its update count as {@code int}.
          *
-         * @return summed update count
+         * @return the single update count
          */
         default int updateCountInt() {
             return updateCount().intValue();
@@ -339,7 +422,7 @@ public interface JdbcClient {
         /**
          * Execute an update, DDL, or other statement and return its update count as {@code long}.
          *
-         * @return summed update count
+         * @return the single update count
          */
         default long updateCountLong() {
             return updateCount().longValue();

@@ -29,20 +29,29 @@ import io.helidon.data.DataException;
  * The layout owns the immutable column metadata and lookup map used by {@link MaterializedRow}. Keeping this data
  * outside individual rows avoids repeating label maps and column metadata for every row returned by a query.
  *
- * @param columns ordered column metadata exposed by materialized rows
- * @param labels zero-based lookup map from column label or name to column index
+ * The explicit fields make the shared layout and its lookup index visible without repeating metadata in each row.
  */
-record RowLayout(List<ColumnInfo> columns, Map<String, Integer> labels) {
+final class RowLayout {
+    private final List<ColumnInfo> columns;
+    private final Map<String, Integer> labels;
 
     RowLayout(List<ColumnInfo> columns) {
         this(columns, labels(columns));
     }
 
-    RowLayout {
+    RowLayout(List<ColumnInfo> columns, Map<String, Integer> labels) {
         Objects.requireNonNull(columns, "Columns must not be null");
         Objects.requireNonNull(labels, "Labels must not be null");
-        columns = List.copyOf(columns);
-        labels = Map.copyOf(labels);
+        this.columns = List.copyOf(columns);
+        this.labels = Map.copyOf(labels);
+    }
+
+    List<ColumnInfo> columns() {
+        return columns;
+    }
+
+    Map<String, Integer> labels() {
+        return labels;
     }
 
     int columnCount() {

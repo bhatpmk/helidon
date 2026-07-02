@@ -18,32 +18,37 @@ package io.helidon.data.jdbc;
 import java.util.Optional;
 
 /**
- * Stable identifier for one step inside a {@link JdbcTranscript}.
+ * Stable identifier for one step inside a {@link JdbcExecutionResult}.
  * <p>
  * Steps are ordered by their zero-based index. A name is optional and is intended for future multi-operation plans
  * where a generated repository method or imperative plan may want to refer to a step by a stable logical name.
  *
- * @param index zero-based step index
- * @param name optional logical step name
+ * The explicit fields and accessors make this identifier easy to follow while inspecting a multi-operation result.
  */
-record StepRef(int index, Optional<String> name) {
-
-    private static final boolean TRACE = Boolean.getBoolean("io.helidon.data.jdbc.trace");
+final class StepRef {
+    private final int index;
+    private final Optional<String> name;
 
     /**
      * Validate and normalize a step reference created by the runtime.
      */
-    StepRef {
-        // Reject negative indexes because transcript steps are always ordered from zero upward.
+    StepRef(int index, Optional<String> name) {
+        // Reject negative indexes because operation results are always ordered from zero upward.
         if (index < 0) {
             throw new IllegalArgumentException("Step index must not be negative");
         }
 
         // Normalize a null optional to an empty optional so callers never need null checks.
-        name = name == null ? Optional.empty() : name;
+        this.index = index;
+        this.name = name == null ? Optional.empty() : name;
+    }
 
-        // Print the normalized step reference when JDBC tracing is enabled.
-        trace("created step reference index=" + index + ", name=" + name.orElse("<none>"));
+    int index() {
+        return index;
+    }
+
+    Optional<String> name() {
+        return name;
     }
 
     /**
@@ -53,25 +58,7 @@ record StepRef(int index, Optional<String> name) {
      * @return unnamed step reference
      */
     static StepRef create(int index) {
-        // Print the requested index before building the step reference.
-        trace("creating unnamed step reference for index=" + index);
-
         // Build a step reference without a name for the common single-step path.
         return new StepRef(index, Optional.empty());
-    }
-
-    /**
-     * Print a trace message when JDBC tracing is enabled.
-     *
-     * @param message message to print
-     */
-    private static void trace(String message) {
-        // Skip printing unless the user explicitly enables JDBC tracing.
-        if (!TRACE) {
-            return;
-        }
-
-        // Print the trace message with the class name for easier reading.
-        System.out.println("[StepRef] " + message);
     }
 }

@@ -49,7 +49,7 @@ final class JdbcSqlParameters {
     }
 
     int count() {
-        return indexes.size();
+        return mode == Mode.NAMED ? names.size() : indexes.size();
     }
 
     enum Mode {

@@ -33,7 +33,7 @@ class JdbcRunnerPlanTest {
     void executesMultipleOperationPlan() {
         JdbcRunner runner = runner();
 
-        JdbcTranscript transcript = runner.execute(new JdbcPlan(List.of(
+        JdbcExecutionResult result = runner.execute(new JdbcPlan(List.of(
                 JdbcOperation.update("""
                                      CREATE TABLE pokemon (
                                          id BIGINT PRIMARY KEY,
@@ -47,17 +47,17 @@ class JdbcRunnerPlanTest {
                 JdbcOperation.query("SELECT name FROM pokemon WHERE id = :id",
                                     List.of(JdbcParameter.create("id", 1L))))));
 
-        assertThat(transcript.steps().size(), is(3));
-        assertThat(transcript.steps().get(0).ref().index(), is(0));
-        assertThat(transcript.steps().get(1).ref().index(), is(1));
-        assertThat(transcript.steps().get(2).ref().index(), is(2));
-        assertThat(transcript.steps().get(1).events().getFirst(), instanceOf(UpdateCountEvent.class));
-        RowsEvent rows = (RowsEvent) transcript.steps().get(2).events().getFirst();
-        assertThat(rows.rowSet().rows().getFirst().value("name", String.class), is("Pikachu"));
+        assertThat(result.operations().size(), is(3));
+        assertThat(result.operations().get(0).ref().index(), is(0));
+        assertThat(result.operations().get(1).ref().index(), is(1));
+        assertThat(result.operations().get(2).ref().index(), is(2));
+        assertThat(result.operations().get(1).directResults().at(0), instanceOf(JdbcUpdateCountResult.class));
+        JdbcRowsResult rows = (JdbcRowsResult) result.operations().get(2).directResults().at(0);
+        assertThat(rows.rows().rows().getFirst().value("name", String.class), is("Pikachu"));
     }
 
     @Test
-    void failureCarriesPartialPlanTranscript() {
+    void failureCarriesPartialPlanResult() {
         JdbcRunner runner = runner();
 
         JdbcExecutionException exception = assertThrows(JdbcExecutionException.class,
@@ -71,9 +71,9 @@ class JdbcRunnerPlanTest {
                                                                 JdbcOperation.update("INSERT INTO missing_table(id) VALUES (:id)",
                                                                                      List.of(JdbcParameter.create("id", 1L)))))));
 
-        assertThat(exception.transcript().steps().size(), is(2));
-        assertThat(exception.transcript().steps().get(0).failure(), is(Optional.empty()));
-        assertThat(exception.transcript().steps().get(1).failure().isPresent(), is(true));
+        assertThat(exception.result().operations().size(), is(2));
+        assertThat(exception.result().operations().get(0).failure(), is(Optional.empty()));
+        assertThat(exception.result().operations().get(1).failure().isPresent(), is(true));
     }
 
     private static JdbcRunner runner() {

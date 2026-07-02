@@ -55,6 +55,18 @@ class JdbcClientCallableTest {
     }
 
     @Test
+    void bindsNamedCallableInput() {
+        JdbcClient client = client();
+
+        Integer value = client.execute("{:result = call ABS(:value)}")
+                .outParam(1, "absolute", Types.INTEGER)
+                .params(java.util.List.of(JdbcParameter.create("value", -7).withSqlType(Types.INTEGER)))
+                .outParam("absolute", Integer.class);
+
+        assertThat(value, is(7));
+    }
+
+    @Test
     void mapsNullCallableOutParameter() {
         JdbcClient client = client();
 

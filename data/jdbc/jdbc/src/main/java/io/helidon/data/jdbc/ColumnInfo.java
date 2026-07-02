@@ -22,11 +22,40 @@ package io.helidon.data.jdbc;
  * the same {@link RowSet}. Both label and name are retained because JDBC drivers can expose aliases and physical names
  * differently.
  *
- * @param label result-set column label, usually the SQL alias used for row lookup
- * @param name physical column name reported by the driver when available
- * @param jdbcType JDBC SQL type from {@link java.sql.Types}
- * @param typeName database-specific SQL type name
- * @param nullable whether the column may contain SQL {@code NULL}
+ * The class is immutable so the metadata can be shared by every materialized row in a row set.
  */
-record ColumnInfo(String label, String name, int jdbcType, String typeName, boolean nullable) {
+final class ColumnInfo {
+    private final String label;
+    private final String name;
+    private final int jdbcType;
+    private final String typeName;
+    private final boolean nullable;
+
+    ColumnInfo(String label, String name, int jdbcType, String typeName, boolean nullable) {
+        this.label = label;
+        this.name = name;
+        this.jdbcType = jdbcType;
+        this.typeName = typeName;
+        this.nullable = nullable;
+    }
+
+    String label() {
+        return label;
+    }
+
+    String name() {
+        return name;
+    }
+
+    int jdbcType() {
+        return jdbcType;
+    }
+
+    String typeName() {
+        return typeName;
+    }
+
+    boolean nullable() {
+        return nullable;
+    }
 }
