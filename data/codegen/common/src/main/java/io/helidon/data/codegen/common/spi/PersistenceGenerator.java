@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import java.util.function.Consumer;
 
 import io.helidon.codegen.CodegenContext;
 import io.helidon.codegen.RoundContext;
+import io.helidon.codegen.classmodel.ClassModel;
 import io.helidon.codegen.classmodel.Method;
 import io.helidon.common.types.TypeInfo;
 import io.helidon.common.types.TypeName;
@@ -65,6 +66,24 @@ public interface PersistenceGenerator {
      * @return code snippets generator
      */
     StatementGenerator statementGenerator();
+
+    /**
+     * Generates repository-declared methods after the implementation class and entity-oriented base methods are ready.
+     * <p>
+     * The default preserves the existing repository generator behavior. Persistence providers with a distinct statement
+     * language may override this narrow hook without adding provider conditionals to common repository codegen.
+     *
+     * @param repositoryInfo repository interface information
+     * @param classModel target implementation class
+     * @param codegenContext code processing and generation context
+     * @param repositoryGenerator repository API generator
+     */
+    default void generateRepositoryMethods(RepositoryInfo repositoryInfo,
+                                           ClassModel.Builder classModel,
+                                           CodegenContext codegenContext,
+                                           RepositoryGenerator repositoryGenerator) {
+        repositoryGenerator.generateQueryMethods(repositoryInfo, classModel, codegenContext, this);
+    }
 
     // Abstract BaseQuery common ancestor is separated to be prepared for query with dynamic parts
 

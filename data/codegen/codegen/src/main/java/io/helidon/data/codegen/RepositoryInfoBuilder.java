@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ import java.util.Optional;
 
 import io.helidon.codegen.CodegenContext;
 import io.helidon.codegen.CodegenException;
+import io.helidon.common.types.AccessModifier;
+import io.helidon.common.types.ElementKind;
 import io.helidon.common.types.TypeInfo;
 import io.helidon.common.types.TypeName;
 import io.helidon.data.codegen.common.RepositoryInfo;
@@ -50,6 +52,16 @@ class RepositoryInfoBuilder extends RepositoryInfo.Builder {
         }
         Optional<TypeInfo> maybeEntityInfo = codegenContext().typeInfo(entity);
         if (maybeEntityInfo.isEmpty()) {
+            if (interfaces().isEmpty() && entity.equals(TypeName.create(Object.class))) {
+                // Annotation-only providers do not have entity metadata. A minimal Object descriptor keeps the existing
+                // RepositoryInfo contract intact without making entity discovery a requirement for SQL-only methods.
+                TypeInfo placeholder = TypeInfo.builder()
+                        .typeName(entity)
+                        .kind(ElementKind.CLASS)
+                        .accessModifier(AccessModifier.PUBLIC)
+                        .build();
+                return new RepositoryInfo(interfaceInfo(), interfaces(), placeholder, id);
+            }
             throw new CodegenException("Could not find " + entity + " entity type information");
         }
         return new RepositoryInfo(interfaceInfo(), interfaces(), maybeEntityInfo.get(), id);

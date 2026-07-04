@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 package io.helidon.data;
 
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.sql.JDBCType;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -132,6 +134,134 @@ public final class Data {
          * @return the query string
          */
         String value();
+    }
+
+    /**
+     * User-supplied data modification statement.
+     * <p>
+     * A persistence provider which supports this annotation interprets {@link #value()} using its statement language.
+     * The JDBC provider interprets the value as SQL and executes it as a data modification statement. The annotation is
+     * not repeatable and must not be combined with {@link Query} on the same method. Provider-specific code generation
+     * reports an invalid combination at compile time.
+     * <p>
+     * The Jakarta Persistence provider does not interpret this annotation; adding it does not change existing Jakarta
+     * Persistence repository behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Update {
+        /**
+         * Statement to execute.
+         *
+         * @return provider-specific data modification statement
+         */
+        String value();
+    }
+
+    /**
+     * Requests generated values from a method annotated with {@link Update}.
+     * <p>
+     * For the JDBC provider an empty value requests the driver's default generated-key result. One or more values name
+     * the columns to request, in result order. Using this annotation without {@link Update}, or on an update-count-only
+     * method, is rejected by JDBC code generation. Other persistence providers do not interpret this annotation unless
+     * they explicitly document support for it.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface GeneratedKeys {
+        /**
+         * Generated columns to request.
+         *
+         * @return generated column names, or an empty array to request driver-default generated keys
+         */
+        String[] value() default {};
+    }
+
+    /**
+     * Selects compile-time mapping for a mutable result bean.
+     * <p>
+     * The JDBC provider generates direct construction and property assignment; it does not use reflection. A flat result
+     * uses the default empty {@link #prefix() prefix}. Joined graph results can repeat this annotation with one declaration
+     * for the root and one uniquely-prefixed declaration for each collection path. JDBC code generation validates the
+     * mapped type, prefixes, construction, writable properties, and result shape at compile time.
+     * <p>
+     * The annotation is meaningful only for providers which document bean mapping support. The Jakarta Persistence
+     * provider does not interpret it and retains its existing mapping behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    @Repeatable(BeanMappers.class)
+    public @interface BeanMapper {
+        /**
+         * Bean type mapped at this scope.
+         *
+         * @return mutable bean type
+         */
+        Class<?> value();
+
+        /**
+         * Property path identifying this bean's scope in a joined result.
+         *
+         * @return an empty string for the root, or a dot-separated property path for a nested collection element
+         */
+        String prefix() default "";
+    }
+
+    /**
+     * Container annotation for repeatable {@link BeanMapper} declarations.
+     * <p>
+     * Applications normally use repeated {@code @Data.BeanMapper} declarations directly. This explicit container has
+     * identical semantics and is part of Java's repeatable-annotation contract.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface BeanMappers {
+        /**
+         * Bean mapping declarations.
+         *
+         * @return bean mapping declarations
+         */
+        BeanMapper[] value();
+    }
+
+    /**
+     * Selects an explicitly-authored result mapper for a repository method.
+     * <p>
+     * A supporting provider validates the mapper type and emits direct construction or access. For the JDBC provider the
+     * selected class must implement the public JDBC row-mapper contract for the method's mapped element type and must be
+     * accessible to generated code. It is invalid on update-count methods and cannot be combined with
+     * {@link BeanMapper} or automatic graph reduction. Validation occurs during provider-specific code generation.
+     * <p>
+     * The Jakarta Persistence provider does not interpret this annotation and retains its existing mapping behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface RowMapper {
+        /**
+         * Mapper implementation selected for this method.
+         *
+         * @return mapper implementation class
+         */
+        Class<?> value();
+    }
+
+    /**
+     * Overrides the JDBC type used to bind a repository method parameter.
+     * <p>
+     * This annotation is intended for nullable or otherwise ambiguous values for which the parameter's Java type does not
+     * provide sufficient portable JDBC type information. It does not select a converter and does not permit SQL value
+     * interpolation. The JDBC provider validates its placement and emits a typed bind operation. The Jakarta Persistence
+     * provider does not interpret it.
+     */
+    @Target(ElementType.PARAMETER)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface JdbcType {
+        /**
+         * JDBC type used for binding.
+         *
+         * @return JDBC type
+         */
+        JDBCType value();
     }
 
     /**

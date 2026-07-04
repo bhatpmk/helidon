@@ -76,7 +76,7 @@ final class JakartaRepositoryClassGenerator {
         // Generate all interfaces supported by data repository generators
         repositoryGenerator.generateInterfaces(repositoryInfo, classModel, codegenContext, generator);
         // Generate all query methods
-        repositoryGenerator.generateQueryMethods(repositoryInfo, classModel, codegenContext, generator);
+        generator.generateRepositoryMethods(repositoryInfo, classModel, codegenContext, repositoryGenerator);
         // Generate SessionRepository<EntityManager> methods
         if (BaseRepositoryGenerator.hasInterface(repositoryInfo.interfaceInfo(), SESSION_REPOSITORY)) {
             generateSessionRepository(classModel);
