@@ -80,6 +80,7 @@ final class JdbcMethodGenerator {
         case RECORD -> JdbcRecordMapperGenerator.generate(plan, classModel, context);
         case BEAN -> JdbcBeanMapperGenerator.generate(plan, classModel, context);
         case EXPLICIT -> generateExplicitMapper(plan, classModel, context);
+        case REDUCER -> validateExplicitReducer(plan, context);
         case GRAPH -> {
             plan.mapperFieldName("Reducer_" + mixedCase(suffix));
             JdbcGraphReducerGenerator.generate(plan, classModel, context);
@@ -123,7 +124,7 @@ final class JdbcMethodGenerator {
             throw JdbcMethodPlan.failure(plan.method(), "Mapper requires an accessible no-argument constructor: "
                     + mapperType.resolvedName());
         }
-        TypeName mappedInterface = findMappedInterface(mapperInfo);
+        TypeName mappedInterface = findImplementedInterface(mapperInfo, JdbcCodegenTypes.ROW_MAPPER);
         if (mappedInterface == null
                 || mappedInterface.typeArguments().size() != 1
                 || !mappedInterface.typeArguments().getFirst().equals(plan.mappedType())) {
@@ -139,17 +140,61 @@ final class JdbcMethodGenerator {
                 .addContent("()"));
     }
 
-    private static TypeName findMappedInterface(TypeInfo typeInfo) {
+    private static void validateExplicitReducer(JdbcMethodPlan plan, CodegenContext context) {
+        TypeName reducerType = plan.explicitReducer();
+        TypeInfo reducerInfo = context.typeInfo(reducerType)
+                .orElseThrow(() -> JdbcMethodPlan.failure(plan.method(),
+                                                          "Reducer type information is unavailable: "
+                                                                  + reducerType.resolvedName()));
+        boolean samePackage = samePackage(plan.method(), reducerType);
+        if (reducerInfo.kind() != ElementKind.CLASS
+                || reducerInfo.elementModifiers().contains(Modifier.ABSTRACT)) {
+            throw JdbcMethodPlan.failure(plan.method(), "Reducer must be a concrete class: "
+                    + reducerType.resolvedName());
+        }
+        if (!reducerType.enclosingNames().isEmpty() && !reducerInfo.elementModifiers().contains(Modifier.STATIC)) {
+            throw JdbcMethodPlan.failure(plan.method(), "Reducer must not be a non-static nested class: "
+                    + reducerType.resolvedName());
+        }
+        if (reducerInfo.accessModifier() != AccessModifier.PUBLIC
+                && !(samePackage && (reducerInfo.accessModifier() == AccessModifier.PACKAGE_PRIVATE
+                || reducerInfo.accessModifier() == AccessModifier.PROTECTED))) {
+            throw JdbcMethodPlan.failure(plan.method(), "Reducer is not accessible to generated code: "
+                    + reducerType.resolvedName());
+        }
+        boolean constructor = reducerInfo.elementInfo()
+                .stream()
+                .filter(element -> element.kind() == ElementKind.CONSTRUCTOR)
+                .filter(element -> element.parameterArguments().isEmpty())
+                .anyMatch(element -> element.accessModifier() == AccessModifier.PUBLIC
+                        || (samePackage && (element.accessModifier() == AccessModifier.PACKAGE_PRIVATE
+                        || element.accessModifier() == AccessModifier.PROTECTED)));
+        if (!constructor) {
+            throw JdbcMethodPlan.failure(plan.method(), "Reducer requires an accessible no-argument constructor: "
+                    + reducerType.resolvedName());
+        }
+        TypeName reducerInterface = findImplementedInterface(reducerInfo, JdbcCodegenTypes.ROW_REDUCER);
+        if (reducerInterface == null
+                || reducerInterface.typeArguments().size() != 1
+                || !reducerInterface.typeArguments().getFirst().equals(plan.method().typeName())) {
+            throw JdbcMethodPlan.failure(plan.method(), "Reducer must implement JdbcClient.RowReducer<"
+                    + plan.method().typeName().resolvedName() + "> directly or through its type hierarchy");
+        }
+    }
+
+    private static TypeName findImplementedInterface(TypeInfo typeInfo, TypeName contract) {
         for (TypeInfo interfaceInfo : typeInfo.interfaceTypeInfo()) {
-            if (interfaceInfo.typeName().genericTypeName().equals(JdbcCodegenTypes.ROW_MAPPER)) {
+            if (interfaceInfo.typeName().genericTypeName().equals(contract)) {
                 return interfaceInfo.typeName();
             }
-            TypeName nested = findMappedInterface(interfaceInfo);
+            TypeName nested = findImplementedInterface(interfaceInfo, contract);
             if (nested != null) {
                 return nested;
             }
         }
-        return typeInfo.superTypeInfo().map(JdbcMethodGenerator::findMappedInterface).orElse(null);
+        return typeInfo.superTypeInfo()
+                .map(superType -> findImplementedInterface(superType, contract))
+                .orElse(null);
     }
 
     private static void generateMethod(JdbcMethodPlan plan, Method.Builder method) {
@@ -194,6 +239,12 @@ final class JdbcMethodGenerator {
 
         if (plan.operation() == JdbcMethodPlan.Operation.UPDATE) {
             method.addContentLine(".execute();");
+            return;
+        }
+        if (plan.mappingKind() == JdbcMethodPlan.MappingKind.REDUCER) {
+            method.addContent(".reduce(new ")
+                    .addContent(plan.explicitReducer())
+                    .addContentLine("());");
             return;
         }
         if (plan.mappingKind() == JdbcMethodPlan.MappingKind.GRAPH) {

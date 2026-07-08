@@ -32,16 +32,20 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 class DataAnnotationsTest {
 
-    @Data.BeanMapper(RootBean.class)
-    @Data.BeanMapper(value = ChildBean.class, prefix = "children")
+    @Data.BeanMapper(value = RootBean.class, identity = "rootId")
+    @Data.BeanMapper(value = ChildBean.class, prefix = "children", identity = "childId")
     private void repeatedBeanMappersCompile() {
     }
 
     @Data.BeanMappers({
-            @Data.BeanMapper(RootBean.class),
-            @Data.BeanMapper(value = ChildBean.class, prefix = "children")
+            @Data.BeanMapper(value = RootBean.class, identity = "rootId"),
+            @Data.BeanMapper(value = ChildBean.class, prefix = "children", identity = "childId")
     })
     private void explicitBeanMapperContainerCompiles() {
+    }
+
+    @Data.RowReducer(Reducer.class)
+    private void rowReducerCompiles() {
     }
 
     @Data.Update("INSERT INTO EXAMPLE (NAME) VALUES (:name)")
@@ -85,8 +89,15 @@ class DataAnnotationsTest {
         assertEquals(Data.BeanMappers.class, Data.BeanMapper.class.getAnnotation(Repeatable.class).value());
         assertEquals(Class.class, Data.BeanMapper.class.getDeclaredMethod("value").getReturnType());
         assertEquals("", Data.BeanMapper.class.getDeclaredMethod("prefix").getDefaultValue());
+        assertEquals("", Data.BeanMapper.class.getDeclaredMethod("identity").getDefaultValue());
         assertEquals(Data.BeanMapper[].class, Data.BeanMappers.class.getDeclaredMethod("value").getReturnType());
         assertNull(Data.BeanMappers.class.getAnnotation(Repeatable.class));
+    }
+
+    @Test
+    void definesRowReducerMetadata() throws NoSuchMethodException {
+        assertAnnotationMetadata(Data.RowReducer.class, RetentionPolicy.SOURCE, ElementType.METHOD);
+        assertEquals(Class.class, Data.RowReducer.class.getDeclaredMethod("value").getReturnType());
     }
 
     @Test
@@ -114,5 +125,8 @@ class DataAnnotationsTest {
     }
 
     private static final class ChildBean {
+    }
+
+    private static final class Reducer {
     }
 }

@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import io.helidon.codegen.CodegenContext;
@@ -42,11 +43,13 @@ import io.helidon.common.types.TypedElementInfo;
  */
 final class JdbcGraphReducerGenerator {
     private static final TypeName ARRAY_LIST = TypeName.create(ArrayList.class);
+    private static final TypeName DATA_EXCEPTION = TypeName.create("io.helidon.data.DataException");
     private static final TypeName IDENTITY_HASH_MAP = TypeName.create("java.util.IdentityHashMap");
     private static final TypeName LINKED_HASH_MAP = TypeName.create(LinkedHashMap.class);
     private static final TypeName LIST = TypeName.create(List.class);
     private static final TypeName NO_RESULT = TypeName.create("io.helidon.data.NoResultException");
     private static final TypeName NON_UNIQUE = TypeName.create("io.helidon.data.NonUniqueResultException");
+    private static final TypeName OBJECTS = TypeName.create(Objects.class);
     private static final TypeName OPTIONAL = TypeName.create("java.util.Optional");
     private static final TypeName ROW = TypeName.create("io.helidon.data.jdbc.JdbcClient.Row");
 
@@ -96,8 +99,8 @@ final class JdbcGraphReducerGenerator {
                 current = child;
             }
             String property = path[path.length - 1];
-            TypedElementInfo setter = scalarSetter(plan, context, current.type, property);
-            if (current.properties.put(property, new Property(alias, setter)) != null) {
+            Accessors accessors = scalarAccessors(plan, context, current.type, property);
+            if (current.properties.put(property, new Property(alias, accessors)) != null) {
                 throw JdbcMethodPlan.failure(plan.method(), "Duplicate graph property path: " + alias);
             }
         }
@@ -112,17 +115,27 @@ final class JdbcGraphReducerGenerator {
                                                      + scope.type.resolvedName());
             }
             JdbcBeanMapperGenerator.validateConstructor(plan, beanInfo);
-            Property identity = scope.properties.get("id");
-            if (identity == null) {
-                String location = scope.prefix.isEmpty() ? "root" : scope.prefix;
-                throw JdbcMethodPlan.failure(plan.method(),
-                                             "Graph scope '" + location + "' requires an explicit id alias");
-            }
-            scope.identity = identity;
             scope.variable = scope.prefix.isEmpty() ? "root" : variable(scope.prefix);
             scope.mapField = scope.prefix.isEmpty() ? "roots" : scope.variable + "ByParent";
         }
         validateDeclarations(plan, declarations, scopes);
+        for (Scope scope : scopes) {
+            JdbcMethodPlan.BeanMapping declaration = declarations.get(scope.prefix);
+            String identityName = declaration.identity();
+            String location = scope.prefix.isEmpty() ? "root" : scope.prefix;
+            if (identityName.isBlank() || !javaIdentifier(identityName)) {
+                throw JdbcMethodPlan.failure(plan.method(),
+                                             "Graph @Data.BeanMapper for scope '" + location
+                                                     + "' requires a nonblank local identity property");
+            }
+            Property identity = scope.properties.get(identityName);
+            if (identity == null) {
+                String alias = scope.prefix.isEmpty() ? identityName : scope.prefix + "." + identityName;
+                throw JdbcMethodPlan.failure(plan.method(),
+                                             "Graph identity property is not projected with alias '" + alias + "'");
+            }
+            scope.identity = identity;
+        }
         return root;
     }
 
@@ -202,7 +215,9 @@ final class JdbcGraphReducerGenerator {
                 .addContent(", ")
                 .addContent(root.variable)
                 .addContentLine(");")
-                .addContentLine("}");
+                .addContentLine("} else {");
+        addValidateExisting(method, root);
+        method.addContentLine("}");
         for (Scope child : root.children.values()) {
             addChild(method, child, root.variable);
         }
@@ -246,11 +261,19 @@ final class JdbcGraphReducerGenerator {
                 .addContent("().add(")
                 .addContent(child.variable)
                 .addContentLine(");")
-                .addContentLine("}");
+                .addContentLine("} else {");
+        addValidateExisting(method, child);
+        method.addContentLine("}");
         for (Scope nested : child.children.values()) {
             addChild(method, nested, child.variable);
         }
-        method.addContentLine("}");
+        if (child.children.isEmpty()) {
+            method.addContentLine("}");
+        } else {
+            method.addContentLine("} else {");
+            addRejectDescendants(method, child);
+            method.addContentLine("}");
+        }
     }
 
     private static void addCreate(Method.Builder method, Scope scope) {
@@ -261,7 +284,7 @@ final class JdbcGraphReducerGenerator {
         for (Property property : scope.properties.values()) {
             method.addContent(scope.variable)
                     .addContent(".")
-                    .addContent(property.setter.elementName())
+                    .addContent(property.accessors.setter.elementName())
                     .addContent("(");
             if (property == scope.identity) {
                 method.addContent(identityVariable(scope));
@@ -277,6 +300,49 @@ final class JdbcGraphReducerGenerator {
                     .addContent("(new ")
                     .addContent(ARRAY_LIST)
                     .addContentLine("<>());");
+        }
+    }
+
+    private static void addValidateExisting(Method.Builder method, Scope scope) {
+        String location = scope.prefix.isEmpty() ? "root" : scope.prefix;
+        for (Map.Entry<String, Property> entry : scope.properties.entrySet()) {
+            Property property = entry.getValue();
+            if (property == scope.identity) {
+                continue;
+            }
+            method.addContent("if (!")
+                    .addContent(OBJECTS)
+                    .addContent(".equals(")
+                    .addContent(scope.variable)
+                    .addContent(".")
+                    .addContent(property.accessors.getter.elementName())
+                    .addContent("(), ");
+            addRowRead(method, property.alias, property.type(), property.type().primitive());
+            method.addContentLine(")) {")
+                    .addContent("throw new ")
+                    .addContent(DATA_EXCEPTION)
+                    .addContent("(")
+                    .addContentLiteral("Conflicting projected value for graph scope '" + location
+                                               + "' property '" + entry.getKey() + "'")
+                    .addContentLine(");")
+                    .addContentLine("}");
+        }
+    }
+
+    private static void addRejectDescendants(Method.Builder method, Scope ancestor) {
+        String ancestorLocation = ancestor.prefix.isEmpty() ? "root" : ancestor.prefix;
+        for (Scope descendant : descendants(ancestor)) {
+            method.addContent("if (");
+            addRowRead(method, descendant.identity.alias, descendant.identity.type().boxed(), false);
+            method.addContentLine(" != null) {")
+                    .addContent("throw new ")
+                    .addContent(DATA_EXCEPTION)
+                    .addContent("(")
+                    .addContentLiteral("Graph scope '" + descendant.prefix
+                                               + "' has an identity while ancestor scope '"
+                                               + ancestorLocation + "' is absent")
+                    .addContentLine(");")
+                    .addContentLine("}");
         }
     }
 
@@ -362,9 +428,6 @@ final class JdbcGraphReducerGenerator {
     private static void validateDeclarations(JdbcMethodPlan plan,
                                              Map<String, JdbcMethodPlan.BeanMapping> declarations,
                                              List<Scope> scopes) {
-        if (declarations.isEmpty()) {
-            return;
-        }
         if (declarations.size() != scopes.size()) {
             throw JdbcMethodPlan.failure(plan.method(),
                                          "Graph @Data.BeanMapper declarations must cover the root and every collection scope");
@@ -399,18 +462,30 @@ final class JdbcGraphReducerGenerator {
         return new Accessors(getter, setter);
     }
 
-    private static TypedElementInfo scalarSetter(JdbcMethodPlan plan,
-                                                 CodegenContext context,
-                                                 TypeName owner,
-                                                 String property) {
+    private static Accessors scalarAccessors(JdbcMethodPlan plan,
+                                             CodegenContext context,
+                                             TypeName owner,
+                                             String property) {
         TypeInfo info = typeInfo(plan, context, owner);
-        TypedElementInfo setter = findMethod(info, "set" + beanSuffix(property), 1, plan.method());
-        if (setter == null || !JdbcMethodPlan.isScalar(setter.parameterArguments().getFirst().typeName())) {
+        String suffix = beanSuffix(property);
+        TypedElementInfo setter = findMethod(info, "set" + suffix, 1, plan.method());
+        TypedElementInfo getter = findMethod(info, "get" + suffix, 0, plan.method());
+        if (getter == null) {
+            getter = findMethod(info, "is" + suffix, 0, plan.method());
+            if (getter != null
+                    && !getter.typeName().boxed().equals(TypeName.create(Boolean.class))) {
+                getter = null;
+            }
+        }
+        if (getter == null
+                || setter == null
+                || !setter.parameterArguments().getFirst().typeName().equals(getter.typeName())
+                || !JdbcMethodPlan.isScalar(getter.typeName())) {
             throw JdbcMethodPlan.failure(plan.method(),
-                                         "Graph property requires an accessible scalar setter: "
+                                         "Graph property requires matching accessible scalar getter and setter: "
                                                  + owner.resolvedName() + "." + property);
         }
-        return setter;
+        return new Accessors(getter, setter);
     }
 
     private static TypedElementInfo findMethod(TypeInfo info,
@@ -520,9 +595,9 @@ final class JdbcGraphReducerGenerator {
     private record Accessors(TypedElementInfo getter, TypedElementInfo setter) {
     }
 
-    private record Property(String alias, TypedElementInfo setter) {
+    private record Property(String alias, Accessors accessors) {
         TypeName type() {
-            return setter.parameterArguments().getFirst().typeName();
+            return accessors.setter.parameterArguments().getFirst().typeName();
         }
     }
 

@@ -67,7 +67,7 @@ final class JdbcPersistenceGenerator extends BasePersistenceGenerator {
                                            TypeName className,
                                            ClassModel.Builder classModel) {
         if (!repositoryInfo.interfacesInfo().isEmpty()) {
-            throw new CodegenException("JDBC repositories in Helidon v27 must use explicit annotated SQL methods and "
+            throw new CodegenException("JDBC repositories must use explicit annotated SQL methods and "
                                                + "must not extend entity-oriented repository interfaces",
                                        repositoryInfo.interfaceInfo().originatingElementValue());
         }

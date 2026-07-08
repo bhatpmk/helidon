@@ -21,7 +21,9 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
@@ -33,7 +35,46 @@ import javax.sql.DataSource;
  */
 final class RecordingJdbc {
     private final List<String> events = new ArrayList<>();
-    private int row;
+    private List<String> resultRows = List.of("row");
+    private SQLException resultNextFailure;
+    private SQLException resultCloseFailure;
+    private SQLException statementCloseFailure;
+    private SQLException connectionCloseFailure;
+    private SQLWarning resultWarning;
+    private SQLWarning statementWarning;
+    private SQLWarning connectionWarning;
+
+    RecordingJdbc rows(String... rows) {
+        resultRows = List.of(rows);
+        return this;
+    }
+
+    RecordingJdbc failResultNext(SQLException failure) {
+        resultNextFailure = failure;
+        return this;
+    }
+
+    RecordingJdbc failResultClose(SQLException failure) {
+        resultCloseFailure = failure;
+        return this;
+    }
+
+    RecordingJdbc failStatementClose(SQLException failure) {
+        statementCloseFailure = failure;
+        return this;
+    }
+
+    RecordingJdbc failConnectionClose(SQLException failure) {
+        connectionCloseFailure = failure;
+        return this;
+    }
+
+    RecordingJdbc warnings(SQLWarning result, SQLWarning statement, SQLWarning connection) {
+        resultWarning = result;
+        statementWarning = statement;
+        connectionWarning = connection;
+        return this;
+    }
 
     List<String> events() {
         return List.copyOf(events);
@@ -90,7 +131,7 @@ final class RecordingJdbc {
     private Connection connection() {
         return proxy(Connection.class, (proxy, method, arguments) -> switch (method.getName()) {
             case "clearWarnings" -> record("connection.clearWarnings", null);
-            case "getWarnings" -> null;
+            case "getWarnings" -> connectionWarning;
             case "getAutoCommit" -> true;
             case "setAutoCommit" -> record("connection.autoCommit:" + arguments[0], null);
             case "isReadOnly" -> false;
@@ -100,7 +141,7 @@ final class RecordingJdbc {
             case "commit" -> record("connection.commit", null);
             case "rollback" -> record("connection.rollback", null);
             case "prepareStatement" -> record("statement.prepare", statement());
-            case "close" -> record("connection.close", null);
+            case "close" -> recordOrThrow("connection.close", connectionCloseFailure);
             case "isClosed" -> false;
             case "unwrap" -> ((Class<?>) arguments[0]).cast(proxy);
             case "isWrapperFor" -> ((Class<?>) arguments[0]).isInstance(proxy);
@@ -112,7 +153,7 @@ final class RecordingJdbc {
     private PreparedStatement statement() {
         return proxy(PreparedStatement.class, (proxy, method, arguments) -> switch (method.getName()) {
             case "clearWarnings" -> record("statement.clearWarnings", null);
-            case "getWarnings" -> null;
+            case "getWarnings" -> statementWarning;
             case "setFetchSize" -> record("statement.fetchSize:" + arguments[0], null);
             case "setQueryTimeout" -> record("statement.queryTimeout:" + arguments[0], null);
             case "setLargeMaxRows" -> record("statement.maxRows:" + arguments[0], null);
@@ -123,7 +164,7 @@ final class RecordingJdbc {
             case "getMoreResults" -> record("statement.moreResults:" + arguments[0], false);
             case "getLargeUpdateCount" -> -1L;
             case "getUpdateCount" -> -1;
-            case "close" -> record("statement.close", null);
+            case "close" -> recordOrThrow("statement.close", statementCloseFailure);
             case "isClosed" -> false;
             case "unwrap" -> ((Class<?>) arguments[0]).cast(proxy);
             case "isWrapperFor" -> ((Class<?>) arguments[0]).isInstance(proxy);
@@ -133,14 +174,20 @@ final class RecordingJdbc {
     }
 
     private ResultSet resultSet() {
-        row = 0;
+        int[] row = {-1};
         return proxy(ResultSet.class, (proxy, method, arguments) -> switch (method.getName()) {
             case "getMetaData" -> metadata();
-            case "next" -> record("result.next", ++row == 1);
-            case "getObject" -> "row";
-            case "getWarnings" -> null;
+            case "next" -> {
+                events.add("result.next");
+                if (resultNextFailure != null) {
+                    throw resultNextFailure;
+                }
+                yield ++row[0] < resultRows.size();
+            }
+            case "getObject" -> resultRows.get(row[0]);
+            case "getWarnings" -> resultWarning;
             case "clearWarnings" -> record("result.clearWarnings", null);
-            case "close" -> record("result.close", null);
+            case "close" -> recordOrThrow("result.close", resultCloseFailure);
             case "isClosed" -> false;
             case "unwrap" -> ((Class<?>) arguments[0]).cast(proxy);
             case "isWrapperFor" -> ((Class<?>) arguments[0]).isInstance(proxy);
@@ -163,6 +210,14 @@ final class RecordingJdbc {
     private Object record(String event, Object result) {
         events.add(event);
         return result;
+    }
+
+    private Object recordOrThrow(String event, SQLException failure) throws SQLException {
+        events.add(event);
+        if (failure != null) {
+            throw failure;
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")

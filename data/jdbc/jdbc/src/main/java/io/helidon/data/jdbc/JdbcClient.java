@@ -269,6 +269,10 @@ public interface JdbcClient {
 
     /**
      * Stateful, result-set-scoped reduction of physical rows into one logical result.
+     * <p>
+     * One reducer instance belongs to one execution and must not be reused concurrently. The provider invokes
+     * {@link #accept(Row)} synchronously for every physical row and invokes {@link #finish()} once only after successful
+     * result-set exhaustion. The provider owns and closes all JDBC resources.
      *
      * @param <R> logical result type
      */
@@ -285,6 +289,8 @@ public interface JdbcClient {
 
         /**
          * Produces the logical result after all rows have been accepted successfully.
+         * <p>
+         * This method is not invoked when row traversal or {@link #accept(Row)} fails.
          *
          * @return logical result
          */

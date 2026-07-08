@@ -57,7 +57,7 @@ final class JdbcSqlParameterPlan {
             if (parameter.typeName().isList()
                     || "java.util.Collection".equals(parameter.typeName().genericTypeName().fqName())
                     || "java.util.Set".equals(parameter.typeName().genericTypeName().fqName())) {
-                throw failure(method, "Collection-valued SQL parameters are not supported in Helidon v27: "
+                throw failure(method, "Collection-valued SQL parameters are not supported: "
                         + parameter.elementName());
             }
             if (!JdbcMethodPlan.isScalar(parameter.typeName())

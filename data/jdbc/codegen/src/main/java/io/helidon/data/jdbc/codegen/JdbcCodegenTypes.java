@@ -34,6 +34,7 @@ final class JdbcCodegenTypes {
     static final TypeName DATA_BEAN_MAPPER = TypeName.create("io.helidon.data.Data.BeanMapper");
     static final TypeName DATA_BEAN_MAPPERS = TypeName.create("io.helidon.data.Data.BeanMappers");
     static final TypeName DATA_ROW_MAPPER = TypeName.create("io.helidon.data.Data.RowMapper");
+    static final TypeName DATA_ROW_REDUCER = TypeName.create("io.helidon.data.Data.RowReducer");
     static final TypeName DATA_JDBC_TYPE = TypeName.create("io.helidon.data.Data.JdbcType");
     static final TypeName DATA_PERSISTENCE_UNIT = TypeName.create("io.helidon.data.Data.PersistenceUnit");
     static final TypeName DATA_PROVIDER_TYPE = TypeName.create("io.helidon.data.Data.ProviderType");

@@ -16,6 +16,7 @@
 package io.helidon.data.jdbc;
 
 import java.sql.Connection;
+import java.util.ArrayList;
 import java.util.List;
 
 import io.helidon.data.DataException;
@@ -110,6 +111,57 @@ class JdbcTransactionConnectionManagerTest {
                              "connection.autoCommit:true",
                              "connection.close"),
                      recording.events());
+    }
+
+    @Test
+    void streamingTerminalsCloseRowsAndStatementsButLeaveTransactionConnectionOpen() {
+        RecordingJdbc recording = new RecordingJdbc().rows("first", "second");
+        var dataSource = recording.dataSource();
+        JdbcTransactionConnectionManager manager = new JdbcTransactionConnectionManager();
+        manager.start("jdbc");
+        manager.begin("streaming");
+        JdbcClient client = new JdbcClientImpl(dataSource, JdbcExecutionOptions.EMPTY, manager);
+
+        List<String> pulled = new ArrayList<>();
+        client.create("select VALUE from TEST").map(String.class).withRows(rows -> {
+            for (String value : rows) {
+                pulled.add(value);
+                break;
+            }
+        });
+        List<String> pushed = new ArrayList<>();
+        client.create("select VALUE from TEST").map(String.class).forEach(pushed::add);
+        assertFalse(client.create("select VALUE from TEST")
+                            .map(String.class)
+                            .forEachWhile(value -> false));
+        int reduced = client.create("select VALUE from TEST").reduce(new JdbcClient.RowReducer<>() {
+            private int count;
+
+            @Override
+            public void accept(JdbcClient.Row row) {
+                row.required(1, String.class);
+                count++;
+            }
+
+            @Override
+            public Integer finish() {
+                return count;
+            }
+        });
+
+        assertEquals(List.of("first"), pulled);
+        assertEquals(List.of("first", "second"), pushed);
+        assertEquals(2, reduced);
+        assertEquals(4, recording.events().stream().filter("result.close"::equals).count());
+        assertEquals(4, recording.events().stream().filter("statement.close"::equals).count());
+        assertFalse(recording.events().contains("connection.close"));
+
+        manager.commit("streaming");
+        manager.end();
+
+        assertEquals(1, recording.events().stream().filter("connection.close"::equals).count());
+        assertTrue(recording.events().indexOf("statement.close")
+                           < recording.events().indexOf("connection.commit"));
     }
 
     private static JdbcDataSource initializedDataSource(String name) {

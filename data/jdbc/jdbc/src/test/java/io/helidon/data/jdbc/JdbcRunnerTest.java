@@ -18,6 +18,7 @@ package io.helidon.data.jdbc;
 import java.sql.JDBCType;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -128,12 +129,14 @@ class JdbcRunnerTest {
     @Test
     void supportsProviderOwnedTraversalAndInvalidatesFacade() {
         AtomicReference<Iterable<String>> retained = new AtomicReference<>();
+        AtomicReference<Iterator<String>> retainedIterator = new AtomicReference<>();
         List<String> values = new ArrayList<>();
 
         client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
                 .withRows(rows -> {
                     retained.set(rows);
+                    assertFalse(rows instanceof AutoCloseable);
                     for (String value : rows) {
                         values.add(value);
                         break;
@@ -142,6 +145,17 @@ class JdbcRunnerTest {
 
         assertEquals(List.of("Ada"), values);
         assertThrows(IllegalStateException.class, () -> retained.get().iterator());
+
+        client.create("SELECT NAME FROM USERS ORDER BY ID")
+                .map(String.class)
+                .withRows(rows -> {
+                    Iterator<String> iterator = rows.iterator();
+                    retainedIterator.set(iterator);
+                    assertFalse(iterator instanceof AutoCloseable);
+                    assertEquals("Ada", iterator.next());
+                });
+        assertThrows(IllegalStateException.class, retainedIterator.get()::hasNext);
+        assertThrows(IllegalStateException.class, retainedIterator.get()::next);
 
         List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).forEach(pushed::add);
@@ -156,6 +170,37 @@ class JdbcRunnerTest {
                 });
         assertFalse(exhausted);
         assertEquals(List.of("Ada", "Grace"), stopped);
+    }
+
+    @Test
+    void traversesEmptyResultsAndReportsExhaustion() {
+        List<String> pulled = new ArrayList<>();
+        client.create("SELECT NAME FROM USERS WHERE ID < 0")
+                .map(String.class)
+                .withRows(rows -> rows.forEach(pulled::add));
+        assertTrue(pulled.isEmpty());
+
+        List<String> pushed = new ArrayList<>();
+        client.create("SELECT NAME FROM USERS WHERE ID < 0")
+                .map(String.class)
+                .forEach(pushed::add);
+        assertTrue(pushed.isEmpty());
+
+        assertTrue(client.create("SELECT NAME FROM USERS WHERE ID < 0")
+                           .map(String.class)
+                           .forEachWhile(value -> false));
+    }
+
+    @Test
+    void nullTraversalActionDoesNotConsumeTheRowsStage() {
+        JdbcClient.Rows<String> rows = client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class);
+
+        assertThrows(NullPointerException.class, () -> rows.withRows(null));
+        List<String> values = new ArrayList<>();
+        rows.forEach(values::add);
+
+        assertEquals(List.of("Ada", "Grace", "Linus"), values);
+        assertThrows(IllegalStateException.class, () -> rows.forEach(ignored -> { }));
     }
 
     @Test

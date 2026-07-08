@@ -181,9 +181,11 @@ public final class Data {
      * Selects compile-time mapping for a mutable result bean.
      * <p>
      * The JDBC provider generates direct construction and property assignment; it does not use reflection. A flat result
-     * uses the default empty {@link #prefix() prefix}. Joined graph results can repeat this annotation with one declaration
-     * for the root and one uniquely-prefixed declaration for each collection path. JDBC code generation validates the
-     * mapped type, prefixes, construction, writable properties, and result shape at compile time.
+     * uses the default empty {@link #prefix() prefix} and {@link #identity() identity}. Joined graph results repeat this
+     * annotation with one declaration for the root and one uniquely-prefixed declaration for each collection path. Every
+     * graph declaration identifies the local Java property that supplies identity at that scope. JDBC code generation
+     * validates mapped types, prefixes, identities, construction, readable and writable properties, and the result shape
+     * at compile time.
      * <p>
      * The annotation is meaningful only for providers which document bean mapping support. The Jakarta Persistence
      * provider does not interpret it and retains its existing mapping behavior.
@@ -205,6 +207,17 @@ public final class Data {
          * @return an empty string for the root, or a dot-separated property path for a nested collection element
          */
         String prefix() default "";
+
+        /**
+         * Local Java property that identifies an object in this mapping scope.
+         * <p>
+         * A flat bean mapping leaves this value empty. Every declaration in a generated graph mapping must name one
+         * non-empty scalar property. The value is a local property name, not a SQL column name or a dotted property path.
+         * The JDBC code generator combines it with {@link #prefix()} to locate the corresponding projection alias.
+         *
+         * @return local identity property, or an empty string for a flat mapping
+         */
+        String identity() default "";
     }
 
     /**
@@ -230,7 +243,8 @@ public final class Data {
      * A supporting provider validates the mapper type and emits direct construction or access. For the JDBC provider the
      * selected class must implement the public JDBC row-mapper contract for the method's mapped element type and must be
      * accessible to generated code. It is invalid on update-count methods and cannot be combined with
-     * {@link BeanMapper} or automatic graph reduction. Validation occurs during provider-specific code generation.
+     * {@link BeanMapper}, {@link RowReducer}, or generated graph reduction. Validation occurs during provider-specific
+     * code generation.
      * <p>
      * The Jakarta Persistence provider does not interpret this annotation and retains its existing mapping behavior.
      */
@@ -241,6 +255,30 @@ public final class Data {
          * Mapper implementation selected for this method.
          *
          * @return mapper implementation class
+         */
+        Class<?> value();
+    }
+
+    /**
+     * Selects an explicitly-authored result-set reducer for a repository query.
+     * <p>
+     * The JDBC provider requires the selected class to implement {@code JdbcClient.RowReducer<R>}, where {@code R}
+     * exactly matches the repository method return type. The class must be concrete, accessible to generated code, and
+     * have an accessible no-argument constructor. Generated code constructs a fresh reducer for each invocation and calls
+     * the public JDBC client reduction terminal directly. The reducer receives only the provider's callback-scoped row
+     * view and never owns JDBC resources.
+     * <p>
+     * This annotation is valid only on a query that does not use a traversal callback. It cannot be combined with
+     * {@link BeanMapper}, {@link RowMapper}, {@link Update}, or {@link GeneratedKeys}. The Jakarta Persistence provider
+     * does not interpret this annotation and retains its existing behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface RowReducer {
+        /**
+         * Reducer implementation selected for this method.
+         *
+         * @return reducer implementation class
          */
         Class<?> value();
     }

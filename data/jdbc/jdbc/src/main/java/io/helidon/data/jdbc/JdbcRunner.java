@@ -253,6 +253,7 @@ final class JdbcRunner {
         try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
             while (cursor.hasNextValue()) {
                 if (!action.test(cursor.nextValue())) {
+                    // Leaving this scope closes the current result immediately; no lifecycle handle escapes to the caller.
                     return false;
                 }
             }
@@ -471,7 +472,9 @@ final class JdbcRunner {
     }
 
     /**
-     * Owns the open result path for every materializing and traversal terminal.
+     * Owns the open result path shared by materializing, reducing, scoped-pull, and push terminals.
+     * The cursor never reaches application code. {@link #iterableFacade()} exposes only non-closeable facade objects,
+     * and the runner invalidates those objects before leaving the callback scope.
      */
     private static final class JdbcStreamingCursor<T> implements AutoCloseable {
         private final JdbcOperation operation;
@@ -541,6 +544,7 @@ final class JdbcRunner {
                 nextReady = resultSet.next();
                 if (!nextReady) {
                     exhausted = true;
+                    // Fully consumed queries must advance through the JDBC end marker before resources are released.
                     if (operation.preparationPlan().resultKind() != JdbcPreparationPlan.ResultKind.UPDATE) {
                         rejectFollowingResults(statement, operation);
                     }

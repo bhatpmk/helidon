@@ -68,6 +68,7 @@ final class JdbcMethodPlan {
     private final List<String> aliases;
     private final List<BeanMapping> beanMappings;
     private final TypeName explicitMapper;
+    private final TypeName explicitReducer;
     private String sqlFieldName;
     private String mapperFieldName;
 
@@ -82,7 +83,8 @@ final class JdbcMethodPlan {
                            List<String> generatedColumns,
                            List<String> aliases,
                            List<BeanMapping> beanMappings,
-                           TypeName explicitMapper) {
+                           TypeName explicitMapper,
+                           TypeName explicitReducer) {
         this.method = method;
         this.operation = operation;
         this.returnShape = returnShape;
@@ -95,6 +97,7 @@ final class JdbcMethodPlan {
         this.aliases = aliases;
         this.beanMappings = beanMappings;
         this.explicitMapper = explicitMapper;
+        this.explicitReducer = explicitReducer;
     }
 
     static JdbcMethodPlan create(TypedElementInfo method, CodegenContext context) {
@@ -136,11 +139,25 @@ final class JdbcMethodPlan {
         TypeName explicitMapper = method.findAnnotation(JdbcCodegenTypes.DATA_ROW_MAPPER)
                 .flatMap(Annotation::typeValue)
                 .orElse(null);
+        TypeName explicitReducer = method.findAnnotation(JdbcCodegenTypes.DATA_ROW_REDUCER)
+                .flatMap(Annotation::typeValue)
+                .orElse(null);
+        ExplicitMapping explicitMapping = new ExplicitMapping(explicitMapper, explicitReducer);
+        if (explicitReducer != null && (explicitMapper != null || !beanMappings.isEmpty())) {
+            throw failure(method, "@Data.RowReducer cannot be combined with @Data.RowMapper or @Data.BeanMapper");
+        }
         if (explicitMapper != null && !beanMappings.isEmpty()) {
             throw failure(method, "@Data.RowMapper and @Data.BeanMapper cannot be combined");
         }
-        if (operation == Operation.UPDATE && (!beanMappings.isEmpty() || explicitMapper != null)) {
+        if (operation == Operation.UPDATE
+                && (!beanMappings.isEmpty() || explicitMapper != null || explicitReducer != null)) {
             throw failure(method, "Result mapping annotations are not legal on an update-count method");
+        }
+        if (explicitReducer != null && operation != Operation.QUERY) {
+            throw failure(method, "@Data.RowReducer is legal only on @Data.Query methods");
+        }
+        if (explicitReducer != null && traversal.parameter() != null) {
+            throw failure(method, "@Data.RowReducer cannot use a streaming traversal callback");
         }
 
         List<String> generatedColumns = generatedKeys
@@ -158,9 +175,15 @@ final class JdbcMethodPlan {
         }
         MappingKind mappingKind = operation == Operation.UPDATE
                 ? MappingKind.NONE
-                : mappingKind(method, context, returnPlan.mappedType(), aliases, beanMappings, explicitMapper, traversal);
+                : mappingKind(method,
+                              context,
+                              returnPlan.mappedType(),
+                              aliases,
+                              beanMappings,
+                              explicitMapping,
+                              traversal);
         if (generatedKeys && mappingKind == MappingKind.GRAPH) {
-            throw failure(method, "Generated-key rows do not support automatic graph reduction");
+            throw failure(method, "Generated-key rows do not support generated graph reduction");
         }
 
         return new JdbcMethodPlan(method,
@@ -174,7 +197,8 @@ final class JdbcMethodPlan {
                                   List.copyOf(generatedColumns),
                                   aliases,
                                   beanMappings,
-                                  explicitMapper);
+                                  explicitMapper,
+                                  explicitReducer);
     }
 
     private static TypedElementInfo optionsParameter(List<TypedElementInfo> parameters, TypedElementInfo method) {
@@ -197,6 +221,12 @@ final class JdbcMethodPlan {
     private static Traversal traversal(List<TypedElementInfo> parameters, TypedElementInfo method) {
         if (parameters.isEmpty()) {
             return new Traversal(null, ReturnShape.ITEM, null);
+        }
+        for (int i = 0; i < parameters.size() - 1; i++) {
+            TypeName raw = parameters.get(i).typeName().genericTypeName();
+            if (raw.equals(JdbcCodegenTypes.CONSUMER) || raw.equals(JdbcCodegenTypes.PREDICATE)) {
+                throw failure(method, "A traversal callback is permitted only as the trailing parameter");
+            }
         }
         TypedElementInfo last = parameters.getLast();
         TypeName raw = last.typeName().genericTypeName();
@@ -284,24 +314,36 @@ final class JdbcMethodPlan {
                                            TypeName mappedType,
                                            List<String> aliases,
                                            List<BeanMapping> beanMappings,
-                                           TypeName explicitMapper,
+                                           ExplicitMapping explicitMapping,
                                            Traversal traversal) {
-        boolean graph = aliases.stream().anyMatch(alias -> alias.indexOf('.') > 0);
-        if (graph && traversal.parameter() != null) {
+        if (explicitMapping.reducer() != null) {
+            return MappingKind.REDUCER;
+        }
+        boolean dottedAlias = aliases.stream().anyMatch(alias -> alias.indexOf('.') > 0);
+        boolean graphDeclared = beanMappings.size() > 1
+                || beanMappings.stream().anyMatch(mapping -> !mapping.prefix().isEmpty()
+                        || !mapping.identity().isEmpty());
+        if (graphDeclared && traversal.parameter() != null) {
             throw failure(method, "Identity-defined graph reduction cannot use a streaming traversal callback");
         }
-        if (graph && explicitMapper != null) {
-            throw failure(method, "@Data.RowMapper cannot be combined with automatic graph reduction");
+        if (graphDeclared && explicitMapping.mapper() != null) {
+            throw failure(method, "@Data.RowMapper cannot be combined with generated graph reduction");
         }
-        if (graph) {
+        if (graphDeclared) {
             return MappingKind.GRAPH;
         }
-        if (explicitMapper != null) {
+        if (explicitMapping.mapper() != null) {
             return MappingKind.EXPLICIT;
         }
+        if (dottedAlias) {
+            throw failure(method, "Dotted SQL projection aliases require a complete identity-bearing "
+                    + "@Data.BeanMapper set or an explicit mapper or reducer");
+        }
         if (!beanMappings.isEmpty()) {
-            if (beanMappings.size() != 1 || !beanMappings.getFirst().prefix().isEmpty()) {
-                throw failure(method, "A flat bean result requires exactly one empty-prefix @Data.BeanMapper");
+            BeanMapping mapping = beanMappings.getFirst();
+            if (beanMappings.size() != 1 || !mapping.prefix().isEmpty() || !mapping.identity().isEmpty()) {
+                throw failure(method, "A flat bean result requires exactly one empty-prefix @Data.BeanMapper "
+                        + "with an empty identity");
             }
             return MappingKind.BEAN;
         }
@@ -314,8 +356,8 @@ final class JdbcMethodPlan {
         if (resultInfo.kind() == ElementKind.RECORD) {
             return MappingKind.RECORD;
         }
-        throw failure(method, "Non-record JDBC result requires @Data.BeanMapper, @Data.RowMapper, or identity-defined "
-                + "graph aliases: " + mappedType.resolvedName());
+        throw failure(method, "Non-record JDBC result requires @Data.BeanMapper, @Data.RowMapper, or @Data.RowReducer: "
+                + mappedType.resolvedName());
     }
 
     private static List<BeanMapping> beanMappings(TypedElementInfo method) {
@@ -333,10 +375,11 @@ final class JdbcMethodPlan {
             TypeName beanType = annotation.typeValue()
                     .orElseThrow(() -> failure(method, "@Data.BeanMapper class value is missing"));
             String prefix = annotation.stringValue("prefix").orElse("");
+            String identity = annotation.stringValue("identity").orElse("");
             if (!prefixes.add(prefix)) {
                 throw failure(method, "Duplicate @Data.BeanMapper prefix: '" + prefix + "'");
             }
-            result.add(new BeanMapping(beanType, prefix));
+            result.add(new BeanMapping(beanType, prefix, identity));
         }
         return List.copyOf(result);
     }
@@ -401,6 +444,10 @@ final class JdbcMethodPlan {
         return explicitMapper;
     }
 
+    TypeName explicitReducer() {
+        return explicitReducer;
+    }
+
     String sqlFieldName() {
         return sqlFieldName;
     }
@@ -438,10 +485,14 @@ final class JdbcMethodPlan {
         RECORD,
         BEAN,
         EXPLICIT,
+        REDUCER,
         GRAPH
     }
 
-    record BeanMapping(TypeName type, String prefix) {
+    record BeanMapping(TypeName type, String prefix, String identity) {
+    }
+
+    private record ExplicitMapping(TypeName mapper, TypeName reducer) {
     }
 
     private record Traversal(TypedElementInfo parameter, ReturnShape shape, TypeName mappedType) {

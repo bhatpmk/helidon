@@ -22,6 +22,36 @@ import javax.sql.DataSource;
 
 /**
  * Logical ownership of a connection for one JDBC terminal operation.
+ *
+ * When the terminal operation finishes, should closing this operation also close the physical connection?
+ *
+ * There are two cases.
+ *
+ *   Outside a transaction:
+ *
+ *   DataSource.getConnection()
+ *           → Owned JdbcConnectionLease
+ *           → terminal completes
+ *           → ResultSet closes
+ *           → PreparedStatement closes
+ *           → lease closes the physical connection
+ *
+ *   For a pooled datasource, closing the physical connection normally returns it to the pool.
+ *
+ *   Inside a local JDBC transaction:
+ *
+ *   transaction manager acquires the physical connection
+ *           → runner receives a TransactionLease
+ *           → terminal closes ResultSet and PreparedStatement
+ *           → TransactionLease.close() only ends the logical operation lease
+ *           → transaction completion commits or rolls back
+ *           → transaction manager closes the physical connection
+ *
+ *   The lease therefore separates:
+ *
+ *   - logical ownership for one JDBC operation; and
+ *   - physical connection ownership for the transaction lifecycle.
+ *
  */
 interface JdbcConnectionLease extends AutoCloseable {
 
