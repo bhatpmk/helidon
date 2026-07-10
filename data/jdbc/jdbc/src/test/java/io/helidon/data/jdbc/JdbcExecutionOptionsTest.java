@@ -20,6 +20,7 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -37,10 +38,12 @@ class JdbcExecutionOptionsTest {
                 .fetchSize(20)
                 .queryTimeout(Duration.ofSeconds(5))
                 .maxRows(100)
+                .poolableHint(true)
                 .build();
         JdbcExecutionOptions override = JdbcExecutionOptions.builder()
                 .fetchSize(0)
                 .maxRows(10)
+                .poolableHint(false)
                 .build();
 
         JdbcExecutionOptions merged = defaults.overlay(override);
@@ -48,7 +51,9 @@ class JdbcExecutionOptionsTest {
         assertEquals(0, merged.fetchSize());
         assertEquals(Duration.ofSeconds(5), merged.queryTimeout());
         assertEquals(10, merged.maxRows());
+        assertFalse(merged.poolableHint());
         assertNull(JdbcExecutionOptions.EMPTY.fetchSize());
+        assertNull(JdbcExecutionOptions.EMPTY.poolableHint());
     }
 
     @Test

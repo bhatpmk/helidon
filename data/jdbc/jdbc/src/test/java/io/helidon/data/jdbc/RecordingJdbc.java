@@ -157,6 +157,7 @@ final class RecordingJdbc {
             case "setFetchSize" -> record("statement.fetchSize:" + arguments[0], null);
             case "setQueryTimeout" -> record("statement.queryTimeout:" + arguments[0], null);
             case "setLargeMaxRows" -> record("statement.maxRows:" + arguments[0], null);
+            case "setPoolable" -> record("statement.poolable:" + arguments[0], null);
             case "setObject" -> record("statement.bind:" + arguments[0] + ":" + arguments[1], null);
             case "setNull" -> record("statement.bindNull:" + arguments[0] + ":" + arguments[1], null);
             case "execute" -> record("statement.execute", true);

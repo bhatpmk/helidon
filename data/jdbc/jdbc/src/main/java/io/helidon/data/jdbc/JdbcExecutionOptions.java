@@ -27,16 +27,22 @@ import java.util.Objects;
  */
 public final class JdbcExecutionOptions {
 
-    static final JdbcExecutionOptions EMPTY = new JdbcExecutionOptions(null, null, null);
+    static final JdbcExecutionOptions EMPTY = new JdbcExecutionOptions(null, null, null, null);
 
+    // Configuration properties
     private final Integer fetchSize;
     private final Duration queryTimeout;
     private final Long maxRows;
+    private final Boolean poolableHint;
 
-    private JdbcExecutionOptions(Integer fetchSize, Duration queryTimeout, Long maxRows) {
+    private JdbcExecutionOptions(Integer fetchSize,
+                                 Duration queryTimeout,
+                                 Long maxRows,
+                                 Boolean poolableHint) {
         this.fetchSize = fetchSize;
         this.queryTimeout = queryTimeout;
         this.maxRows = maxRows;
+        this.poolableHint = poolableHint;
     }
 
     /**
@@ -60,6 +66,10 @@ public final class JdbcExecutionOptions {
         return maxRows;
     }
 
+    Boolean poolableHint() {
+        return poolableHint;
+    }
+
     JdbcExecutionOptions overlay(JdbcExecutionOptions override) {
         Objects.requireNonNull(override, "Execution options must not be null");
         if (override == EMPTY) {
@@ -70,7 +80,8 @@ public final class JdbcExecutionOptions {
         }
         return new JdbcExecutionOptions(override.fetchSize != null ? override.fetchSize : fetchSize,
                                         override.queryTimeout != null ? override.queryTimeout : queryTimeout,
-                                        override.maxRows != null ? override.maxRows : maxRows);
+                                        override.maxRows != null ? override.maxRows : maxRows,
+                                        override.poolableHint != null ? override.poolableHint : poolableHint);
     }
 
     /**
@@ -83,6 +94,7 @@ public final class JdbcExecutionOptions {
         private Integer fetchSize;
         private Duration queryTimeout;
         private Long maxRows;
+        private Boolean poolableHint;
 
         private Builder() {
         }
@@ -142,15 +154,32 @@ public final class JdbcExecutionOptions {
         }
 
         /**
+         * Supplies a hint about whether the JDBC driver should pool the prepared statement.
+         * <p>
+         * The provider applies this value through {@link java.sql.Statement#setPoolable(boolean)} before statement
+         * execution. A driver may ignore the hint. Leaving this option unset preserves the driver's default and does not
+         * invoke {@code setPoolable}. This hint concerns JDBC statement pooling only; it neither configures the datasource
+         * connection pool nor guarantees that the driver will cache the statement.
+         *
+         * @param poolable {@code true} to request statement pooling, or {@code false} to request that the statement not be
+         *                 pooled
+         * @return this builder
+         */
+        public Builder poolableHint(boolean poolable) {
+            this.poolableHint = poolable;
+            return this;
+        }
+
+        /**
          * Creates an immutable options snapshot.
          *
          * @return immutable options
          */
         public JdbcExecutionOptions build() {
-            if (fetchSize == null && queryTimeout == null && maxRows == null) {
+            if (fetchSize == null && queryTimeout == null && maxRows == null && poolableHint == null) {
                 return EMPTY;
             }
-            return new JdbcExecutionOptions(fetchSize, queryTimeout, maxRows);
+            return new JdbcExecutionOptions(fetchSize, queryTimeout, maxRows, poolableHint);
         }
     }
 }

@@ -38,7 +38,7 @@ final class JdbcBeanMapperGenerator {
     static void generate(JdbcMethodPlan plan, ClassModel.Builder classModel, CodegenContext context) {
         JdbcMethodPlan.BeanMapping mapping = plan.beanMappings().getFirst();
         if (!mapping.type().genericTypeName().equals(plan.mappedType().genericTypeName())) {
-            throw JdbcMethodPlan.failure(plan.method(), "@Data.BeanMapper type must equal the mapped result type");
+            throw JdbcMethodPlan.failure(plan.method(), "@Data.BeanMapping type must equal the mapped result type");
         }
         TypeInfo beanInfo = context.typeInfo(mapping.type().genericTypeName())
                 .orElseThrow(() -> JdbcMethodPlan.failure(plan.method(),

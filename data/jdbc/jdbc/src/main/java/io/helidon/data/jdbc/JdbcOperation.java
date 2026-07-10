@@ -20,14 +20,32 @@ import java.util.Objects;
 
 /**
  * Immutable execution snapshot created immediately before a terminal operation.
+ *
+ * <p>The fluent stages are mutable while an application or generated
+ * repository assembles a statement. This object freezes the SQL text, ordered
+ * bindings, options, and preparation contract before the runner borrows any
+ * JDBC resource. The runner can therefore execute a stable operation even
+ * though the original statement stage is no longer accessible for mutation.</p>
  */
 final class JdbcOperation {
 
+    /** SQL text after any compile-time declarative marker rewriting. */
     private final String sql;
+    /** Ordered bind snapshots; the array is cloned by the statement stage before construction. */
     private final Bind[] binds;
+    /** Per-operation options to overlay on the client defaults. */
     private final JdbcExecutionOptions options;
+    /** Result and statement-preparation contract selected by the terminal. */
     private final JdbcPreparationPlan preparationPlan;
 
+    /**
+     * Creates an immutable operation snapshot.
+     *
+     * @param sql SQL to execute
+     * @param binds ordered bind snapshots
+     * @param options operation-specific options
+     * @param preparationPlan statement result contract
+     */
     JdbcOperation(String sql,
                   Bind[] binds,
                   JdbcExecutionOptions options,
@@ -38,6 +56,18 @@ final class JdbcOperation {
         this.preparationPlan = preparationPlan;
     }
 
+    /**
+     * Counts positional markers for a statement stage.
+     *
+     * <p>The scanner is deliberately lexical rather than a SQL parser. It
+     * ignores question marks in quoted values, quoted identifiers, comments,
+     * and common vendor operators. Declarative named markers have already been
+     * rewritten by the annotation processor; a runtime named marker is
+     * rejected because this client stage accepts positional JDBC SQL.</p>
+     *
+     * @param sql SQL text to scan
+     * @return number of positional bind markers
+     */
     static int parameterCount(String sql) {
         Objects.requireNonNull(sql, "SQL must not be null");
         if (sql.isBlank()) {
@@ -46,70 +76,146 @@ final class JdbcOperation {
         return MarkerScanner.count(sql);
     }
 
+    /**
+     * Returns the operation SQL.
+     *
+     * @return SQL text
+     */
     String sql() {
         return sql;
     }
 
+    /**
+     * Returns the ordered bind snapshots.
+     *
+     * @return bind array owned by this operation
+     */
     Bind[] binds() {
         return binds;
     }
 
+    /**
+     * Returns options captured for this operation.
+     *
+     * @return operation options
+     */
     JdbcExecutionOptions options() {
         return options;
     }
 
+    /**
+     * Returns the result/preparation contract selected by the terminal.
+     *
+     * @return preparation plan
+     */
     JdbcPreparationPlan preparationPlan() {
         return preparationPlan;
     }
 
+    /**
+     * Describes the operation without exposing bound values.
+     *
+     * @return operation kind and bind count
+     */
     @Override
     public String toString() {
         return "JdbcOperation[" + preparationPlan.resultKind() + ", parameters=" + binds.length + "]";
     }
 
+    /**
+     * Immutable value and optional JDBC type for one positional parameter.
+     *
+     * <p>A {@code null} entry in the statement's bind array means that the
+     * position was never assigned. A {@code Bind} whose value is null is a
+     * deliberate typed SQL NULL and remains distinguishable from an unassigned
+     * position.</p>
+     */
     static final class Bind {
+        /** Value passed to the JDBC setter; may be null for a typed SQL NULL. */
         private final Object value;
+        /** Explicit JDBC type, or null when the driver may infer the type. */
         private final SQLType type;
 
+        /**
+         * Creates a bind snapshot.
+         *
+         * @param value value to bind, possibly null when {@code type} is explicit
+         * @param type explicit JDBC type, or null for an untyped value
+         */
         Bind(Object value, SQLType type) {
             this.value = value;
             this.type = type;
         }
 
+        /**
+         * Returns the value to bind.
+         *
+         * @return value, possibly null
+         */
         Object value() {
             return value;
         }
 
+        /**
+         * Returns the explicit JDBC type.
+         *
+         * @return JDBC type, or null when untyped
+         */
         SQLType type() {
             return type;
         }
 
+        /**
+         * Tests whether the JDBC type was explicitly supplied.
+         *
+         * @return true for a typed bind
+         */
         boolean typed() {
             return type != null;
         }
     }
 
     /**
-     * Counts imperative positional markers without interpreting SQL grammar. Quoted text, comments, and common vendor
-     * operators are copied conceptually as opaque regions so their question marks are not mistaken for bind markers.
+     * Lexically counts positional markers without interpreting SQL grammar.
+     *
+     * <p>Quoted text, comments, and common vendor operators are treated as
+     * opaque regions so their question marks are not mistaken for bind
+     * markers. The scanner intentionally leaves SQL validation to the JDBC
+     * driver and database.</p>
      */
     private static final class MarkerScanner {
+        /** SQL text being scanned. */
         private final String sql;
+        /** Cached character length of {@link #sql}. */
         private final int length;
+        /** Current scan offset. */
         private int index;
+        /** Number of real positional markers found so far. */
         private int count;
 
+        /**
+         * Creates a scanner positioned before the first character.
+         *
+         * @param sql SQL text
+         */
         private MarkerScanner(String sql) {
             this.sql = sql;
             this.length = sql.length();
         }
 
+        /**
+         * Scans one SQL string and returns its positional marker count.
+         *
+         * @param sql SQL text
+         * @return marker count
+         */
         static int count(String sql) {
             MarkerScanner scanner = new MarkerScanner(sql);
             scanner.scan();
             return scanner.count;
         }
 
+        /** Walks the SQL text and dispatches protected regions or markers. */
         private void scan() {
             while (index < length) {
                 char current = sql.charAt(index);
@@ -139,6 +245,7 @@ final class JdbcOperation {
             }
         }
 
+        /** Counts a question mark unless it begins a recognized literal operator. */
         private void positionalMarker() {
             char next = peek(1);
             if (next == '?' || next == '|' || next == '&') {
@@ -149,6 +256,7 @@ final class JdbcOperation {
             }
         }
 
+        /** Rejects runtime named markers because this stage accepts positional SQL only. */
         private void namedMarker() {
             char next = peek(1);
             if (next == ':' || next == '=') {
@@ -162,6 +270,7 @@ final class JdbcOperation {
             index++;
         }
 
+        /** Skips a quoted SQL string or identifier, honoring doubled delimiters. */
         private void quoted(char delimiter) {
             index++;
             while (index < length) {
@@ -179,6 +288,7 @@ final class JdbcOperation {
             throw malformed("Unterminated quoted SQL region");
         }
 
+        /** Skips a bracket-quoted identifier. */
         private void bracketIdentifier() {
             index++;
             while (index < length) {
@@ -196,6 +306,7 @@ final class JdbcOperation {
             throw malformed("Unterminated bracket-quoted identifier");
         }
 
+        /** Skips a line comment. */
         private void lineComment() {
             index += 2;
             while (index < length) {
@@ -206,6 +317,7 @@ final class JdbcOperation {
             }
         }
 
+        /** Skips a nested block comment. */
         private void blockComment() {
             index += 2;
             int depth = 1;
@@ -226,6 +338,7 @@ final class JdbcOperation {
             throw malformed("Unterminated block comment");
         }
 
+        /** Skips an Oracle alternative quoted string. */
         private void oracleQuoted() {
             char opening = sql.charAt(index + 2);
             char closing = switch (opening) {
@@ -246,6 +359,7 @@ final class JdbcOperation {
             throw malformed("Unterminated Oracle quoted string");
         }
 
+        /** Skips a PostgreSQL dollar-quoted region when one is present. */
         private boolean dollarQuoted() {
             int delimiterEnd = index + 1;
             while (delimiterEnd < length && sql.charAt(delimiterEnd) != '$') {
@@ -266,11 +380,23 @@ final class JdbcOperation {
             return true;
         }
 
+        /**
+         * Reads one character relative to the current offset.
+         *
+         * @param offset relative character offset
+         * @return character, or the NUL sentinel beyond the SQL text
+         */
         private char peek(int offset) {
             int target = index + offset;
             return target < length ? sql.charAt(target) : '\0';
         }
 
+        /**
+         * Creates a malformed-SQL diagnostic for an unterminated protected region.
+         *
+         * @param message diagnostic text
+         * @return exception to throw
+         */
         private IllegalArgumentException malformed(String message) {
             return new IllegalArgumentException(message + " near offset " + index);
         }

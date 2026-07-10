@@ -32,16 +32,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 class DataAnnotationsTest {
 
-    @Data.BeanMapper(value = RootBean.class, identity = "rootId")
-    @Data.BeanMapper(value = ChildBean.class, prefix = "children", identity = "childId")
-    private void repeatedBeanMappersCompile() {
+    @Data.BeanMapping(value = RootBean.class, identityProperty = "rootId")
+    @Data.BeanMapping(value = ChildBean.class, propertyPath = "children", identityProperty = "childId")
+    private void repeatedBeanMappingsCompile() {
     }
 
-    @Data.BeanMappers({
-            @Data.BeanMapper(value = RootBean.class, identity = "rootId"),
-            @Data.BeanMapper(value = ChildBean.class, prefix = "children", identity = "childId")
+    @Data.BeanMappings({
+            @Data.BeanMapping(value = RootBean.class, identityProperty = "rootId"),
+            @Data.BeanMapping(value = ChildBean.class, propertyPath = "children", identityProperty = "childId")
     })
-    private void explicitBeanMapperContainerCompiles() {
+    private void explicitBeanMappingContainerCompiles() {
     }
 
     @Data.RowReducer(Reducer.class)
@@ -83,15 +83,15 @@ class DataAnnotationsTest {
     }
 
     @Test
-    void definesRepeatableBeanMapperMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.BeanMapper.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertAnnotationMetadata(Data.BeanMappers.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertEquals(Data.BeanMappers.class, Data.BeanMapper.class.getAnnotation(Repeatable.class).value());
-        assertEquals(Class.class, Data.BeanMapper.class.getDeclaredMethod("value").getReturnType());
-        assertEquals("", Data.BeanMapper.class.getDeclaredMethod("prefix").getDefaultValue());
-        assertEquals("", Data.BeanMapper.class.getDeclaredMethod("identity").getDefaultValue());
-        assertEquals(Data.BeanMapper[].class, Data.BeanMappers.class.getDeclaredMethod("value").getReturnType());
-        assertNull(Data.BeanMappers.class.getAnnotation(Repeatable.class));
+    void definesRepeatableBeanMappingMetadata() throws NoSuchMethodException {
+        assertAnnotationMetadata(Data.BeanMapping.class, RetentionPolicy.SOURCE, ElementType.METHOD);
+        assertAnnotationMetadata(Data.BeanMappings.class, RetentionPolicy.SOURCE, ElementType.METHOD);
+        assertEquals(Data.BeanMappings.class, Data.BeanMapping.class.getAnnotation(Repeatable.class).value());
+        assertEquals(Class.class, Data.BeanMapping.class.getDeclaredMethod("value").getReturnType());
+        assertEquals("", Data.BeanMapping.class.getDeclaredMethod("propertyPath").getDefaultValue());
+        assertEquals("", Data.BeanMapping.class.getDeclaredMethod("identityProperty").getDefaultValue());
+        assertEquals(Data.BeanMapping[].class, Data.BeanMappings.class.getDeclaredMethod("value").getReturnType());
+        assertNull(Data.BeanMappings.class.getAnnotation(Repeatable.class));
     }
 
     @Test

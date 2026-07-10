@@ -178,63 +178,82 @@ public final class Data {
     }
 
     /**
-     * Selects compile-time mapping for a mutable result bean.
+     * Declares compile-time mapping for one mutable Java bean scope.
      * <p>
-     * The JDBC provider generates direct construction and property assignment; it does not use reflection. A flat result
-     * uses the default empty {@link #prefix() prefix} and {@link #identity() identity}. Joined graph results repeat this
-     * annotation with one declaration for the root and one uniquely-prefixed declaration for each collection path. Every
-     * graph declaration identifies the local Java property that supplies identity at that scope. JDBC code generation
-     * validates mapped types, prefixes, identities, construction, readable and writable properties, and the result shape
-     * at compile time.
+     * A supporting provider generates direct bean construction and property assignments. It does not use reflection,
+     * runtime classpath scanning, or a runtime mapper registry. One declaration with the default empty
+     * {@link #propertyPath() property path} and {@link #identityProperty() identity property} maps each physical result
+     * row to one flat bean.
      * <p>
-     * The annotation is meaningful only for providers which document bean mapping support. The Jakarta Persistence
+     * A joined object graph repeats this annotation for the root and for every collection-valued scope. Each declaration
+     * identifies its Java property path and a local scalar property that identifies an object within that scope. A
+     * complete identity-bearing declaration set directs the JDBC provider to generate a row reducer that deduplicates
+     * roots and collection elements. SQL projection aliases describe the corresponding property paths; aliases alone do
+     * not enable graph reduction.
+     * <p>
+     * Provider-specific code generation validates bean types, property paths, identity properties, construction,
+     * readable and writable properties, projection aliases, and the repository result shape at compile time. Use
+     * {@link RowMapper} for application-defined mapping of one physical row and {@link RowReducer} for
+     * application-defined reduction of multiple rows.
+     * <p>
+     * This annotation is meaningful only for providers that document bean-mapping support. The Jakarta Persistence
      * provider does not interpret it and retains its existing mapping behavior.
      */
     @Target(ElementType.METHOD)
     @Retention(RetentionPolicy.SOURCE)
-    @Repeatable(BeanMappers.class)
-    public @interface BeanMapper {
+    @Repeatable(BeanMappings.class)
+    public @interface BeanMapping {
         /**
-         * Bean type mapped at this scope.
+         * Mutable bean type represented by this mapping scope.
+         * <p>
+         * For a flat result or the root of a graph, this type must match the mapped repository result element. For a
+         * collection scope, it must match the element type of the collection selected by {@link #propertyPath()}.
          *
-         * @return mutable bean type
+         * @return exact mutable bean type for this mapping scope
          */
         Class<?> value();
 
         /**
-         * Property path identifying this bean's scope in a joined result.
+         * Root-relative Java property path represented by this mapping scope.
+         * <p>
+         * The empty string identifies the root scope. A nested scope uses a dot-separated property path such as
+         * {@code "phones"} or {@code "phones.tags"}. This value describes Java bean properties; it is not an SQL table
+         * alias. The provider uses the path to associate projection aliases and nested collection properties with the
+         * declared bean type.
          *
-         * @return an empty string for the root, or a dot-separated property path for a nested collection element
+         * @return empty string for the root, or a dot-separated Java property path for a nested scope
          */
-        String prefix() default "";
+        String propertyPath() default "";
 
         /**
          * Local Java property that identifies an object in this mapping scope.
          * <p>
-         * A flat bean mapping leaves this value empty. Every declaration in a generated graph mapping must name one
-         * non-empty scalar property. The value is a local property name, not a SQL column name or a dotted property path.
-         * The JDBC code generator combines it with {@link #prefix()} to locate the corresponding projection alias.
+         * A flat bean mapping leaves this value empty. Every declaration participating in generated graph reduction must
+         * name one non-blank scalar property. The value is a simple property name local to the bean declared by
+         * {@link #value()}; it is not an SQL column name, a database primary-key declaration, or a dotted property path.
+         * The JDBC provider combines it with {@link #propertyPath()} to locate the corresponding projection alias and
+         * uses the mapped value to deduplicate objects within their parent scope.
          *
-         * @return local identity property, or an empty string for a flat mapping
+         * @return local Java identity property, or an empty string for a flat mapping
          */
-        String identity() default "";
+        String identityProperty() default "";
     }
 
     /**
-     * Container annotation for repeatable {@link BeanMapper} declarations.
+     * Container annotation for repeatable {@link BeanMapping} declarations.
      * <p>
-     * Applications normally use repeated {@code @Data.BeanMapper} declarations directly. This explicit container has
-     * identical semantics and is part of Java's repeatable-annotation contract.
+     * Applications normally use repeated {@code @Data.BeanMapping} declarations directly. This container exists to
+     * satisfy Java's repeatable-annotation contract and has the same semantics as those repeated declarations.
      */
     @Target(ElementType.METHOD)
     @Retention(RetentionPolicy.SOURCE)
-    public @interface BeanMappers {
+    public @interface BeanMappings {
         /**
-         * Bean mapping declarations.
+         * Bean mapping declarations for one repository method.
          *
          * @return bean mapping declarations
          */
-        BeanMapper[] value();
+        BeanMapping[] value();
     }
 
     /**
@@ -243,7 +262,7 @@ public final class Data {
      * A supporting provider validates the mapper type and emits direct construction or access. For the JDBC provider the
      * selected class must implement the public JDBC row-mapper contract for the method's mapped element type and must be
      * accessible to generated code. It is invalid on update-count methods and cannot be combined with
-     * {@link BeanMapper}, {@link RowReducer}, or generated graph reduction. Validation occurs during provider-specific
+     * {@link BeanMapping}, {@link RowReducer}, or generated graph reduction. Validation occurs during provider-specific
      * code generation.
      * <p>
      * The Jakarta Persistence provider does not interpret this annotation and retains its existing mapping behavior.
@@ -269,7 +288,7 @@ public final class Data {
      * view and never owns JDBC resources.
      * <p>
      * This annotation is valid only on a query that does not use a traversal callback. It cannot be combined with
-     * {@link BeanMapper}, {@link RowMapper}, {@link Update}, or {@link GeneratedKeys}. The Jakarta Persistence provider
+     * {@link BeanMapping}, {@link RowMapper}, {@link Update}, or {@link GeneratedKeys}. The Jakarta Persistence provider
      * does not interpret this annotation and retains its existing behavior.
      */
     @Target(ElementType.METHOD)

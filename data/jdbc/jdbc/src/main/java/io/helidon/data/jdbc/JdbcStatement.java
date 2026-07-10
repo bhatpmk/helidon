@@ -19,21 +19,45 @@ import java.sql.SQLType;
 import java.util.Objects;
 
 /**
- * Mutable statement stage; no method in this class acquires JDBC resources before a terminal operation.
+ * Package-private implementation of the public single-use statement stage.
+ *
+ * <p>This object stores SQL, bind values, and execution options while a
+ * generated repository assembles a call. It never acquires a connection or
+ * prepares a JDBC statement. A terminal freezes the state into
+ * {@link JdbcOperation} and delegates all I/O to {@link JdbcRunner}.</p>
  */
 final class JdbcStatement implements JdbcClient.Statement {
+    /** Shared execution engine for all terminals. */
     private final JdbcRunner runner;
+    /** SQL text, already in positional form for declarative generated code. */
     private final String sql;
+    /** One slot per positional JDBC marker. */
     private final JdbcOperation.Bind[] binds;
+    /** Options accumulated before the terminal is selected. */
     private JdbcExecutionOptions options = JdbcExecutionOptions.EMPTY;
+    /** Guards the statement against a second terminal or later mutation. */
     private boolean terminalStarted;
 
+    /**
+     * Creates an empty statement stage with the required bind capacity.
+     *
+     * @param runner execution engine
+     * @param sql SQL text
+     * @param parameterCount number of positional JDBC markers
+     */
     JdbcStatement(JdbcRunner runner, String sql, int parameterCount) {
         this.runner = runner;
         this.sql = sql;
+        // Array indexes are zero-based internally, while public JDBC positions are one-based.
         this.binds = new JdbcOperation.Bind[parameterCount];
     }
 
+    /**
+     * Stores per-operation options without performing JDBC I/O.
+     *
+     * @param options options to apply at terminal execution
+     * @return this statement stage
+     */
     @Override
     public JdbcClient.Statement options(JdbcExecutionOptions options) {
         ensureMutable();
@@ -41,6 +65,13 @@ final class JdbcStatement implements JdbcClient.Statement {
         return this;
     }
 
+    /**
+     * Stores an untyped non-null scalar at a one-based JDBC position.
+     *
+     * @param index one-based parameter position
+     * @param value supported non-null scalar value
+     * @return this statement stage
+     */
     @Override
     public JdbcClient.Statement bind(int index, Object value) {
         Objects.requireNonNull(value, "Untyped bind value must not be null; use bindNull or the typed bind overload");
@@ -50,6 +81,14 @@ final class JdbcStatement implements JdbcClient.Statement {
         return bindInternal(index, new JdbcOperation.Bind(value, null));
     }
 
+    /**
+     * Stores a value and explicit JDBC type at a one-based position.
+     *
+     * @param index one-based parameter position
+     * @param value value, possibly null when the type is explicit
+     * @param type JDBC type
+     * @return this statement stage
+     */
     @Override
     public JdbcClient.Statement bind(int index, Object value, SQLType type) {
         return bindInternal(index,
@@ -57,22 +96,49 @@ final class JdbcStatement implements JdbcClient.Statement {
                                                    Objects.requireNonNull(type, "JDBC bind type must not be null")));
     }
 
+    /**
+     * Stores an explicitly typed SQL NULL.
+     *
+     * @param index one-based parameter position
+     * @param type JDBC type for the NULL
+     * @return this statement stage
+     */
     @Override
     public JdbcClient.Statement bindNull(int index, SQLType type) {
         return bind(index, null, type);
     }
 
+    /**
+     * Selects the update terminal. JDBC execution starts only after the
+     * operation snapshot is created and the runner is invoked.
+     *
+     * @return large update count
+     */
     @Override
     public long execute() {
         return runner.execute(operation(JdbcPreparationPlan.update()));
     }
 
+    /**
+     * Selects a reducer terminal for a query.
+     *
+     * @param reducer reducer that consumes callback-scoped rows
+     * @param <R> logical result type
+     * @return reduced result
+     */
     @Override
     public <R> R reduce(JdbcClient.RowReducer<R> reducer) {
         Objects.requireNonNull(reducer, "Row reducer must not be null");
         return runner.reduce(operation(JdbcPreparationPlan.query()), reducer);
     }
 
+    /**
+     * Attaches an application row mapper to a query.
+     *
+     * @param mapper mapper invoked once per physical row
+     * @param <T> mapped value type
+     * @return mapped terminal stage
+     */
     @Override
     public <T> JdbcClient.Rows<T> map(JdbcClient.RowMapper<T> mapper) {
         ensureMutable();
@@ -81,6 +147,17 @@ final class JdbcStatement implements JdbcClient.Statement {
                               JdbcPreparationPlan.query());
     }
 
+    /**
+     * Attaches the fixed scalar mapper for column one.
+     *
+     * <p>Primitive types use {@code required} so SQL NULL cannot be silently
+     * unboxed. Reference types use {@code get} so SQL NULL remains representable
+     * by the mapped type.</p>
+     *
+     * @param scalarType supported scalar type
+     * @param <T> scalar type
+     * @return mapped terminal stage
+     */
     @Override
     public <T> JdbcClient.Rows<T> map(Class<T> scalarType) {
         Objects.requireNonNull(scalarType, "Scalar type must not be null");
@@ -92,6 +169,14 @@ final class JdbcStatement implements JdbcClient.Statement {
                            : row -> row.get(1, scalarType));
     }
 
+    /**
+     * Selects generated-key result processing for an update.
+     *
+     * @param mapper mapper for generated-key rows
+     * @param columnNames requested generated-key columns
+     * @param <T> mapped key type
+     * @return generated-key terminal stage
+     */
     @Override
     public <T> JdbcClient.Rows<T> generatedKeys(JdbcClient.RowMapper<T> mapper, String... columnNames) {
         ensureMutable();
@@ -99,36 +184,92 @@ final class JdbcStatement implements JdbcClient.Statement {
         return new JdbcRows<>(this, mapper, JdbcPreparationPlan.generatedKeys(columnNames));
     }
 
+    /**
+     * Delegates the one-row cardinality terminal after capturing the operation.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param <T> mapped value type
+     * @return one mapped value
+     */
     <T> T one(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
         return runner.one(operation(plan), mapper);
     }
 
+    /**
+     * Delegates the optional cardinality terminal after capturing the operation.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param <T> mapped value type
+     * @return optional mapped value
+     */
     <T> java.util.Optional<T> optional(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
         return runner.optional(operation(plan), mapper);
     }
 
+    /**
+     * Delegates the materializing list terminal after capturing the operation.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param <T> mapped value type
+     * @return mapped values in JDBC encounter order
+     */
     <T> java.util.List<T> list(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
         return runner.list(operation(plan), mapper);
     }
 
+    /**
+     * Delegates callback-scoped pull traversal.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param action callback receiving the provider-owned iterable facade
+     * @param <T> mapped value type
+     */
     <T> void withRows(JdbcClient.RowMapper<T> mapper,
                       JdbcPreparationPlan plan,
                       java.util.function.Consumer<? super Iterable<T>> action) {
         runner.withRows(operation(plan), mapper, action);
     }
 
+    /**
+     * Delegates push traversal that consumes every row.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param action row callback
+     * @param <T> mapped value type
+     */
     <T> void forEach(JdbcClient.RowMapper<T> mapper,
                      JdbcPreparationPlan plan,
                      java.util.function.Consumer<? super T> action) {
         runner.forEach(operation(plan), mapper, action);
     }
 
+    /**
+     * Delegates push traversal with predicate-directed early termination.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param action continuation predicate
+     * @param <T> mapped value type
+     * @return true only after normal exhaustion
+     */
     <T> boolean forEachWhile(JdbcClient.RowMapper<T> mapper,
                              JdbcPreparationPlan plan,
                              java.util.function.Predicate<? super T> action) {
         return runner.forEachWhile(operation(plan), mapper, action);
     }
 
+    /**
+     * Assigns one bind slot after checking mutability, position, and duplicates.
+     *
+     * @param index one-based JDBC position
+     * @param bind immutable bind snapshot
+     * @return this statement stage
+     */
     private JdbcClient.Statement bindInternal(int index, JdbcOperation.Bind bind) {
         ensureMutable();
         if (index < 1 || index > binds.length) {
@@ -141,6 +282,12 @@ final class JdbcStatement implements JdbcClient.Statement {
         return this;
     }
 
+    /**
+     * Validates all binds and captures the single immutable operation snapshot.
+     *
+     * @param plan preparation and result contract
+     * @return operation snapshot for the runner
+     */
     private JdbcOperation operation(JdbcPreparationPlan plan) {
         ensureMutable();
         for (int i = 0; i < binds.length; i++) {
@@ -148,10 +295,15 @@ final class JdbcStatement implements JdbcClient.Statement {
                 throw new IllegalStateException("Missing bind value at JDBC position " + (i + 1));
             }
         }
+        // Mark before delegation so re-entrant or concurrent terminal calls cannot reuse this stage.
         terminalStarted = true;
+        // The clone prevents later stage mutation from changing the runner's execution input.
         return new JdbcOperation(sql, binds.clone(), options, plan);
     }
 
+    /**
+     * Rejects mutation after a terminal has claimed this statement stage.
+     */
     private void ensureMutable() {
         if (terminalStarted) {
             throw new IllegalStateException("A JDBC statement stage permits exactly one terminal operation");

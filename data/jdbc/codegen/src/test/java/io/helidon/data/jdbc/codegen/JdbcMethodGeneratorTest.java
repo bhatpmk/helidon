@@ -82,7 +82,7 @@ class JdbcMethodGeneratorTest {
 
                             @Data.Update("insert into POKEMON(NAME) values (:name)")
                             @Data.GeneratedKeys("ID")
-                            @Data.BeanMapper(GeneratedBean.class)
+                            @Data.BeanMapping(GeneratedBean.class)
                             GeneratedBean insertBean(String name);
 
                             @Data.Query("select ID as id, NAME as name from POKEMON where ID = :id")
@@ -366,9 +366,13 @@ class JdbcMethodGeneratorTest {
                                     left join TAG t on t.PHONE_ID = p.ID
                                     order by c.ID, p.ID, t.ID
                                     \""")
-                            @Data.BeanMapper(value = Contact.class, identity = "contactId")
-                            @Data.BeanMapper(value = Phone.class, prefix = "phones", identity = "phoneId")
-                            @Data.BeanMapper(value = Tag.class, prefix = "phones.tags", identity = "tagId")
+                            @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
+                            @Data.BeanMapping(value = Phone.class,
+                                              propertyPath = "phones",
+                                              identityProperty = "phoneId")
+                            @Data.BeanMapping(value = Tag.class,
+                                              propertyPath = "phones.tags",
+                                              identityProperty = "tagId")
                             List<Contact> findContacts();
 
                             @Data.Query("select ID as contactId from CONTACT order by ID")
@@ -376,15 +380,15 @@ class JdbcMethodGeneratorTest {
                             List<Long> reduceContactIds();
 
                             @Data.Query("select ID as contactId, NAME as name from CONTACT order by ID")
-                            @Data.BeanMapper(value = Contact.class, identity = "contactId")
+                            @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
                             Contact findOne();
 
                             @Data.Query("select ID as contactId, NAME as name from CONTACT order by ID")
-                            @Data.BeanMapper(value = Contact.class, identity = "contactId")
+                            @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
                             Optional<Contact> findOptional();
 
                             @Data.Query("select ID as contactId, NAME as name from CONTACT order by ID")
-                            @Data.BeanMappers(@Data.BeanMapper(Contact.class))
+                            @Data.BeanMappings(@Data.BeanMapping(Contact.class))
                             List<Contact> listContacts();
                         }
 
@@ -480,8 +484,8 @@ class JdbcMethodGeneratorTest {
                         interface MissingIdentityRepository {
                             @Data.Query("select c.ID as contactId, p.ID as \\\"children.childId\\\" from CONTACT c "
                                     + "left join CHILD p on p.CONTACT_ID = c.ID")
-                            @Data.BeanMapper(value = Parent.class, identity = "contactId")
-                            @Data.BeanMapper(value = Child.class, prefix = "children")
+                            @Data.BeanMapping(value = Parent.class, identityProperty = "contactId")
+                            @Data.BeanMapping(value = Child.class, propertyPath = "children")
                             List<Parent> invalid();
                         }
                         class Parent {
@@ -500,7 +504,7 @@ class JdbcMethodGeneratorTest {
                             public void setChildId(Long childId) { this.childId = childId; }
                         }
                         """,
-                                 "requires a nonblank local identity property");
+                                 "requires a nonblank identityProperty");
         assertCompilationFailure("ReducerResultRepository.java", """
                         package example;
                         import java.util.List;

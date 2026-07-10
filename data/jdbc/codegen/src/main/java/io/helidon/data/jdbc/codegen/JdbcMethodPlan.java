@@ -100,6 +100,15 @@ final class JdbcMethodPlan {
         this.explicitReducer = explicitReducer;
     }
 
+    // This method validates the annotations, parameters, return shape, mapping, generated keys, etc.
+    // during the code generation.
+    //
+    // A note about return type
+    // `one()`, `optional()`, and `list()` come from the return type.
+    // `Consumer<T>` selects `forEach(...)` and requires `void`.
+    // `Predicate<T>` selects `forEachWhile(...)` and requires primitive
+    //     `boolean`.
+    // Updates require primitive `long` or `void`.
     static JdbcMethodPlan create(TypedElementInfo method, CodegenContext context) {
         boolean query = method.hasAnnotation(JdbcCodegenTypes.DATA_QUERY);
         boolean update = method.hasAnnotation(JdbcCodegenTypes.DATA_UPDATE);
@@ -130,6 +139,8 @@ final class JdbcMethodPlan {
         int firstBindable = options == null ? 0 : 1;
         int bindableEnd = traversal.parameter() == null ? parameters.size() : parameters.size() - 1;
         List<TypedElementInfo> bindable = List.copyOf(parameters.subList(firstBindable, bindableEnd));
+
+        // We need compile time correspondence between named markers and method parameters
         JdbcSqlParameterPlan parameterPlan = JdbcSqlParameterPlan.create(sql, bindable, method);
 
         Return returnPlan = returnPlan(method, traversal);
@@ -144,10 +155,10 @@ final class JdbcMethodPlan {
                 .orElse(null);
         ExplicitMapping explicitMapping = new ExplicitMapping(explicitMapper, explicitReducer);
         if (explicitReducer != null && (explicitMapper != null || !beanMappings.isEmpty())) {
-            throw failure(method, "@Data.RowReducer cannot be combined with @Data.RowMapper or @Data.BeanMapper");
+            throw failure(method, "@Data.RowReducer cannot be combined with @Data.RowMapper or @Data.BeanMapping");
         }
         if (explicitMapper != null && !beanMappings.isEmpty()) {
-            throw failure(method, "@Data.RowMapper and @Data.BeanMapper cannot be combined");
+            throw failure(method, "@Data.RowMapper and @Data.BeanMapping cannot be combined");
         }
         if (operation == Operation.UPDATE
                 && (!beanMappings.isEmpty() || explicitMapper != null || explicitReducer != null)) {
@@ -301,6 +312,7 @@ final class JdbcMethodPlan {
         }
 
         String rawResult = returnPlan.mappedType().genericTypeName().fqName();
+        // We need to support these return types in the future release
         if ("java.util.Set".equals(rawResult)
                 || "java.util.Map".equals(rawResult)
                 || "java.util.stream.Stream".equals(rawResult)
@@ -321,8 +333,8 @@ final class JdbcMethodPlan {
         }
         boolean dottedAlias = aliases.stream().anyMatch(alias -> alias.indexOf('.') > 0);
         boolean graphDeclared = beanMappings.size() > 1
-                || beanMappings.stream().anyMatch(mapping -> !mapping.prefix().isEmpty()
-                        || !mapping.identity().isEmpty());
+                || beanMappings.stream().anyMatch(mapping -> !mapping.propertyPath().isEmpty()
+                        || !mapping.identityProperty().isEmpty());
         if (graphDeclared && traversal.parameter() != null) {
             throw failure(method, "Identity-defined graph reduction cannot use a streaming traversal callback");
         }
@@ -337,13 +349,15 @@ final class JdbcMethodPlan {
         }
         if (dottedAlias) {
             throw failure(method, "Dotted SQL projection aliases require a complete identity-bearing "
-                    + "@Data.BeanMapper set or an explicit mapper or reducer");
+                    + "@Data.BeanMapping set or an explicit mapper or reducer");
         }
         if (!beanMappings.isEmpty()) {
             BeanMapping mapping = beanMappings.getFirst();
-            if (beanMappings.size() != 1 || !mapping.prefix().isEmpty() || !mapping.identity().isEmpty()) {
-                throw failure(method, "A flat bean result requires exactly one empty-prefix @Data.BeanMapper "
-                        + "with an empty identity");
+            if (beanMappings.size() != 1
+                    || !mapping.propertyPath().isEmpty()
+                    || !mapping.identityProperty().isEmpty()) {
+                throw failure(method, "A flat bean result requires exactly one root @Data.BeanMapping with empty "
+                        + "propertyPath and identityProperty values");
             }
             return MappingKind.BEAN;
         }
@@ -356,30 +370,30 @@ final class JdbcMethodPlan {
         if (resultInfo.kind() == ElementKind.RECORD) {
             return MappingKind.RECORD;
         }
-        throw failure(method, "Non-record JDBC result requires @Data.BeanMapper, @Data.RowMapper, or @Data.RowReducer: "
+        throw failure(method, "Non-record JDBC result requires @Data.BeanMapping, @Data.RowMapper, or @Data.RowReducer: "
                 + mappedType.resolvedName());
     }
 
     private static List<BeanMapping> beanMappings(TypedElementInfo method) {
         List<Annotation> annotations = new ArrayList<>();
         for (Annotation annotation : method.annotations()) {
-            if (annotation.typeName().equals(JdbcCodegenTypes.DATA_BEAN_MAPPER)) {
+            if (annotation.typeName().equals(JdbcCodegenTypes.DATA_BEAN_MAPPING)) {
                 annotations.add(annotation);
-            } else if (annotation.typeName().equals(JdbcCodegenTypes.DATA_BEAN_MAPPERS)) {
+            } else if (annotation.typeName().equals(JdbcCodegenTypes.DATA_BEAN_MAPPINGS)) {
                 annotations.addAll(annotation.annotationValues().orElse(List.of()));
             }
         }
         List<BeanMapping> result = new ArrayList<>(annotations.size());
-        Set<String> prefixes = new HashSet<>();
+        Set<String> propertyPaths = new HashSet<>();
         for (Annotation annotation : annotations) {
             TypeName beanType = annotation.typeValue()
-                    .orElseThrow(() -> failure(method, "@Data.BeanMapper class value is missing"));
-            String prefix = annotation.stringValue("prefix").orElse("");
-            String identity = annotation.stringValue("identity").orElse("");
-            if (!prefixes.add(prefix)) {
-                throw failure(method, "Duplicate @Data.BeanMapper prefix: '" + prefix + "'");
+                    .orElseThrow(() -> failure(method, "@Data.BeanMapping class value is missing"));
+            String propertyPath = annotation.stringValue("propertyPath").orElse("");
+            String identityProperty = annotation.stringValue("identityProperty").orElse("");
+            if (!propertyPaths.add(propertyPath)) {
+                throw failure(method, "Duplicate @Data.BeanMapping propertyPath: '" + propertyPath + "'");
             }
-            result.add(new BeanMapping(beanType, prefix, identity));
+            result.add(new BeanMapping(beanType, propertyPath, identityProperty));
         }
         return List.copyOf(result);
     }
@@ -489,7 +503,7 @@ final class JdbcMethodPlan {
         GRAPH
     }
 
-    record BeanMapping(TypeName type, String prefix, String identity) {
+    record BeanMapping(TypeName type, String propertyPath, String identityProperty) {
     }
 
     private record ExplicitMapping(TypeName mapper, TypeName reducer) {

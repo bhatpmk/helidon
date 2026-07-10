@@ -122,6 +122,7 @@ class JdbcResourceOwnershipTest {
                                  .fetchSize(37)
                                  .queryTimeout(Duration.ofSeconds(4))
                                  .maxRows(91)
+                                 .poolableHint(true)
                                  .build())
                 .bind(1, "value")
                 .bindNull(2, JDBCType.VARCHAR)
@@ -134,11 +135,24 @@ class JdbcResourceOwnershipTest {
         assertTrue(events.contains("statement.fetchSize:37"), events::toString);
         assertTrue(events.contains("statement.queryTimeout:4"), events::toString);
         assertTrue(events.contains("statement.maxRows:91"), events::toString);
+        assertTrue(events.contains("statement.poolable:true"), events::toString);
         assertTrue(events.contains("statement.bind:1:value"), events::toString);
         assertTrue(events.contains("statement.bindNull:2:" + JDBCType.VARCHAR.getVendorTypeNumber()), events::toString);
         assertTrue(events.indexOf("statement.prepare") < events.indexOf("statement.fetchSize:37"), events::toString);
+        assertTrue(events.indexOf("statement.maxRows:91") < events.indexOf("statement.poolable:true"), events::toString);
         assertTrue(events.indexOf("statement.bindNull:2:" + JDBCType.VARCHAR.getVendorTypeNumber())
                            < events.indexOf("statement.execute"), events::toString);
+    }
+
+    @Test
+    void preservesDriverPoolableDefaultWhenHintIsUnset() {
+        RecordingJdbc recording = new RecordingJdbc();
+        JdbcClient client = new JdbcClientImpl(recording.dataSource());
+
+        assertEquals(List.of("row"), client.create("select VALUE from TEST").map(String.class).list());
+
+        assertFalse(recording.events().stream().anyMatch(event -> event.startsWith("statement.poolable:")),
+                    recording.events()::toString);
     }
 
     @Test

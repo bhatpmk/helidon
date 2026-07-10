@@ -39,6 +39,8 @@ final class JdbcSqlParameterPlan {
         this.binds = binds;
     }
 
+    // This method rejects unused parameters, missing parameters, duplicate parameter names, collection-valued parameters,
+    // and unsupported types without `@Data.JdbcType`
     static JdbcSqlParameterPlan create(String sql,
                                        List<TypedElementInfo> bindableParameters,
                                        TypedElementInfo method) {

@@ -92,8 +92,10 @@ final class JdbcGraphReducerGenerator {
                             .typeName()
                             .typeArguments()
                             .getFirst();
-                    String prefix = current.prefix.isEmpty() ? property : current.prefix + "." + property;
-                    child = new Scope(prefix, childType, current, collection);
+                    String propertyPath = current.propertyPath.isEmpty()
+                            ? property
+                            : current.propertyPath + "." + property;
+                    child = new Scope(propertyPath, childType, current, collection);
                     current.children.put(property, child);
                 }
                 current = child;
@@ -115,24 +117,26 @@ final class JdbcGraphReducerGenerator {
                                                      + scope.type.resolvedName());
             }
             JdbcBeanMapperGenerator.validateConstructor(plan, beanInfo);
-            scope.variable = scope.prefix.isEmpty() ? "root" : variable(scope.prefix);
-            scope.mapField = scope.prefix.isEmpty() ? "roots" : scope.variable + "ByParent";
+            scope.variable = scope.propertyPath.isEmpty() ? "root" : variable(scope.propertyPath);
+            scope.mapField = scope.propertyPath.isEmpty() ? "roots" : scope.variable + "ByParent";
         }
         validateDeclarations(plan, declarations, scopes);
         for (Scope scope : scopes) {
-            JdbcMethodPlan.BeanMapping declaration = declarations.get(scope.prefix);
-            String identityName = declaration.identity();
-            String location = scope.prefix.isEmpty() ? "root" : scope.prefix;
-            if (identityName.isBlank() || !javaIdentifier(identityName)) {
+            JdbcMethodPlan.BeanMapping declaration = declarations.get(scope.propertyPath);
+            String identityProperty = declaration.identityProperty();
+            String location = scope.propertyPath.isEmpty() ? "root" : scope.propertyPath;
+            if (identityProperty.isBlank() || !javaIdentifier(identityProperty)) {
                 throw JdbcMethodPlan.failure(plan.method(),
-                                             "Graph @Data.BeanMapper for scope '" + location
-                                                     + "' requires a nonblank local identity property");
+                                             "Graph @Data.BeanMapping for propertyPath '" + location
+                                                     + "' requires a nonblank identityProperty");
             }
-            Property identity = scope.properties.get(identityName);
+            Property identity = scope.properties.get(identityProperty);
             if (identity == null) {
-                String alias = scope.prefix.isEmpty() ? identityName : scope.prefix + "." + identityName;
+                String alias = scope.propertyPath.isEmpty()
+                        ? identityProperty
+                        : scope.propertyPath + "." + identityProperty;
                 throw JdbcMethodPlan.failure(plan.method(),
-                                             "Graph identity property is not projected with alias '" + alias + "'");
+                                             "Graph identityProperty is not projected with alias '" + alias + "'");
             }
             scope.identity = identity;
         }
@@ -304,7 +308,7 @@ final class JdbcGraphReducerGenerator {
     }
 
     private static void addValidateExisting(Method.Builder method, Scope scope) {
-        String location = scope.prefix.isEmpty() ? "root" : scope.prefix;
+        String location = scope.propertyPath.isEmpty() ? "root" : scope.propertyPath;
         for (Map.Entry<String, Property> entry : scope.properties.entrySet()) {
             Property property = entry.getValue();
             if (property == scope.identity) {
@@ -330,7 +334,7 @@ final class JdbcGraphReducerGenerator {
     }
 
     private static void addRejectDescendants(Method.Builder method, Scope ancestor) {
-        String ancestorLocation = ancestor.prefix.isEmpty() ? "root" : ancestor.prefix;
+        String ancestorLocation = ancestor.propertyPath.isEmpty() ? "root" : ancestor.propertyPath;
         for (Scope descendant : descendants(ancestor)) {
             method.addContent("if (");
             addRowRead(method, descendant.identity.alias, descendant.identity.type().boxed(), false);
@@ -338,7 +342,7 @@ final class JdbcGraphReducerGenerator {
                     .addContent("throw new ")
                     .addContent(DATA_EXCEPTION)
                     .addContent("(")
-                    .addContentLiteral("Graph scope '" + descendant.prefix
+                    .addContentLiteral("Graph scope '" + descendant.propertyPath
                                                + "' has an identity while ancestor scope '"
                                                + ancestorLocation + "' is absent")
                     .addContentLine(");")
@@ -420,7 +424,7 @@ final class JdbcGraphReducerGenerator {
     private static Map<String, JdbcMethodPlan.BeanMapping> beanDeclarations(JdbcMethodPlan plan) {
         Map<String, JdbcMethodPlan.BeanMapping> result = new HashMap<>();
         for (JdbcMethodPlan.BeanMapping declaration : plan.beanMappings()) {
-            result.put(declaration.prefix(), declaration);
+            result.put(declaration.propertyPath(), declaration);
         }
         return result;
     }
@@ -430,14 +434,16 @@ final class JdbcGraphReducerGenerator {
                                              List<Scope> scopes) {
         if (declarations.size() != scopes.size()) {
             throw JdbcMethodPlan.failure(plan.method(),
-                                         "Graph @Data.BeanMapper declarations must cover the root and every collection scope");
+                                         "Graph @Data.BeanMapping declarations must cover the root and every "
+                                                 + "collection propertyPath");
         }
         for (Scope scope : scopes) {
-            JdbcMethodPlan.BeanMapping declaration = declarations.get(scope.prefix);
+            JdbcMethodPlan.BeanMapping declaration = declarations.get(scope.propertyPath);
             if (declaration == null || !declaration.type().genericTypeName().equals(scope.type.genericTypeName())) {
-                String location = scope.prefix.isEmpty() ? "root" : scope.prefix;
+                String location = scope.propertyPath.isEmpty() ? "root" : scope.propertyPath;
                 throw JdbcMethodPlan.failure(plan.method(),
-                                             "Missing or mismatched @Data.BeanMapper for graph scope '" + location + "'");
+                                             "Missing or mismatched @Data.BeanMapping for propertyPath '"
+                                                     + location + "'");
             }
         }
     }
@@ -602,7 +608,7 @@ final class JdbcGraphReducerGenerator {
     }
 
     private static final class Scope {
-        private final String prefix;
+        private final String propertyPath;
         private final TypeName type;
         private final Scope parent;
         private final Accessors collection;
@@ -612,8 +618,8 @@ final class JdbcGraphReducerGenerator {
         private String variable;
         private String mapField;
 
-        private Scope(String prefix, TypeName type, Scope parent, Accessors collection) {
-            this.prefix = prefix;
+        private Scope(String propertyPath, TypeName type, Scope parent, Accessors collection) {
+            this.propertyPath = propertyPath;
             this.type = type;
             this.parent = parent;
             this.collection = collection;
