@@ -24,7 +24,6 @@ import java.sql.SQLType;
 import java.sql.SQLWarning;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -55,7 +54,7 @@ final class JdbcRunner {
     /** Datasource used when an operation acquires a connection lease. */
     private final DataSource dataSource;
     /** Client-level options overlaid by operation-level options. */
-    private final JdbcExecutionOptions defaults;
+    private final JdbcStatementOptions defaults;
     /** Policy that supplies owned or transaction-bound operation leases. */
     private final JdbcConnectionLease.Provider leaseProvider;
 
@@ -67,7 +66,7 @@ final class JdbcRunner {
      * @param leaseProvider operation-lease provider
      */
     JdbcRunner(DataSource dataSource,
-               JdbcExecutionOptions defaults,
+               JdbcStatementOptions defaults,
                JdbcConnectionLease.Provider leaseProvider) {
         this.dataSource = dataSource;
         this.defaults = defaults;
@@ -205,7 +204,7 @@ final class JdbcRunner {
         }
         return new JdbcOperation(sql,
                                  new JdbcOperation.Bind[0],
-                                 JdbcExecutionOptions.EMPTY,
+                                 JdbcStatementOptions.EMPTY,
                                  JdbcPreparationPlan.update());
     }
 
@@ -329,28 +328,6 @@ final class JdbcRunner {
                 cursor.nextValue();
             }
             return reducer.finish();
-        }
-    }
-
-    /**
-     * Executes callback-scoped pull traversal.
-     *
-     * @param operation immutable query operation
-     * @param mapper mapper invoked for each row
-     * @param action callback receiving a non-closeable iterable facade
-     * @param <T> mapped type
-     */
-    <T> void withRows(JdbcOperation operation,
-                      JdbcClient.RowMapper<T> mapper,
-                      Consumer<? super Iterable<T>> action) {
-        try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
-            Iterable<T> rows = cursor.iterableFacade();
-            try {
-                action.accept(rows);
-            } finally {
-                // Invalidate before resource cleanup so retained facades fail even if a close operation also fails.
-                cursor.invalidateFacade();
-            }
         }
     }
 
@@ -495,7 +472,7 @@ final class JdbcRunner {
      * @throws SQLException if a driver rejects an option
      */
     private void configure(PreparedStatement statement, JdbcOperation operation) throws SQLException {
-        JdbcExecutionOptions options = defaults.overlay(operation.options());
+        JdbcStatementOptions options = defaults.overlay(operation.options());
         Integer fetchSize = options.fetchSize();
         if (fetchSize != null) {
             statement.setFetchSize(fetchSize);
@@ -732,9 +709,7 @@ final class JdbcRunner {
      * <p>The cursor is used by materializing, cardinality, reduction, and push
      * terminals so row advancement, mapping, result-channel checks, and
      * cleanup remain identical. It is not used by update-only
-     * {@code execute()}, and it never reaches application code. The optional
-     * iterable facade exposes no close method or JDBC handle and is invalidated
-     * before the callback scope ends.</p>
+     * {@code execute()}, and it never reaches application code.</p>
      */
     private static final class JdbcStreamingCursor<T> implements AutoCloseable {
         /** Operation metadata used for diagnostics and row conversion errors. */
@@ -749,12 +724,6 @@ final class JdbcRunner {
         private final JdbcClient.RowMapper<T> mapper;
         /** Reusable callback-scoped row view backed by the current result set. */
         private final JdbcRow row;
-        /** Thread that opened the cursor and is allowed to consume it. */
-        private final Thread owner;
-        /** Whether the optional iterable facade is still within its callback scope. */
-        private boolean facadeActive;
-        /** Whether the facade has already produced its one permitted iterator. */
-        private boolean iteratorCreated;
         /** Whether ResultSet.next() has already prepared the current row. */
         private boolean nextReady;
         /** Whether the result set reached its end marker. */
@@ -784,52 +753,6 @@ final class JdbcRunner {
             this.resultSet = resultSet;
             this.mapper = mapper;
             this.row = new JdbcRow(resultSet, columns, operation);
-            this.owner = Thread.currentThread();
-        }
-
-        /**
-         * Creates the non-closeable iterable facade used by the scoped-pull terminal.
-         *
-         * @return single-use callback-scoped iterable
-         */
-        Iterable<T> iterableFacade() {
-            facadeActive = true;
-            return () -> {
-                checkFacadeAccess();
-                if (iteratorCreated) {
-                    throw new IllegalStateException("JDBC row iterable permits one iterator");
-                }
-                iteratorCreated = true;
-                // The iterator delegates to this cursor so the provider retains all resource ownership.
-                return new Iterator<>() {
-                    /**
-                     * Tests whether another mapped value is ready.
-                     *
-                     * @return true when another row exists
-                     */
-                    @Override
-                    public boolean hasNext() {
-                        checkFacadeAccess();
-                        return hasNextValue();
-                    }
-
-                    /**
-                     * Returns the next mapped value.
-                     *
-                     * @return mapped value
-                     */
-                    @Override
-                    public T next() {
-                        checkFacadeAccess();
-                        return nextValue();
-                    }
-                };
-            };
-        }
-
-        /** Invalidates iterable access before the enclosing callback returns. */
-        void invalidateFacade() {
-            facadeActive = false;
         }
 
         /**
@@ -912,16 +835,5 @@ final class JdbcRunner {
             }
         }
 
-        /**
-         * Validates thread confinement and callback lifetime for the iterable facade.
-         */
-        private void checkFacadeAccess() {
-            if (Thread.currentThread() != owner) {
-                throw new IllegalStateException("JDBC row iterable is thread-confined");
-            }
-            if (!facadeActive) {
-                throw new IllegalStateException("JDBC row iterable is valid only while its callback is running");
-            }
-        }
     }
 }

@@ -97,11 +97,11 @@ final class JdbcPersistenceUnitFactory implements Service.ServicesFactory<JdbcCl
         unit.initScript().ifPresent(script -> {
             // Initialization deliberately bypasses an ambient application transaction and owns one setup connection.
             JdbcRunner setupRunner = new JdbcRunner(dataSource,
-                                                    JdbcExecutionOptions.EMPTY,
+                                                    JdbcStatementOptions.EMPTY,
                                                     JdbcConnectionLease.ownedProvider());
             new JdbcInitScriptRunner(setupRunner).run(script);
         });
-        return new JdbcClientImpl(dataSource, JdbcExecutionOptions.EMPTY, connectionManager);
+        return new JdbcClientImpl(dataSource, JdbcStatementOptions.EMPTY, connectionManager);
     }
 
     private DataSource namedDataSource(String name) {

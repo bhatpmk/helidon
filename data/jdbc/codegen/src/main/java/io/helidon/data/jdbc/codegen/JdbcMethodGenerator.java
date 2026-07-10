@@ -218,11 +218,6 @@ final class JdbcMethodGenerator {
         method.addContent("jdbcClient.create(")
                 .addContent(plan.sqlFieldName())
                 .addContent(")");
-        if (plan.optionsParameter() != null) {
-            method.addContent(".options(")
-                    .addContent(plan.optionsParameter().elementName())
-                    .addContent(")");
-        }
         for (JdbcSqlParameterPlan.Bind bind : plan.parameterPlan().binds()) {
             method.addContent(".bind(")
                     .addContent(String.valueOf(bind.position()))
@@ -244,13 +239,15 @@ final class JdbcMethodGenerator {
         if (plan.mappingKind() == JdbcMethodPlan.MappingKind.REDUCER) {
             method.addContent(".reduce(new ")
                     .addContent(plan.explicitReducer())
-                    .addContentLine("());");
+                    .addContent("()");
+            addReducerRequest(plan, method);
             return;
         }
         if (plan.mappingKind() == JdbcMethodPlan.MappingKind.GRAPH) {
             method.addContent(".reduce(new ")
                     .addContent(plan.mapperFieldName())
-                    .addContentLine("());");
+                    .addContent("()");
+            addReducerRequest(plan, method);
             return;
         }
         addMappingStage(plan, method);
@@ -279,21 +276,39 @@ final class JdbcMethodGenerator {
     }
 
     private static void addTerminal(JdbcMethodPlan plan, Method.Builder method) {
+        String requestArgument = plan.requestKind() == JdbcMethodPlan.RequestKind.REGULAR
+                ? plan.requestParameter().elementName()
+                : null;
         switch (plan.returnShape()) {
-        case ITEM -> method.addContentLine(".one();");
-        case OPTIONAL -> method.addContentLine(".optional();");
-        case LIST -> method.addContentLine(".list();");
-        case WITH_ROWS -> method.addContent(".withRows(")
-                .addContent(plan.traversalParameter().elementName())
-                .addContentLine(");");
+        case ITEM -> addTerminal(method, "one", requestArgument);
+        case OPTIONAL -> addTerminal(method, "optional", requestArgument);
+        case LIST -> addTerminal(method, "list", requestArgument);
         case FOR_EACH -> method.addContent(".forEach(")
-                .addContent(plan.traversalParameter().elementName())
+                .addContent(plan.requestParameter().elementName())
                 .addContentLine(");");
         case FOR_EACH_WHILE -> method.addContent(".forEachWhile(")
-                .addContent(plan.traversalParameter().elementName())
+                .addContent(plan.requestParameter().elementName())
                 .addContentLine(");");
         default -> throw new AssertionError("Unknown JDBC return shape: " + plan.returnShape());
         }
+    }
+
+    private static void addTerminal(Method.Builder method, String terminal, String requestArgument) {
+        method.addContent(".")
+                .addContent(terminal)
+                .addContent("(");
+        if (requestArgument != null) {
+            method.addContent(requestArgument);
+        }
+        method.addContentLine(");");
+    }
+
+    private static void addReducerRequest(JdbcMethodPlan plan, Method.Builder method) {
+        if (plan.requestKind() == JdbcMethodPlan.RequestKind.REGULAR) {
+            method.addContent(", ")
+                    .addContent(plan.requestParameter().elementName());
+        }
+        method.addContentLine(");");
     }
 
     private static String uniqueSuffix(String methodName, Map<String, Integer> names) {

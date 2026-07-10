@@ -51,7 +51,7 @@ final class JdbcClientImpl implements JdbcClient {
      * @param dataSource datasource used for terminal operations
      */
     JdbcClientImpl(DataSource dataSource) {
-        this(dataSource, JdbcExecutionOptions.EMPTY, JdbcConnectionLease.ownedProvider());
+        this(dataSource, JdbcStatementOptions.EMPTY, JdbcConnectionLease.ownedProvider());
     }
 
     /**
@@ -62,7 +62,7 @@ final class JdbcClientImpl implements JdbcClient {
      * @param leaseProvider provider that decides whether an operation owns or borrows a connection
      */
     JdbcClientImpl(DataSource dataSource,
-                   JdbcExecutionOptions defaults,
+                   JdbcStatementOptions defaults,
                    JdbcConnectionLease.Provider leaseProvider) {
         this.runner = new JdbcRunner(Objects.requireNonNull(dataSource, "DataSource must not be null"),
                                      Objects.requireNonNull(defaults, "Default options must not be null"),

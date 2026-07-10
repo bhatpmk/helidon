@@ -34,7 +34,7 @@ final class JdbcOperation {
     /** Ordered bind snapshots; the array is cloned by the statement stage before construction. */
     private final Bind[] binds;
     /** Per-operation options to overlay on the client defaults. */
-    private final JdbcExecutionOptions options;
+    private final JdbcStatementOptions options;
     /** Result and statement-preparation contract selected by the terminal. */
     private final JdbcPreparationPlan preparationPlan;
 
@@ -48,7 +48,7 @@ final class JdbcOperation {
      */
     JdbcOperation(String sql,
                   Bind[] binds,
-                  JdbcExecutionOptions options,
+                  JdbcStatementOptions options,
                   JdbcPreparationPlan preparationPlan) {
         this.sql = sql;
         this.binds = binds;
@@ -99,7 +99,7 @@ final class JdbcOperation {
      *
      * @return operation options
      */
-    JdbcExecutionOptions options() {
+    JdbcStatementOptions options() {
         return options;
     }
 

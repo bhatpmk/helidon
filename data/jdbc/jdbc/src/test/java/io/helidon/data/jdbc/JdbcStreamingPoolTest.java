@@ -44,23 +44,20 @@ class JdbcStreamingPoolTest {
 
             // A one-connection pool turns any escaped traversal lease into a deterministic timeout on the next call.
             for (int i = 0; i < 20; i++) {
-                client.create("SELECT NAME FROM USERS ORDER BY ID")
-                        .map(String.class)
-                        .withRows(rows -> {
-                            for (String ignored : rows) {
-                                break;
-                            }
-                        });
-
                 List<String> visited = new ArrayList<>();
                 client.create("SELECT NAME FROM USERS ORDER BY ID")
                         .map(String.class)
-                        .forEach(visited::add);
+                        .forEach(JdbcQueryRequest.forEach(visited::add));
                 assertEquals(List.of("Ada", "Grace", "Linus"), visited);
 
                 assertFalse(client.create("SELECT NAME FROM USERS ORDER BY ID")
                                     .map(String.class)
-                                    .forEachWhile(ignored -> false));
+                                    .forEachWhile(JdbcQueryRequest.forEachWhile(ignored -> false)));
+
+                assertEquals(List.of("Ada", "Grace", "Linus"),
+                             client.create("SELECT NAME FROM USERS ORDER BY ID")
+                                     .map(String.class)
+                                     .list(JdbcQueryRequest.defaults()));
             }
 
             assertEquals(0, dataSource.getHikariPoolMXBean().getActiveConnections());

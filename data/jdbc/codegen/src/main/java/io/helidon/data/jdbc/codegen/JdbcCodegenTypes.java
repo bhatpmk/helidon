@@ -25,7 +25,9 @@ import io.helidon.common.types.TypeName;
 final class JdbcCodegenTypes {
     static final String DEFAULT_NAME = "@default";
     static final TypeName JDBC_CLIENT = TypeName.create("io.helidon.data.jdbc.JdbcClient");
-    static final TypeName JDBC_EXECUTION_OPTIONS = TypeName.create("io.helidon.data.jdbc.JdbcExecutionOptions");
+    static final TypeName JDBC_QUERY_REQUEST = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest");
+    static final TypeName JDBC_QUERY_FOR_EACH = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest.ForEach");
+    static final TypeName JDBC_QUERY_FOR_EACH_WHILE = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest.ForEachWhile");
     static final TypeName ROW_MAPPER = TypeName.create("io.helidon.data.jdbc.JdbcClient.RowMapper");
     static final TypeName ROW_REDUCER = TypeName.create("io.helidon.data.jdbc.JdbcClient.RowReducer");
     static final TypeName DATA_QUERY = TypeName.create("io.helidon.data.Data.Query");
@@ -44,7 +46,6 @@ final class JdbcCodegenTypes {
     static final TypeName SUPPLIER = TypeName.create("java.util.function.Supplier");
     static final TypeName CONSUMER = TypeName.create("java.util.function.Consumer");
     static final TypeName PREDICATE = TypeName.create("java.util.function.Predicate");
-    static final TypeName ITERABLE = TypeName.create("java.lang.Iterable");
 
     static final List<TypeName> TX_ANNOTATIONS = List.of(
             TypeName.create("io.helidon.transaction.Tx.Mandatory"),

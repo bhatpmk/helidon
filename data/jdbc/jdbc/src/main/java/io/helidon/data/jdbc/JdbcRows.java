@@ -18,8 +18,6 @@ package io.helidon.data.jdbc;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
-import java.util.function.Predicate;
 
 /**
  * Package-private mapped cardinality and traversal stage.
@@ -62,6 +60,17 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     }
 
     /**
+     * Delegates exactly-one cardinality with request settings.
+     *
+     * @param request regular query request
+     * @return one mapped value
+     */
+    @Override
+    public T one(JdbcQueryRequest request) {
+        return statement.one(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
+    }
+
+    /**
      * Delegates zero-or-one cardinality to the owning statement.
      *
      * @return optional mapped value
@@ -69,6 +78,17 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     @Override
     public Optional<T> optional() {
         return statement.optional(mapper, plan);
+    }
+
+    /**
+     * Delegates zero-or-one cardinality with request settings.
+     *
+     * @param request regular query request
+     * @return optional mapped value
+     */
+    @Override
+    public Optional<T> optional(JdbcQueryRequest request) {
+        return statement.optional(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
     }
 
     /**
@@ -82,35 +102,36 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     }
 
     /**
-     * Delegates callback-scoped pull traversal while retaining resource ownership in the runner.
+     * Delegates materializing list execution with request settings.
      *
-     * @param action callback receiving the provider-owned iterable facade
+     * @param request regular query request
+     * @return mapped values in encounter order
      */
     @Override
-    public void withRows(Consumer<? super Iterable<T>> action) {
-        statement.withRows(mapper, plan, Objects.requireNonNull(action, "Row action must not be null"));
+    public List<T> list(JdbcQueryRequest request) {
+        return statement.list(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
     }
 
     /**
      * Delegates complete push traversal.
      *
-     * @param action callback invoked once per mapped row
+     * @param request consume-all request
      */
     @Override
-    public void forEach(Consumer<? super T> action) {
-        statement.forEach(mapper, plan, Objects.requireNonNull(action, "Row action must not be null"));
+    public void forEach(JdbcQueryRequest.ForEach<T> request) {
+        statement.forEach(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
     }
 
     /**
      * Delegates predicate-controlled push traversal.
      *
-     * @param action continuation predicate
+     * @param request predicate traversal request
      * @return true only after normal exhaustion
      */
     @Override
-    public boolean forEachWhile(Predicate<? super T> action) {
+    public boolean forEachWhile(JdbcQueryRequest.ForEachWhile<T> request) {
         return statement.forEachWhile(mapper,
                                       plan,
-                                      Objects.requireNonNull(action, "Row continuation predicate must not be null"));
+                                      Objects.requireNonNull(request, "Query request must not be null"));
     }
 }

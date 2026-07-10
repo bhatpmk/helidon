@@ -49,14 +49,17 @@ class JdbcMethodGeneratorTest {
 
                         import io.helidon.data.Data;
                         import io.helidon.data.jdbc.JdbcClient;
-                        import io.helidon.data.jdbc.JdbcExecutionOptions;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
                         import io.helidon.transaction.Tx;
 
                         @Data.Repository
                         @Data.Provider("jdbc")
                         interface PokemonRepository {
                             @Data.Query("select cast(ID as bigint) as id, NAME as name from POKEMON where ID >= :minimum")
-                            List<Pokemon> find(JdbcExecutionOptions options, long minimum);
+                            List<Pokemon> find(long minimum);
+
+                            @Data.Query("select cast(ID as bigint) as id, NAME as name from POKEMON where ID >= :minimum")
+                            List<Pokemon> findRequested(JdbcQueryRequest request, long minimum);
 
                             @Data.Query("select NAME from POKEMON where ID = :id")
                             Optional<String> name(long id);
@@ -71,6 +74,10 @@ class JdbcMethodGeneratorTest {
                             @Data.Update("insert into POKEMON(NAME) values (:name)")
                             @Data.GeneratedKeys("ID")
                             long insert(String name);
+
+                            @Data.Update("insert into POKEMON(NAME) values (:name)")
+                            @Data.GeneratedKeys("ID")
+                            long insertRequested(JdbcQueryRequest request, String name);
 
                             @Data.Update("insert into POKEMON(NAME) values (:name)")
                             @Data.GeneratedKeys
@@ -88,6 +95,21 @@ class JdbcMethodGeneratorTest {
                             @Data.Query("select ID as id, NAME as name from POKEMON where ID = :id")
                             @Data.RowMapper(PokemonMapper.class)
                             Pokemon mapped(long id);
+
+                            @Data.Query("select ID as id, NAME as name from POKEMON where ID = :id")
+                            @Data.RowMapper(PokemonMapper.class)
+                            Pokemon mappedRequested(JdbcQueryRequest request, long id);
+
+                            @Data.Query("select cast(ID as bigint) as id, NAME as name from POKEMON where ID >= :minimum")
+                            void visitRecords(JdbcQueryRequest.ForEach<Pokemon> request, long minimum);
+
+                            @Data.Query("select ID as id, NAME as name from POKEMON where ID = :id")
+                            @Data.RowMapper(PokemonMapper.class)
+                            void visitMapped(JdbcQueryRequest.ForEach<Pokemon> request, long id);
+
+                            @Data.Query("select ID as id from POKEMON")
+                            @Data.BeanMapping(GeneratedBean.class)
+                            void visitBeans(JdbcQueryRequest.ForEach<GeneratedBean> request);
                         }
 
                         record Pokemon(long id, String name) {
@@ -120,17 +142,25 @@ class JdbcMethodGeneratorTest {
         assertTrue(source.contains("jdbcClient.create(SQL_FIND)"), source);
         assertTrue(source.contains("@Service.Named(\"@default\") @Data.ProviderType(\"jdbc\") JdbcClient jdbcClient"),
                    source);
-        assertTrue(source.contains(".options(options).bind(1, minimum).map(MAPPER_FIND).list()"), source);
+        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_FIND).list()"), source);
+        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_FIND_REQUESTED).list(request)"), source);
         assertTrue(source.contains(".bind(1, id).map(String.class).optional()"), source);
         assertTrue(source.contains("jdbcClient.create(SQL_COUNT).map(long.class).one()"), source);
         assertTrue(source.contains(".bind(1, name, JDBCType.VARCHAR).bind(2, id).execute()"), source);
         assertTrue(source.contains(".bind(1, name, JDBCType.VARCHAR)"
                                            + ".generatedKeys(row -> row.required(1, Long.class), \"ID\").one()"), source);
+        assertTrue(source.contains(".bind(1, name, JDBCType.VARCHAR)"
+                                           + ".generatedKeys(row -> row.required(1, Long.class), \"ID\").one(request)"),
+                   source);
         assertTrue(source.contains(".generatedKeys(row -> row.required(1, Long.class)).one()"), source);
         assertTrue(source.contains("MAPPER_MAPPED = new PokemonMapper()"), source);
         assertTrue(source.contains(".map(MAPPER_MAPPED).one()"), source);
+        assertTrue(source.contains(".map(MAPPER_MAPPED_REQUESTED).one(request)"), source);
         assertTrue(source.contains(".generatedKeys(MAPPER_INSERT_RECORD, \"ID\").one()"), source);
         assertTrue(source.contains(".generatedKeys(MAPPER_INSERT_BEAN, \"ID\").one()"), source);
+        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_VISIT_RECORDS).forEach(request)"), source);
+        assertTrue(source.contains(".bind(1, id).map(MAPPER_VISIT_MAPPED).forEach(request)"), source);
+        assertTrue(source.contains(".map(MAPPER_VISIT_BEANS).forEach(request)"), source);
         assertTrue(source.contains("@Tx.Required"), source);
     }
 
@@ -189,11 +219,8 @@ class JdbcMethodGeneratorTest {
                         import java.sql.JDBCType;
                         import java.util.List;
                         import java.util.Optional;
-                        import java.util.function.Consumer;
-                        import java.util.function.Predicate;
-
                         import io.helidon.data.Data;
-                        import io.helidon.data.jdbc.JdbcExecutionOptions;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
 
                         @Data.Repository
                         @Data.Provider("jdbc")
@@ -203,21 +230,25 @@ class JdbcMethodGeneratorTest {
                             String one(long id);
 
                             @Data.Query("select NAME from CONTACT where ID = :id")
+                            String requestedOne(JdbcQueryRequest request, long id);
+
+                            @Data.Query("select NAME from CONTACT where ID = :id")
                             Optional<String> optional(long id);
+
+                            @Data.Query("select NAME from CONTACT where ID = :id")
+                            Optional<String> requestedOptional(JdbcQueryRequest request, long id);
 
                             @Data.Query("select NAME from CONTACT where ID = :id or PARENT_ID = :id and TYPE = :type")
                             List<String> list(long id, @Data.JdbcType(JDBCType.CHAR) String type);
 
-                            @Data.Query("select NAME from CONTACT where ID >= :id")
-                            void withRows(JdbcExecutionOptions options,
-                                          long id,
-                                          Consumer<Iterable<String>> action);
+                            @Data.Query("select NAME from CONTACT where ID = :id or PARENT_ID = :id")
+                            List<String> requestedList(JdbcQueryRequest request, long id);
 
                             @Data.Query("select NAME from CONTACT where ID >= :id")
-                            void forEach(long id, Consumer<String> action);
+                            void visit(JdbcQueryRequest.ForEach<String> request, long id);
 
                             @Data.Query("select NAME from CONTACT where ID >= :id")
-                            boolean forEachWhile(long id, Predicate<String> action);
+                            boolean visitUntil(JdbcQueryRequest.ForEachWhile<String> request, long id);
 
                             @Data.Update("delete from CONTACT where ID = :id")
                             void delete(long id);
@@ -233,12 +264,14 @@ class JdbcMethodGeneratorTest {
         assertTrue(source.contains("Supplier<JdbcClient> jdbcClient"), source);
         assertTrue(source.contains("@Service.Named(\"@default\") @Data.ProviderType(\"jdbc\")"), source);
         assertTrue(source.contains(".map(String.class).one()"), source);
+        assertTrue(source.contains(".bind(1, id).map(String.class).one(request)"), source);
         assertTrue(source.contains(".map(String.class).optional()"), source);
+        assertTrue(source.contains(".bind(1, id).map(String.class).optional(request)"), source);
         assertTrue(source.contains(".bind(1, id).bind(2, id).bind(3, type, JDBCType.CHAR)"
                                            + ".map(String.class).list()"), source);
-        assertTrue(source.contains(".options(options).bind(1, id).map(String.class).withRows(action)"), source);
-        assertTrue(source.contains(".bind(1, id).map(String.class).forEach(action)"), source);
-        assertTrue(source.contains(".bind(1, id).map(String.class).forEachWhile(action)"), source);
+        assertTrue(source.contains(".bind(1, id).bind(2, id).map(String.class).list(request)"), source);
+        assertTrue(source.contains(".bind(1, id).map(String.class).forEach(request)"), source);
+        assertTrue(source.contains(".bind(1, id).map(String.class).forEachWhile(request)"), source);
         assertTrue(source.contains(".bind(1, id).execute();"), source);
     }
 
@@ -296,50 +329,189 @@ class JdbcMethodGeneratorTest {
 
     @Test
     void rejectsInvalidTraversalContracts() {
-        assertCompilationFailure("NonTrailingTraversalRepository.java", """
+        assertCompilationFailure("TrailingCallbackRepository.java", """
                         package example;
                         import java.util.function.Consumer;
                         import io.helidon.data.Data;
                         @Data.Repository @Data.Provider("jdbc")
-                        interface NonTrailingTraversalRepository {
+                        interface TrailingCallbackRepository {
                             @Data.Query("select NAME from CONTACT where ID = :id")
-                            void invalid(Consumer<String> action, long id);
+                            void invalid(long id, Consumer<String> action);
                         }
                         """,
-                                 "trailing parameter");
-        assertCompilationFailure("ConsumerReturnRepository.java", """
+                                 "Traversal callbacks must be supplied through a leading JdbcQueryRequest");
+        assertCompilationFailure("NonLeadingRequestRepository.java", """
                         package example;
-                        import java.util.function.Consumer;
                         import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
                         @Data.Repository @Data.Provider("jdbc")
-                        interface ConsumerReturnRepository {
-                            @Data.Query("select NAME from CONTACT")
-                            String invalid(Consumer<String> action);
+                        interface NonLeadingRequestRepository {
+                            @Data.Query("select NAME from CONTACT where ID = :id")
+                            void invalid(long id, JdbcQueryRequest.ForEach<String> request);
                         }
                         """,
-                                 "Consumer traversal methods must return void");
-        assertCompilationFailure("PredicateReturnRepository.java", """
+                                 "only as the leading parameter");
+        assertCompilationFailure("DuplicateRequestRepository.java", """
                         package example;
-                        import java.util.function.Predicate;
                         import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
                         @Data.Repository @Data.Provider("jdbc")
-                        interface PredicateReturnRepository {
+                        interface DuplicateRequestRepository {
                             @Data.Query("select NAME from CONTACT")
-                            void invalid(Predicate<String> action);
+                            void invalid(JdbcQueryRequest.ForEach<String> first,
+                                         JdbcQueryRequest.ForEach<String> second);
                         }
                         """,
-                                 "Predicate traversal methods must return primitive boolean");
-        assertCompilationFailure("RawTraversalRepository.java", """
+                                 "permitted once and only as the leading parameter");
+        assertCompilationFailure("ForEachReturnRepository.java", """
                         package example;
-                        import java.util.function.Consumer;
                         import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
                         @Data.Repository @Data.Provider("jdbc")
-                        interface RawTraversalRepository {
+                        interface ForEachReturnRepository {
                             @Data.Query("select NAME from CONTACT")
-                            void invalid(Consumer action);
+                            String invalid(JdbcQueryRequest.ForEach<String> request);
                         }
                         """,
-                                 "Traversal callback requires one concrete generic argument");
+                                 "JdbcQueryRequest.ForEach methods must return void");
+        assertCompilationFailure("ForEachWhileReturnRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface ForEachWhileReturnRepository {
+                            @Data.Query("select NAME from CONTACT")
+                            void invalid(JdbcQueryRequest.ForEachWhile<String> request);
+                        }
+                        """,
+                                 "JdbcQueryRequest.ForEachWhile methods must return primitive boolean");
+        assertCompilationFailure("RawRequestRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface RawRequestRepository {
+                            @Data.Query("select NAME from CONTACT")
+                            void invalid(JdbcQueryRequest.ForEach request);
+                        }
+                        """,
+                                 "requires one concrete mapped row type");
+        assertCompilationFailure("WildcardRequestRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface WildcardRequestRepository {
+                            @Data.Query("select NAME from CONTACT")
+                            void invalid(JdbcQueryRequest.ForEach<?> request);
+                        }
+                        """,
+                                 "wildcard row types are not supported");
+        assertCompilationFailure("TypedRequestRepository.java", """
+                        package example;
+                        import java.sql.JDBCType;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface TypedRequestRepository {
+                            @Data.Query("select NAME from CONTACT")
+                            void invalid(@Data.JdbcType(JDBCType.VARCHAR)
+                                         JdbcQueryRequest.ForEach<String> request);
+                        }
+                        """,
+                                 "must not carry @Data.JdbcType");
+        assertCompilationFailure("UpdateRequestRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface UpdateRequestRepository {
+                            @Data.Update("delete from CONTACT")
+                            void invalid(JdbcQueryRequest.ForEach<String> request);
+                        }
+                        """,
+                                 "@Data.Update methods do not support JdbcQueryRequest");
+        assertCompilationFailure("RegularUpdateRequestRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface RegularUpdateRequestRepository {
+                            @Data.Update("delete from CONTACT")
+                            long invalid(JdbcQueryRequest request);
+                        }
+                        """,
+                                 "@Data.Update methods do not support JdbcQueryRequest");
+        assertCompilationFailure("GeneratedKeyRequestRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface GeneratedKeyRequestRepository {
+                            @Data.Update("insert into CONTACT(NAME) values ('name')")
+                            @Data.GeneratedKeys("ID")
+                            void invalid(JdbcQueryRequest.ForEach<Long> request);
+                        }
+                        """,
+                                 "JDBC traversal requests are supported only on @Data.Query methods");
+        assertCompilationFailure("MapperRequestMismatchRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcClient;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface MapperRequestMismatchRepository {
+                            @Data.Query("select NAME from CONTACT")
+                            @Data.RowMapper(LongMapper.class)
+                            void invalid(JdbcQueryRequest.ForEach<String> request);
+                        }
+                        final class LongMapper implements JdbcClient.RowMapper<Long> {
+                            public LongMapper() { }
+                            public Long map(JdbcClient.Row row) { return row.get(1, Long.class); }
+                        }
+                        """,
+                                 "Mapper must implement JdbcClient.RowMapper<java.lang.String>");
+        assertCompilationFailure("GraphRequestRepository.java", """
+                        package example;
+                        import java.util.ArrayList;
+                        import java.util.List;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface GraphRequestRepository {
+                            @Data.Query("select ID as contactId, CHILD_ID as children.childId from CONTACT")
+                            @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
+                            @Data.BeanMapping(value = Child.class,
+                                              propertyPath = "children",
+                                              identityProperty = "childId")
+                            void invalid(JdbcQueryRequest.ForEach<Contact> request);
+                        }
+                        class Contact {
+                            private Long contactId;
+                            private List<Child> children = new ArrayList<>();
+                            public Contact() { }
+                            public void setContactId(Long value) { contactId = value; }
+                            public List<Child> getChildren() { return children; }
+                            public void setChildren(List<Child> value) { children = value; }
+                        }
+                        class Child {
+                            private Long childId;
+                            public Child() { }
+                            public void setChildId(Long value) { childId = value; }
+                        }
+                        """,
+                                 "Identity-defined graph reduction cannot use a JDBC query traversal request");
+        assertCompilationFailure("VoidRegularRequestRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface VoidRegularRequestRepository {
+                            @Data.Query("select NAME from CONTACT")
+                            void invalid(JdbcQueryRequest request);
+                        }
+                        """,
+                                 "regular JdbcQueryRequest method requires a non-void mapped result");
     }
 
     @Test
@@ -353,6 +525,7 @@ class JdbcMethodGeneratorTest {
                         import java.util.Optional;
                         import io.helidon.data.Data;
                         import io.helidon.data.jdbc.JdbcClient;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
 
                         @Data.Repository
                         @Data.Provider("jdbc")
@@ -379,9 +552,17 @@ class JdbcMethodGeneratorTest {
                             @Data.RowReducer(ContactIdsReducer.class)
                             List<Long> reduceContactIds();
 
+                            @Data.Query("select ID as contactId from CONTACT order by ID")
+                            @Data.RowReducer(ContactIdsReducer.class)
+                            List<Long> reduceContactIdsRequested(JdbcQueryRequest request);
+
                             @Data.Query("select ID as contactId, NAME as name from CONTACT order by ID")
                             @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
                             Contact findOne();
+
+                            @Data.Query("select ID as contactId, NAME as name from CONTACT order by ID")
+                            @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
+                            Contact findOneRequested(JdbcQueryRequest request);
 
                             @Data.Query("select ID as contactId, NAME as name from CONTACT order by ID")
                             @Data.BeanMapping(value = Contact.class, identityProperty = "contactId")
@@ -454,7 +635,9 @@ class JdbcMethodGeneratorTest {
         assertTrue(source.contains("Graph scope 'phones.tags' has an identity while ancestor scope 'phones' is absent"),
                    source);
         assertTrue(source.contains(".reduce(new ContactIdsReducer())"), source);
+        assertTrue(source.contains(".reduce(new ContactIdsReducer(), request)"), source);
         assertTrue(source.contains(".reduce(new Reducer_FindOne())"), source);
+        assertTrue(source.contains(".reduce(new Reducer_FindOneRequested(), request)"), source);
         assertTrue(source.contains(".reduce(new Reducer_FindOptional())"), source);
         assertTrue(source.contains("MAPPER_LIST_CONTACTS = row ->"), source);
         assertTrue(source.contains(".map(MAPPER_LIST_CONTACTS).list()"), source);
@@ -564,21 +747,21 @@ class JdbcMethodGeneratorTest {
                                  "@Data.RowReducer is legal only on @Data.Query methods");
         assertCompilationFailure("TraversalReducerRepository.java", """
                         package example;
-                        import java.util.function.Consumer;
                         import io.helidon.data.Data;
                         import io.helidon.data.jdbc.JdbcClient;
+                        import io.helidon.data.jdbc.JdbcQueryRequest;
                         @Data.Repository @Data.Provider("jdbc")
                         interface TraversalReducerRepository {
                             @Data.Query("select NAME from CONTACT")
                             @Data.RowReducer(NameReducer.class)
-                            void invalid(Consumer<String> action);
+                            void invalid(JdbcQueryRequest.ForEach<String> request);
                         }
                         final class NameReducer implements JdbcClient.RowReducer<String> {
                             public void accept(JdbcClient.Row row) { }
                             public String finish() { return ""; }
                         }
                         """,
-                                 "@Data.RowReducer cannot use a streaming traversal callback");
+                                 "@Data.RowReducer cannot use a JDBC query traversal request");
         assertCompilationFailure("AbstractReducerRepository.java", """
                         package example;
                         import io.helidon.data.Data;

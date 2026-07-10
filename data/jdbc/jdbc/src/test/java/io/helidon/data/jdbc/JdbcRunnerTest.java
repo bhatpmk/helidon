@@ -18,7 +18,6 @@ package io.helidon.data.jdbc;
 import java.sql.JDBCType;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -105,6 +104,32 @@ class JdbcRunnerTest {
     }
 
     @Test
+    void appliesRegularRequestsToCardinalityAndGeneratedKeyTerminals() {
+        JdbcQueryRequest request = JdbcQueryRequest.builder().fetchSize(8).build();
+
+        assertEquals(List.of("Ada", "Grace", "Linus"),
+                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list(request));
+        assertEquals(Optional.of("Ada"),
+                     client.create("SELECT NAME FROM USERS WHERE ID = 1")
+                             .map(String.class)
+                             .optional(JdbcQueryRequest.defaults()));
+        assertEquals("Grace",
+                     client.create("SELECT NAME FROM USERS WHERE ID = 2")
+                             .map(String.class)
+                             .one(request));
+
+        long id = client.create("INSERT INTO USERS (NAME) VALUES (?)")
+                .bind(1, "Edsger")
+                .generatedKeys(row -> row.required(1, Long.class))
+                .one(request);
+        assertEquals("Edsger",
+                     client.create("SELECT NAME FROM USERS WHERE ID = ?")
+                             .bind(1, id)
+                             .map(String.class)
+                             .one());
+    }
+
+    @Test
     void reducesRowsWithoutExposingResultSet() {
         int count = client.create("SELECT ID, NAME FROM USERS ORDER BY ID")
                 .reduce(new JdbcClient.RowReducer<>() {
@@ -127,84 +152,94 @@ class JdbcRunnerTest {
     }
 
     @Test
-    void supportsProviderOwnedTraversalAndInvalidatesFacade() {
-        AtomicReference<Iterable<String>> retained = new AtomicReference<>();
-        AtomicReference<Iterator<String>> retainedIterator = new AtomicReference<>();
-        List<String> values = new ArrayList<>();
+    void appliesARegularRequestToReduction() {
+        int count = client.create("SELECT ID FROM USERS ORDER BY ID")
+                .reduce(new JdbcClient.RowReducer<>() {
+                    private int rows;
 
-        client.create("SELECT NAME FROM USERS ORDER BY ID")
-                .map(String.class)
-                .withRows(rows -> {
-                    retained.set(rows);
-                    assertFalse(rows instanceof AutoCloseable);
-                    for (String value : rows) {
-                        values.add(value);
-                        break;
+                    @Override
+                    public void accept(JdbcClient.Row row) {
+                        row.required(1, Long.class);
+                        rows++;
                     }
-                });
 
-        assertEquals(List.of("Ada"), values);
-        assertThrows(IllegalStateException.class, () -> retained.get().iterator());
+                    @Override
+                    public Integer finish() {
+                        return rows;
+                    }
+                }, JdbcQueryRequest.builder().fetchSize(4).build());
 
+        assertEquals(3, count);
+    }
+
+    @Test
+    void supportsProviderOwnedPushTraversal() {
+        List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
-                .withRows(rows -> {
-                    Iterator<String> iterator = rows.iterator();
-                    retainedIterator.set(iterator);
-                    assertFalse(iterator instanceof AutoCloseable);
-                    assertEquals("Ada", iterator.next());
-                });
-        assertThrows(IllegalStateException.class, retainedIterator.get()::hasNext);
-        assertThrows(IllegalStateException.class, retainedIterator.get()::next);
-
-        List<String> pushed = new ArrayList<>();
-        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).forEach(pushed::add);
+                .forEach(JdbcQueryRequest.forEach(pushed::add));
         assertEquals(List.of("Ada", "Grace", "Linus"), pushed);
 
         List<String> stopped = new ArrayList<>();
         boolean exhausted = client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
-                .forEachWhile(value -> {
+                .forEachWhile(JdbcQueryRequest.forEachWhile(value -> {
                     stopped.add(value);
                     return stopped.size() < 2;
-                });
+                }));
         assertFalse(exhausted);
         assertEquals(List.of("Ada", "Grace"), stopped);
     }
 
     @Test
-    void traversesEmptyResultsAndReportsExhaustion() {
-        List<String> pulled = new ArrayList<>();
-        client.create("SELECT NAME FROM USERS WHERE ID < 0")
-                .map(String.class)
-                .withRows(rows -> rows.forEach(pulled::add));
-        assertTrue(pulled.isEmpty());
+    void reusesAnImmutableRequestAcrossSequentialExecutions() {
+        List<String> values = new ArrayList<>();
+        JdbcQueryRequest.ForEach<String> request = JdbcQueryRequest.forEach(values::add);
 
+        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).forEach(request);
+        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).forEach(request);
+
+        assertEquals(List.of("Ada", "Grace", "Linus", "Ada", "Grace", "Linus"), values);
+
+        JdbcQueryRequest regular = JdbcQueryRequest.builder().fetchSize(2).build();
+        assertEquals(List.of("Ada", "Grace", "Linus"),
+                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list(regular));
+        assertEquals(List.of("Ada", "Grace", "Linus"),
+                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list(regular));
+    }
+
+    @Test
+    void traversesEmptyResultsAndReportsExhaustion() {
         List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS WHERE ID < 0")
                 .map(String.class)
-                .forEach(pushed::add);
+                .forEach(JdbcQueryRequest.forEach(pushed::add));
         assertTrue(pushed.isEmpty());
 
         assertTrue(client.create("SELECT NAME FROM USERS WHERE ID < 0")
                            .map(String.class)
-                           .forEachWhile(value -> false));
+                           .forEachWhile(JdbcQueryRequest.forEachWhile(value -> false)));
     }
 
     @Test
     void nullTraversalActionDoesNotConsumeTheRowsStage() {
         JdbcClient.Rows<String> rows = client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class);
 
-        assertThrows(NullPointerException.class, () -> rows.withRows(null));
+        assertThrows(NullPointerException.class, () -> rows.forEach(null));
         List<String> values = new ArrayList<>();
-        rows.forEach(values::add);
+        rows.forEach(JdbcQueryRequest.forEach(values::add));
 
         assertEquals(List.of("Ada", "Grace", "Linus"), values);
-        assertThrows(IllegalStateException.class, () -> rows.forEach(ignored -> { }));
+        assertThrows(IllegalStateException.class,
+                     () -> rows.forEach(JdbcQueryRequest.forEach(ignored -> { })));
+
+        JdbcClient.Rows<String> regularRows = client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class);
+        assertThrows(NullPointerException.class, () -> regularRows.list(null));
+        assertEquals(List.of("Ada", "Grace", "Linus"), regularRows.list(JdbcQueryRequest.defaults()));
     }
 
     @Test
-    void confinesIterableAndRowViewsToTheirSynchronousCallbacks() {
+    void confinesRowViewsToTheirSynchronousCallbacks() {
         AtomicReference<JdbcClient.Row> retainedRow = new AtomicReference<>();
         client.create("SELECT ID FROM USERS WHERE ID = 1")
                 .map(row -> {
@@ -214,30 +249,6 @@ class JdbcRunnerTest {
                 .one();
         assertThrows(IllegalStateException.class, () -> retainedRow.get().get(1, Long.class));
 
-        AtomicReference<Throwable> crossThreadFailure = new AtomicReference<>();
-        client.create("SELECT NAME FROM USERS ORDER BY ID")
-                .map(String.class)
-                .withRows(rows -> {
-                    var iterator = rows.iterator();
-                    assertThrows(IllegalStateException.class, rows::iterator);
-                    Thread thread = new Thread(() -> {
-                        try {
-                            iterator.hasNext();
-                        } catch (Throwable failure) {
-                            crossThreadFailure.set(failure);
-                        }
-                    });
-                    thread.start();
-                    try {
-                        thread.join();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new AssertionError(e);
-                    }
-                    assertTrue(iterator.hasNext());
-                });
-
-        assertInstanceOf(IllegalStateException.class, crossThreadFailure.get());
     }
 
     @Test

@@ -47,7 +47,7 @@ class JdbcTransactionConnectionManagerTest {
             assertSame(physical, second.connection());
         }
 
-        JdbcClient client = new JdbcClientImpl(dataSource, JdbcExecutionOptions.EMPTY, manager);
+        JdbcClient client = new JdbcClientImpl(dataSource, JdbcStatementOptions.EMPTY, manager);
         assertEquals(1, client.create("INSERT INTO ITEMS VALUES (?)").bind(1, 1).execute());
         manager.commit("tx-1");
         manager.end();
@@ -63,7 +63,7 @@ class JdbcTransactionConnectionManagerTest {
         JdbcTransactionConnectionManager manager = new JdbcTransactionConnectionManager();
         manager.start("jdbc");
         manager.begin("tx-2");
-        JdbcClient client = new JdbcClientImpl(firstDataSource, JdbcExecutionOptions.EMPTY, manager);
+        JdbcClient client = new JdbcClientImpl(firstDataSource, JdbcStatementOptions.EMPTY, manager);
         client.create("INSERT INTO ITEMS VALUES (?)").bind(1, 1).execute();
 
         assertThrows(DataException.class, () -> manager.acquire(secondDataSource));
@@ -120,20 +120,18 @@ class JdbcTransactionConnectionManagerTest {
         JdbcTransactionConnectionManager manager = new JdbcTransactionConnectionManager();
         manager.start("jdbc");
         manager.begin("streaming");
-        JdbcClient client = new JdbcClientImpl(dataSource, JdbcExecutionOptions.EMPTY, manager);
+        JdbcClient client = new JdbcClientImpl(dataSource, JdbcStatementOptions.EMPTY, manager);
 
-        List<String> pulled = new ArrayList<>();
-        client.create("select VALUE from TEST").map(String.class).withRows(rows -> {
-            for (String value : rows) {
-                pulled.add(value);
-                break;
-            }
-        });
         List<String> pushed = new ArrayList<>();
-        client.create("select VALUE from TEST").map(String.class).forEach(pushed::add);
+        client.create("select VALUE from TEST")
+                .map(String.class)
+                .forEach(JdbcQueryRequest.forEach(pushed::add));
         assertFalse(client.create("select VALUE from TEST")
                             .map(String.class)
-                            .forEachWhile(value -> false));
+                            .forEachWhile(JdbcQueryRequest.forEachWhile(value -> false)));
+        List<String> materialized = client.create("select VALUE from TEST")
+                .map(String.class)
+                .list(JdbcQueryRequest.builder().fetchSize(2).build());
         int reduced = client.create("select VALUE from TEST").reduce(new JdbcClient.RowReducer<>() {
             private int count;
 
@@ -149,8 +147,8 @@ class JdbcTransactionConnectionManagerTest {
             }
         });
 
-        assertEquals(List.of("first"), pulled);
         assertEquals(List.of("first", "second"), pushed);
+        assertEquals(List.of("first", "second"), materialized);
         assertEquals(2, reduced);
         assertEquals(4, recording.events().stream().filter("result.close"::equals).count());
         assertEquals(4, recording.events().stream().filter("statement.close"::equals).count());

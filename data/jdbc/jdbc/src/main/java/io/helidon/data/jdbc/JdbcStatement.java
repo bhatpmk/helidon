@@ -34,7 +34,7 @@ final class JdbcStatement implements JdbcClient.Statement {
     /** One slot per positional JDBC marker. */
     private final JdbcOperation.Bind[] binds;
     /** Options accumulated before the terminal is selected. */
-    private JdbcExecutionOptions options = JdbcExecutionOptions.EMPTY;
+    private JdbcStatementOptions options = JdbcStatementOptions.EMPTY;
     /** Guards the statement against a second terminal or later mutation. */
     private boolean terminalStarted;
 
@@ -59,7 +59,7 @@ final class JdbcStatement implements JdbcClient.Statement {
      * @return this statement stage
      */
     @Override
-    public JdbcClient.Statement options(JdbcExecutionOptions options) {
+    public JdbcClient.Statement options(JdbcStatementOptions options) {
         ensureMutable();
         this.options = Objects.requireNonNull(options, "Execution options must not be null");
         return this;
@@ -133,6 +133,21 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
+     * Selects a reducer terminal and applies regular query-request settings before capturing the operation.
+     *
+     * @param reducer reducer that consumes callback-scoped rows
+     * @param request regular query request
+     * @param <R> logical result type
+     * @return reduced result
+     */
+    @Override
+    public <R> R reduce(JdbcClient.RowReducer<R> reducer, JdbcQueryRequest request) {
+        Objects.requireNonNull(reducer, "Row reducer must not be null");
+        apply(request);
+        return runner.reduce(operation(JdbcPreparationPlan.query()), reducer);
+    }
+
+    /**
      * Attaches an application row mapper to a query.
      *
      * @param mapper mapper invoked once per physical row
@@ -197,6 +212,20 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
+     * Delegates exactly-one cardinality with regular request settings.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param request regular query request
+     * @param <T> mapped value type
+     * @return one mapped value
+     */
+    <T> T one(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan, JdbcQueryRequest request) {
+        apply(request);
+        return runner.one(operation(plan), mapper);
+    }
+
+    /**
      * Delegates the optional cardinality terminal after capturing the operation.
      *
      * @param mapper row mapper
@@ -205,6 +234,22 @@ final class JdbcStatement implements JdbcClient.Statement {
      * @return optional mapped value
      */
     <T> java.util.Optional<T> optional(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
+        return runner.optional(operation(plan), mapper);
+    }
+
+    /**
+     * Delegates zero-or-one cardinality with regular request settings.
+     *
+     * @param mapper row mapper
+     * @param plan preparation plan
+     * @param request regular query request
+     * @param <T> mapped value type
+     * @return optional mapped value
+     */
+    <T> java.util.Optional<T> optional(JdbcClient.RowMapper<T> mapper,
+                                       JdbcPreparationPlan plan,
+                                       JdbcQueryRequest request) {
+        apply(request);
         return runner.optional(operation(plan), mapper);
     }
 
@@ -221,17 +266,19 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
-     * Delegates callback-scoped pull traversal.
+     * Delegates list materialization with regular request settings.
      *
      * @param mapper row mapper
      * @param plan preparation plan
-     * @param action callback receiving the provider-owned iterable facade
+     * @param request regular query request
      * @param <T> mapped value type
+     * @return mapped values in encounter order
      */
-    <T> void withRows(JdbcClient.RowMapper<T> mapper,
-                      JdbcPreparationPlan plan,
-                      java.util.function.Consumer<? super Iterable<T>> action) {
-        runner.withRows(operation(plan), mapper, action);
+    <T> java.util.List<T> list(JdbcClient.RowMapper<T> mapper,
+                               JdbcPreparationPlan plan,
+                               JdbcQueryRequest request) {
+        apply(request);
+        return runner.list(operation(plan), mapper);
     }
 
     /**
@@ -239,13 +286,14 @@ final class JdbcStatement implements JdbcClient.Statement {
      *
      * @param mapper row mapper
      * @param plan preparation plan
-     * @param action row callback
+     * @param request consume-all request
      * @param <T> mapped value type
      */
     <T> void forEach(JdbcClient.RowMapper<T> mapper,
                      JdbcPreparationPlan plan,
-                     java.util.function.Consumer<? super T> action) {
-        runner.forEach(operation(plan), mapper, action);
+                     JdbcQueryRequest.ForEach<T> request) {
+        apply(request.options());
+        runner.forEach(operation(plan), mapper, request);
     }
 
     /**
@@ -253,14 +301,36 @@ final class JdbcStatement implements JdbcClient.Statement {
      *
      * @param mapper row mapper
      * @param plan preparation plan
-     * @param action continuation predicate
+     * @param request predicate traversal request
      * @param <T> mapped value type
      * @return true only after normal exhaustion
      */
     <T> boolean forEachWhile(JdbcClient.RowMapper<T> mapper,
                              JdbcPreparationPlan plan,
-                             java.util.function.Predicate<? super T> action) {
-        return runner.forEachWhile(operation(plan), mapper, action);
+                             JdbcQueryRequest.ForEachWhile<T> request) {
+        apply(request.options());
+        return runner.forEachWhile(operation(plan), mapper, request);
+    }
+
+    /**
+     * Applies a regular request without performing JDBC I/O.
+     *
+     * @param request regular query request
+     */
+    private void apply(JdbcQueryRequest request) {
+        Objects.requireNonNull(request, "Query request must not be null");
+        apply(request.options());
+    }
+
+    /**
+     * Overlays invocation settings while preserving the statement's single-use invariant.
+     *
+     * @param requestOptions invocation-level statement settings
+     */
+    private void apply(JdbcStatementOptions requestOptions) {
+        ensureMutable();
+        // Explicit statement values remain when the request leaves the corresponding setting unset.
+        options = options.overlay(requestOptions);
     }
 
     /**

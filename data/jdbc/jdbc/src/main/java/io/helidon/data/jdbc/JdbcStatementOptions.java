@@ -19,23 +19,21 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Immutable per-execution JDBC options.
+ * Immutable per-execution JDBC statement options.
  * <p>
- * Each unset option inherits the client or datasource behavior. Instances are thread-safe and reusable. The options
- * currently affect only a prepared statement; transaction state, connection ownership, and resource-closing behavior
- * are deliberately not configurable here.
+ * Each unset option inherits client, datasource, driver, or persistence-unit behavior. Instances are thread-safe and
+ * reusable. These options do not control connection ownership, transactions, mapping, traversal, or resource cleanup.
  */
-public final class JdbcExecutionOptions {
+public final class JdbcStatementOptions {
 
-    static final JdbcExecutionOptions EMPTY = new JdbcExecutionOptions(null, null, null, null);
+    static final JdbcStatementOptions EMPTY = new JdbcStatementOptions(null, null, null, null);
 
-    // Configuration properties
     private final Integer fetchSize;
     private final Duration queryTimeout;
     private final Long maxRows;
     private final Boolean poolableHint;
 
-    private JdbcExecutionOptions(Integer fetchSize,
+    private JdbcStatementOptions(Integer fetchSize,
                                  Duration queryTimeout,
                                  Long maxRows,
                                  Boolean poolableHint) {
@@ -54,41 +52,67 @@ public final class JdbcExecutionOptions {
         return new Builder();
     }
 
+    /**
+     * Returns the configured fetch size, or {@code null} when the driver default should remain unchanged.
+     *
+     * @return configured fetch size or {@code null}
+     */
     Integer fetchSize() {
         return fetchSize;
     }
 
+    /**
+     * Returns the configured query timeout, or {@code null} when the driver default should remain unchanged.
+     *
+     * @return configured timeout or {@code null}
+     */
     Duration queryTimeout() {
         return queryTimeout;
     }
 
+    /**
+     * Returns the configured large maximum row count, or {@code null} when the driver default should remain unchanged.
+     *
+     * @return configured maximum or {@code null}
+     */
     Long maxRows() {
         return maxRows;
     }
 
+    /**
+     * Returns the configured statement-pooling hint, or {@code null} when the driver default should remain unchanged.
+     *
+     * @return configured pooling hint or {@code null}
+     */
     Boolean poolableHint() {
         return poolableHint;
     }
 
-    JdbcExecutionOptions overlay(JdbcExecutionOptions override) {
-        Objects.requireNonNull(override, "Execution options must not be null");
+    /**
+     * Overlays explicitly configured values on this options value.
+     *
+     * @param override invocation-level overrides
+     * @return this value with each configured override applied
+     */
+    JdbcStatementOptions overlay(JdbcStatementOptions override) {
+        Objects.requireNonNull(override, "Statement options must not be null");
         if (override == EMPTY) {
             return this;
         }
         if (this == EMPTY) {
             return override;
         }
-        return new JdbcExecutionOptions(override.fetchSize != null ? override.fetchSize : fetchSize,
+        return new JdbcStatementOptions(override.fetchSize != null ? override.fetchSize : fetchSize,
                                         override.queryTimeout != null ? override.queryTimeout : queryTimeout,
                                         override.maxRows != null ? override.maxRows : maxRows,
                                         override.poolableHint != null ? override.poolableHint : poolableHint);
     }
 
     /**
-     * Builder for immutable {@link JdbcExecutionOptions} instances.
+     * Mutable builder for immutable {@link JdbcStatementOptions} instances.
      * <p>
-     * A builder is mutable and not thread-safe. It may be reused; each call to {@link #build()} creates an independent
-     * immutable snapshot.
+     * A builder is not thread-safe. It may be reused; each call to {@link #build()} creates an independent immutable
+     * snapshot. Streaming request construction instead uses the single-use {@link JdbcQueryRequest.Builder}.
      */
     public static final class Builder {
         private Integer fetchSize;
@@ -175,11 +199,11 @@ public final class JdbcExecutionOptions {
          *
          * @return immutable options
          */
-        public JdbcExecutionOptions build() {
+        public JdbcStatementOptions build() {
             if (fetchSize == null && queryTimeout == null && maxRows == null && poolableHint == null) {
                 return EMPTY;
             }
-            return new JdbcExecutionOptions(fetchSize, queryTimeout, maxRows, poolableHint);
+            return new JdbcStatementOptions(fetchSize, queryTimeout, maxRows, poolableHint);
         }
     }
 }

@@ -31,7 +31,8 @@ class JdbcClientApiTest {
     void exposesOnlyApprovedTopLevelApiTypes() {
         Set<Class<?>> publicTypes = Arrays.stream(new Class<?>[] {
                         JdbcClient.class,
-                        JdbcExecutionOptions.class,
+                        JdbcQueryRequest.class,
+                        JdbcStatementOptions.class,
                         JdbcClientImpl.class,
                         JdbcStatement.class,
                         JdbcRows.class,
@@ -47,7 +48,11 @@ class JdbcClientApiTest {
                 .filter(type -> Modifier.isPublic(type.getModifiers()))
                 .collect(Collectors.toSet());
 
-        assertEquals(Set.of(JdbcClient.class, JdbcExecutionOptions.class, JdbcPersistenceUnitConfig.class), publicTypes);
+        assertEquals(Set.of(JdbcClient.class,
+                            JdbcQueryRequest.class,
+                            JdbcStatementOptions.class,
+                            JdbcPersistenceUnitConfig.class),
+                     publicTypes);
         assertTrue(JdbcClient.class.isInterface());
     }
 }

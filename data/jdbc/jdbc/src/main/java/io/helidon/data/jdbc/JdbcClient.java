@@ -18,8 +18,6 @@ package io.helidon.data.jdbc;
 import java.sql.SQLType;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Consumer;
-import java.util.function.Predicate;
 
 import io.helidon.data.DataException;
 import io.helidon.service.registry.Service;
@@ -57,14 +55,17 @@ public interface JdbcClient {
     interface Statement {
 
         /**
-         * Applies per-execution options.
+         * Applies per-execution statement options.
+         * <p>
+         * A setting embedded in a later {@link JdbcQueryRequest} overrides the corresponding value. An unset request
+         * setting preserves this value.
          *
          * @param options immutable execution options, must not be {@code null}
          * @return this statement stage
          * @throws NullPointerException if {@code options} is {@code null}
          * @throws IllegalStateException if a terminal operation has already started
          */
-        Statement options(JdbcExecutionOptions options);
+        Statement options(JdbcStatementOptions options);
 
         /**
          * Binds a supported non-null scalar value to a one-based JDBC position.
@@ -128,6 +129,19 @@ public interface JdbcClient {
          * @throws DataException if JDBC processing fails
          */
         <R> R reduce(RowReducer<R> reducer);
+
+        /**
+         * Executes a query and reduces all physical rows using invocation-specific statement settings.
+         *
+         * @param reducer result-set-scoped reducer, must not be {@code null}
+         * @param request regular query request, must not be {@code null}
+         * @param <R> logical result type
+         * @return reduced result
+         * @throws NullPointerException if {@code reducer} or {@code request} is {@code null}
+         * @throws IllegalStateException if this statement has already executed or has missing bindings
+         * @throws DataException if JDBC processing fails
+         */
+        <R> R reduce(RowReducer<R> reducer, JdbcQueryRequest request);
 
         /**
          * Selects an explicit row mapper for a query.
@@ -194,6 +208,19 @@ public interface JdbcClient {
         T one();
 
         /**
+         * Returns exactly one mapped row using invocation-specific statement settings.
+         *
+         * @param request regular query request, must not be {@code null}
+         * @return the only row
+         * @throws NullPointerException if {@code request} is {@code null}
+         * @throws io.helidon.data.NoResultException if no row exists
+         * @throws io.helidon.data.NonUniqueResultException if more than one row exists
+         * @throws IllegalStateException if this stage has already executed
+         * @throws DataException if JDBC processing fails
+         */
+        T one(JdbcQueryRequest request);
+
+        /**
          * Returns zero or one mapped row.
          *
          * @return an optional containing the row, or empty when no row exists
@@ -202,6 +229,18 @@ public interface JdbcClient {
          * @throws DataException if JDBC processing fails
          */
         Optional<T> optional();
+
+        /**
+         * Returns zero or one mapped row using invocation-specific statement settings.
+         *
+         * @param request regular query request, must not be {@code null}
+         * @return an optional containing the row, or empty when no row exists
+         * @throws NullPointerException if {@code request} is {@code null}
+         * @throws io.helidon.data.NonUniqueResultException if more than one row exists
+         * @throws IllegalStateException if this stage has already executed
+         * @throws DataException if JDBC processing fails
+         */
+        Optional<T> optional(JdbcQueryRequest request);
 
         /**
          * Materializes all mapped rows in encounter order.
@@ -213,39 +252,36 @@ public interface JdbcClient {
         List<T> list();
 
         /**
-         * Provides callback-scoped pull traversal.
-         * <p>
-         * The iterable is non-closeable, thread-confined, single-use, and valid only while {@code action} is running. It
-         * must not be retained. Returning from the callback, including after breaking out of a loop, closes all applicable
-         * JDBC resources before this method returns.
+         * Materializes all mapped rows using invocation-specific statement settings.
          *
-         * @param action synchronous row action, must not be {@code null}
-         * @throws NullPointerException if {@code action} is {@code null}
-         * @throws IllegalStateException if this stage has already executed or the facade is misused
+         * @param request regular query request, must not be {@code null}
+         * @return mapped rows in encounter order; never {@code null}
+         * @throws NullPointerException if {@code request} is {@code null}
+         * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        void withRows(Consumer<? super Iterable<T>> action);
+        List<T> list(JdbcQueryRequest request);
 
         /**
          * Visits every mapped row synchronously using constant result-buffer memory.
          *
-         * @param action row action, must not be {@code null}
-         * @throws NullPointerException if {@code action} is {@code null}
+         * @param request immutable consume-all request, must not be {@code null}
+         * @throws NullPointerException if {@code request} is {@code null}
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        void forEach(Consumer<? super T> action);
+        void forEach(JdbcQueryRequest.ForEach<T> request);
 
         /**
          * Visits mapped rows until exhaustion or until the predicate returns {@code false}.
          *
-         * @param action continuation predicate, must not be {@code null}
+         * @param request immutable predicate traversal request, must not be {@code null}
          * @return {@code true} when all rows were visited, or {@code false} when traversal stopped early
-         * @throws NullPointerException if {@code action} is {@code null}
+         * @throws NullPointerException if {@code request} is {@code null}
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        boolean forEachWhile(Predicate<? super T> action);
+        boolean forEachWhile(JdbcQueryRequest.ForEachWhile<T> request);
     }
 
     /**

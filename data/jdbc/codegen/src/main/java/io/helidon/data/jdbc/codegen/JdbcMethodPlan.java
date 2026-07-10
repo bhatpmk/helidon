@@ -61,8 +61,8 @@ final class JdbcMethodPlan {
     private final ReturnShape returnShape;
     private final MappingKind mappingKind;
     private final TypeName mappedType;
-    private final TypedElementInfo optionsParameter;
-    private final TypedElementInfo traversalParameter;
+    private final TypedElementInfo requestParameter;
+    private final RequestKind requestKind;
     private final JdbcSqlParameterPlan parameterPlan;
     private final List<String> generatedColumns;
     private final List<String> aliases;
@@ -77,8 +77,8 @@ final class JdbcMethodPlan {
                            ReturnShape returnShape,
                            MappingKind mappingKind,
                            TypeName mappedType,
-                           TypedElementInfo optionsParameter,
-                           TypedElementInfo traversalParameter,
+                           TypedElementInfo requestParameter,
+                           RequestKind requestKind,
                            JdbcSqlParameterPlan parameterPlan,
                            List<String> generatedColumns,
                            List<String> aliases,
@@ -90,8 +90,8 @@ final class JdbcMethodPlan {
         this.returnShape = returnShape;
         this.mappingKind = mappingKind;
         this.mappedType = mappedType;
-        this.optionsParameter = optionsParameter;
-        this.traversalParameter = traversalParameter;
+        this.requestParameter = requestParameter;
+        this.requestKind = requestKind;
         this.parameterPlan = parameterPlan;
         this.generatedColumns = generatedColumns;
         this.aliases = aliases;
@@ -105,9 +105,8 @@ final class JdbcMethodPlan {
     //
     // A note about return type
     // `one()`, `optional()`, and `list()` come from the return type.
-    // `Consumer<T>` selects `forEach(...)` and requires `void`.
-    // `Predicate<T>` selects `forEachWhile(...)` and requires primitive
-    //     `boolean`.
+    // `JdbcQueryRequest.ForEach<T>` selects `forEach(...)` and requires `void`.
+    // `JdbcQueryRequest.ForEachWhile<T>` selects `forEachWhile(...)` and requires primitive `boolean`.
     // Updates require primitive `long` or `void`.
     static JdbcMethodPlan create(TypedElementInfo method, CodegenContext context) {
         boolean query = method.hasAnnotation(JdbcCodegenTypes.DATA_QUERY);
@@ -134,17 +133,15 @@ final class JdbcMethodPlan {
         }
 
         List<TypedElementInfo> parameters = method.parameterArguments();
-        TypedElementInfo options = optionsParameter(parameters, method);
-        Traversal traversal = traversal(parameters, method);
-        int firstBindable = options == null ? 0 : 1;
-        int bindableEnd = traversal.parameter() == null ? parameters.size() : parameters.size() - 1;
-        List<TypedElementInfo> bindable = List.copyOf(parameters.subList(firstBindable, bindableEnd));
+        Request request = request(parameters, method);
+        int firstBindable = request.parameter() == null ? 0 : 1;
+        List<TypedElementInfo> bindable = List.copyOf(parameters.subList(firstBindable, parameters.size()));
 
         // We need compile time correspondence between named markers and method parameters
         JdbcSqlParameterPlan parameterPlan = JdbcSqlParameterPlan.create(sql, bindable, method);
 
-        Return returnPlan = returnPlan(method, traversal);
-        validateOperationReturn(method, operation, returnPlan, traversal);
+        Return returnPlan = returnPlan(method, request);
+        validateOperationReturn(method, operation, returnPlan, request);
 
         List<BeanMapping> beanMappings = beanMappings(method);
         TypeName explicitMapper = method.findAnnotation(JdbcCodegenTypes.DATA_ROW_MAPPER)
@@ -167,8 +164,8 @@ final class JdbcMethodPlan {
         if (explicitReducer != null && operation != Operation.QUERY) {
             throw failure(method, "@Data.RowReducer is legal only on @Data.Query methods");
         }
-        if (explicitReducer != null && traversal.parameter() != null) {
-            throw failure(method, "@Data.RowReducer cannot use a streaming traversal callback");
+        if (explicitReducer != null && request.traversal()) {
+            throw failure(method, "@Data.RowReducer cannot use a JDBC query traversal request");
         }
 
         List<String> generatedColumns = generatedKeys
@@ -192,7 +189,7 @@ final class JdbcMethodPlan {
                               aliases,
                               beanMappings,
                               explicitMapping,
-                              traversal);
+                              request);
         if (generatedKeys && mappingKind == MappingKind.GRAPH) {
             throw failure(method, "Generated-key rows do not support generated graph reduction");
         }
@@ -202,8 +199,8 @@ final class JdbcMethodPlan {
                                   returnPlan.shape(),
                                   mappingKind,
                                   returnPlan.mappedType(),
-                                  options,
-                                  traversal.parameter(),
+                                  request.parameter(),
+                                  request.kind(),
                                   parameterPlan,
                                   List.copyOf(generatedColumns),
                                   aliases,
@@ -212,64 +209,49 @@ final class JdbcMethodPlan {
                                   explicitReducer);
     }
 
-    private static TypedElementInfo optionsParameter(List<TypedElementInfo> parameters, TypedElementInfo method) {
-        TypedElementInfo result = null;
+    private static Request request(List<TypedElementInfo> parameters, TypedElementInfo method) {
+        Request result = new Request(null, RequestKind.NONE, null);
         for (int i = 0; i < parameters.size(); i++) {
             TypedElementInfo parameter = parameters.get(i);
-            if (parameter.typeName().genericTypeName().equals(JdbcCodegenTypes.JDBC_EXECUTION_OPTIONS)) {
-                if (i != 0 || result != null) {
-                    throw failure(method, "JdbcExecutionOptions is permitted once and only as the leading parameter");
+            TypeName raw = parameter.typeName().genericTypeName();
+            boolean regular = raw.equals(JdbcCodegenTypes.JDBC_QUERY_REQUEST);
+            boolean forEach = raw.equals(JdbcCodegenTypes.JDBC_QUERY_FOR_EACH);
+            boolean forEachWhile = raw.equals(JdbcCodegenTypes.JDBC_QUERY_FOR_EACH_WHILE);
+            if (regular || forEach || forEachWhile) {
+                if (i != 0 || result.parameter() != null) {
+                    throw failure(method, "JdbcQueryRequest is permitted once and only as the leading parameter");
                 }
                 if (parameter.hasAnnotation(JdbcCodegenTypes.DATA_JDBC_TYPE)) {
-                    throw failure(method, "JdbcExecutionOptions must not carry @Data.JdbcType");
+                    throw failure(method, "JdbcQueryRequest must not carry @Data.JdbcType");
                 }
-                result = parameter;
+                TypeName mappedType = null;
+                if (!regular) {
+                    if (parameter.typeName().typeArguments().size() != 1) {
+                        throw failure(method, "JDBC traversal request requires one concrete mapped row type");
+                    }
+                    mappedType = parameter.typeName().typeArguments().getFirst();
+                    if (mappedType.wildcard()) {
+                        throw failure(method, "JDBC traversal request wildcard row types are not supported");
+                    }
+                }
+                result = new Request(parameter,
+                                     regular ? RequestKind.REGULAR
+                                             : forEach ? RequestKind.FOR_EACH : RequestKind.FOR_EACH_WHILE,
+                                     mappedType);
+            } else if (raw.equals(JdbcCodegenTypes.CONSUMER) || raw.equals(JdbcCodegenTypes.PREDICATE)) {
+                throw failure(method, "Traversal callbacks must be supplied through a leading JdbcQueryRequest");
             }
         }
         return result;
     }
 
-    private static Traversal traversal(List<TypedElementInfo> parameters, TypedElementInfo method) {
-        if (parameters.isEmpty()) {
-            return new Traversal(null, ReturnShape.ITEM, null);
-        }
-        for (int i = 0; i < parameters.size() - 1; i++) {
-            TypeName raw = parameters.get(i).typeName().genericTypeName();
-            if (raw.equals(JdbcCodegenTypes.CONSUMER) || raw.equals(JdbcCodegenTypes.PREDICATE)) {
-                throw failure(method, "A traversal callback is permitted only as the trailing parameter");
-            }
-        }
-        TypedElementInfo last = parameters.getLast();
-        TypeName raw = last.typeName().genericTypeName();
-        if (!raw.equals(JdbcCodegenTypes.CONSUMER) && !raw.equals(JdbcCodegenTypes.PREDICATE)) {
-            return new Traversal(null, ReturnShape.ITEM, null);
-        }
-        if (last.hasAnnotation(JdbcCodegenTypes.DATA_JDBC_TYPE)) {
-            throw failure(method, "A traversal callback must not carry @Data.JdbcType");
-        }
-        if (last.typeName().typeArguments().size() != 1) {
-            throw failure(method, "Traversal callback requires one concrete generic argument");
-        }
-        TypeName argument = last.typeName().typeArguments().getFirst();
-        if (argument.wildcard()) {
-            throw failure(method, "Traversal callback wildcard arguments are not supported");
-        }
-        if (raw.equals(JdbcCodegenTypes.PREDICATE)) {
-            return new Traversal(last, ReturnShape.FOR_EACH_WHILE, argument);
-        }
-        if (argument.genericTypeName().equals(JdbcCodegenTypes.ITERABLE)) {
-            if (argument.typeArguments().size() != 1 || argument.typeArguments().getFirst().wildcard()) {
-                throw failure(method, "Consumer<Iterable<T>> requires one concrete mapped type");
-            }
-            return new Traversal(last, ReturnShape.WITH_ROWS, argument.typeArguments().getFirst());
-        }
-        return new Traversal(last, ReturnShape.FOR_EACH, argument);
-    }
-
-    private static Return returnPlan(TypedElementInfo method, Traversal traversal) {
+    private static Return returnPlan(TypedElementInfo method, Request request) {
         TypeName returnType = method.typeName();
-        if (traversal.parameter() != null) {
-            return new Return(traversal.shape(), traversal.mappedType());
+        if (request.kind() == RequestKind.FOR_EACH) {
+            return new Return(ReturnShape.FOR_EACH, request.mappedType());
+        }
+        if (request.kind() == RequestKind.FOR_EACH_WHILE) {
+            return new Return(ReturnShape.FOR_EACH_WHILE, request.mappedType());
         }
         if (returnType.isOptional()) {
             return new Return(ReturnShape.OPTIONAL, singleTypeArgument(method, returnType));
@@ -290,10 +272,10 @@ final class JdbcMethodPlan {
     private static void validateOperationReturn(TypedElementInfo method,
                                                 Operation operation,
                                                 Return returnPlan,
-                                                Traversal traversal) {
+                                                Request request) {
         if (operation == Operation.UPDATE) {
-            if (traversal.parameter() != null) {
-                throw failure(method, "Update-count methods do not support row traversal callbacks");
+            if (request.parameter() != null) {
+                throw failure(method, "@Data.Update methods do not support JdbcQueryRequest");
             }
             if (!method.typeName().equals(TypeNames.PRIMITIVE_LONG)
                     && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
@@ -301,14 +283,19 @@ final class JdbcMethodPlan {
             }
             return;
         }
-        if (traversal.shape() == ReturnShape.FOR_EACH_WHILE) {
+        if (operation == Operation.GENERATED_KEYS && request.traversal()) {
+            throw failure(method, "JDBC traversal requests are supported only on @Data.Query methods");
+        }
+        if (request.kind() == RequestKind.FOR_EACH_WHILE) {
             if (!method.typeName().equals(TypeNames.PRIMITIVE_BOOLEAN)) {
-                throw failure(method, "Predicate traversal methods must return primitive boolean");
+                throw failure(method, "JdbcQueryRequest.ForEachWhile methods must return primitive boolean");
             }
-        } else if (traversal.parameter() != null && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
-            throw failure(method, "Consumer traversal methods must return void");
-        } else if (traversal.parameter() == null && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
-            throw failure(method, "Mapped query and generated-key methods require a result or traversal callback");
+        } else if (request.kind() == RequestKind.FOR_EACH && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
+            throw failure(method, "JdbcQueryRequest.ForEach methods must return void");
+        } else if (request.kind() == RequestKind.REGULAR && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
+            throw failure(method, "A regular JdbcQueryRequest method requires a non-void mapped result");
+        } else if (request.kind() == RequestKind.NONE && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
+            throw failure(method, "Mapped query and generated-key methods require a non-void result or traversal request");
         }
 
         String rawResult = returnPlan.mappedType().genericTypeName().fqName();
@@ -327,7 +314,7 @@ final class JdbcMethodPlan {
                                            List<String> aliases,
                                            List<BeanMapping> beanMappings,
                                            ExplicitMapping explicitMapping,
-                                           Traversal traversal) {
+                                           Request request) {
         if (explicitMapping.reducer() != null) {
             return MappingKind.REDUCER;
         }
@@ -335,8 +322,8 @@ final class JdbcMethodPlan {
         boolean graphDeclared = beanMappings.size() > 1
                 || beanMappings.stream().anyMatch(mapping -> !mapping.propertyPath().isEmpty()
                         || !mapping.identityProperty().isEmpty());
-        if (graphDeclared && traversal.parameter() != null) {
-            throw failure(method, "Identity-defined graph reduction cannot use a streaming traversal callback");
+        if (graphDeclared && request.traversal()) {
+            throw failure(method, "Identity-defined graph reduction cannot use a JDBC query traversal request");
         }
         if (graphDeclared && explicitMapping.mapper() != null) {
             throw failure(method, "@Data.RowMapper cannot be combined with generated graph reduction");
@@ -430,12 +417,12 @@ final class JdbcMethodPlan {
         return mappedType;
     }
 
-    TypedElementInfo optionsParameter() {
-        return optionsParameter;
+    TypedElementInfo requestParameter() {
+        return requestParameter;
     }
 
-    TypedElementInfo traversalParameter() {
-        return traversalParameter;
+    RequestKind requestKind() {
+        return requestKind;
     }
 
     JdbcSqlParameterPlan parameterPlan() {
@@ -488,7 +475,6 @@ final class JdbcMethodPlan {
         ITEM,
         OPTIONAL,
         LIST,
-        WITH_ROWS,
         FOR_EACH,
         FOR_EACH_WHILE
     }
@@ -503,13 +489,23 @@ final class JdbcMethodPlan {
         GRAPH
     }
 
+    enum RequestKind {
+        NONE,
+        REGULAR,
+        FOR_EACH,
+        FOR_EACH_WHILE
+    }
+
     record BeanMapping(TypeName type, String propertyPath, String identityProperty) {
     }
 
     private record ExplicitMapping(TypeName mapper, TypeName reducer) {
     }
 
-    private record Traversal(TypedElementInfo parameter, ReturnShape shape, TypeName mappedType) {
+    private record Request(TypedElementInfo parameter, RequestKind kind, TypeName mappedType) {
+        private boolean traversal() {
+            return kind == RequestKind.FOR_EACH || kind == RequestKind.FOR_EACH_WHILE;
+        }
     }
 
     private record Return(ReturnShape shape, TypeName mappedType) {
