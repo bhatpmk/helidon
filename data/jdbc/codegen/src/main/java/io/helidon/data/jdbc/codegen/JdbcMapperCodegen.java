@@ -42,6 +42,12 @@ import io.helidon.common.types.TypeName;
 import io.helidon.common.types.TypeNames;
 import io.helidon.common.types.TypedElementInfo;
 
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAP;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAPPER;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAPS;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAP_WITH;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_RESULT_SET_ROW_VIEW;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_ROW_MAPPER;
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.GENERATOR;
 
 /**
@@ -55,12 +61,6 @@ import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.GENERATOR;
 final class JdbcMapperCodegen {
 
     private static final TypeName BIG_DECIMAL = TypeName.create(BigDecimal.class);
-    private static final TypeName JDBC_ROW_MAPPER = TypeName.create("io.helidon.data.jdbc.JdbcRowMapper");
-    private static final TypeName JDBC_ROW_VIEW = TypeName.create("io.helidon.data.jdbc.JdbcResultSetRowView");
-    private static final TypeName MAP_ANNOTATION = TypeName.create("io.helidon.data.Data.Map");
-    private static final TypeName MAP_WITH_ANNOTATION = TypeName.create("io.helidon.data.Data.MapWith");
-    private static final TypeName MAPPER_ANNOTATION = TypeName.create("io.helidon.data.Data.Mapper");
-    private static final TypeName MAPS_ANNOTATION = TypeName.create("io.helidon.data.Data.Maps");
     private static final TypeName SQL_EXCEPTION = TypeName.create(SQLException.class);
 
     private final CodegenContext codegenContext;
@@ -73,7 +73,7 @@ final class JdbcMapperCodegen {
 
     void appendMapper(Method.Builder builder, TypeName resultType, TypedElementInfo methodInfo, String statement) {
         JdbcResultLabels labels = JdbcResultLabels.parse(statement);
-        Optional<Annotation> mapWith = methodInfo.findAnnotation(MAP_WITH_ANNOTATION);
+        Optional<Annotation> mapWith = methodInfo.findAnnotation(DATA_MAP_WITH);
         if (mapWith.isPresent()) {
             // @Data.MapWith can name either an explicit JdbcRowMapper or a declarative mapper contract.
             TypeName mapperType = mapWith.get()
@@ -118,7 +118,7 @@ final class JdbcMapperCodegen {
                                     TypeName resultType,
                                     TypedElementInfo methodInfo,
                                     JdbcResultLabels labels) {
-        Annotation mapperAnnotation = mapperInfo.findAnnotation(MAPPER_ANNOTATION)
+        Annotation mapperAnnotation = mapperInfo.findAnnotation(DATA_MAPPER)
                 .orElseThrow(() -> new CodegenException("@Data.MapWith currently requires a @Data.Mapper contract: "
                                                                 + mapperType.fqName(),
                                                         methodInfo.originatingElement()));
@@ -172,7 +172,7 @@ final class JdbcMapperCodegen {
                     .accessModifier(AccessModifier.PUBLIC)
                     .returnType(resultType)
                     .addAnnotation(Annotations.OVERRIDE)
-                    .addParameter(JDBC_ROW_VIEW, "row")
+                    .addParameter(JDBC_RESULT_SET_ROW_VIEW, "row")
                     .addThrows(SQL_EXCEPTION);
             if (!isSupportedScalar(resultType) && beanMappingRequired(resultType)) {
                 appendBeanMethodBody(method, resultType, mapperMappings(typeInfo(resultType).orElseThrow(), mapperInfo),
@@ -581,18 +581,18 @@ final class JdbcMapperCodegen {
     }
 
     private boolean hasMappings(Annotated annotated) {
-        return annotated.hasAnnotation(MAP_ANNOTATION) || annotated.hasAnnotation(MAPS_ANNOTATION);
+        return annotated.hasAnnotation(DATA_MAP) || annotated.hasAnnotation(DATA_MAPS);
     }
 
     private void addMappings(Map<String, String> mappings, Annotated annotated) {
         Map<String, String> localTargets = new HashMap<>();
         annotated.annotations()
                 .stream()
-                .filter(annotation -> annotation.typeName().equals(MAP_ANNOTATION))
+                .filter(annotation -> annotation.typeName().equals(DATA_MAP))
                 .forEach(annotation -> addMapping(mappings, localTargets, annotation));
         annotated.annotations()
                 .stream()
-                .filter(annotation -> annotation.typeName().equals(MAPS_ANNOTATION))
+                .filter(annotation -> annotation.typeName().equals(DATA_MAPS))
                 .flatMap(annotation -> annotation.annotationValues().orElseGet(List::of).stream())
                 .forEach(annotation -> addMapping(mappings, localTargets, annotation));
     }

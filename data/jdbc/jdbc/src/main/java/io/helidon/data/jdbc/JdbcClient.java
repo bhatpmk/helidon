@@ -34,7 +34,7 @@ import io.helidon.data.jdbc.namedparameters.NamedParameters;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Fluent JDBC client backed by the Helidon Data JDBC execution kernel.
+ * JDBC client backed by the Helidon Data JDBC execution kernel.
  *
  * <p>{@link JdbcClient} instances are safe for concurrent use. Statement builders returned by this client are mutable
  * and are intended for single-statement use by one thread.</p>

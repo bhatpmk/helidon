@@ -45,6 +45,21 @@ import io.helidon.common.types.TypedElementInfo;
 import io.helidon.data.codegen.common.RepositoryInfo;
 import io.helidon.data.jdbc.namedparameters.NamedParameters;
 
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_BIND;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_EXCEPTION;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_GENERATED_KEYS;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_GENERIC_REPOSITORY;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_PAGE;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_PARAM;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_PERSISTENCE_UNIT;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_QUERY;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_SLICE;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_BINDER;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_OPERATIONS;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_STATEMENT_PLAN;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.SERVICE_NAMED;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.SERVICE_SINGLETON;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.STREAM;
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.GENERATOR;
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.methodError;
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.repositoryError;
@@ -61,21 +76,6 @@ import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.repositoryEr
 final class JdbcRepositoryClassGenerator {
 
     private static final TypeName COLLECTION = TypeNames.COLLECTION;
-    private static final TypeName BIND = TypeName.create("io.helidon.data.Data.Bind");
-    private static final TypeName DATA_EXCEPTION = TypeName.create("io.helidon.data.DataException");
-    private static final TypeName GENERATED_KEYS = TypeName.create("io.helidon.data.Data.GeneratedKeys");
-    private static final TypeName GENERIC_REPOSITORY = TypeName.create("io.helidon.data.Data.GenericRepository");
-    private static final TypeName JDBC_BINDER = TypeName.create("io.helidon.data.jdbc.JdbcBinder");
-    private static final TypeName JDBC_OPERATIONS = TypeName.create("io.helidon.data.jdbc.JdbcOperations");
-    private static final TypeName JDBC_STATEMENT_PLAN = TypeName.create("io.helidon.data.jdbc.JdbcStatementPlan");
-    private static final TypeName PAGE = TypeName.create("io.helidon.data.Page");
-    private static final TypeName PARAM = TypeName.create("io.helidon.data.Data.Param");
-    private static final TypeName PERSISTENCE_UNIT = TypeName.create("io.helidon.data.Data.PersistenceUnit");
-    private static final TypeName QUERY = TypeName.create("io.helidon.data.Data.Query");
-    private static final TypeName SERVICE_NAMED = TypeName.create("io.helidon.service.registry.Service.Named");
-    private static final TypeName SERVICE_SINGLETON = TypeName.create("io.helidon.service.registry.Service.Singleton");
-    private static final TypeName SLICE = TypeName.create("io.helidon.data.Slice");
-    private static final TypeName STREAM = TypeName.create("java.util.stream.Stream");
 
     private final CodegenContext codegenContext;
     private final RoundContext roundContext;
@@ -135,14 +135,14 @@ final class JdbcRepositoryClassGenerator {
                 .elementInfo()
                 .stream()
                 .filter(it -> it.kind() == ElementKind.METHOD)
-                .filter(it -> it.hasAnnotation(QUERY))
+                .filter(it -> it.hasAnnotation(DATA_QUERY))
                 .forEach(this::generateQueryMethod);
     }
 
     private void validateRepositoryShape() {
         // Keep the first JDBC provider scope explicit: supported base repository plus @Data.Query methods.
         Set<TypeName> unsupported = new HashSet<>(repositoryInfo.interfaceNames());
-        unsupported.remove(GENERIC_REPOSITORY);
+        unsupported.remove(DATA_GENERIC_REPOSITORY);
         if (!unsupported.isEmpty()) {
             throw repositoryError(repositoryInfo,
                                   "JDBC repositories currently support Data.GenericRepository and @Data.Query "
@@ -155,7 +155,7 @@ final class JdbcRepositoryClassGenerator {
                 .filter(it -> it.kind() == ElementKind.METHOD)
                 .filter(it -> !it.elementModifiers().contains(Modifier.DEFAULT))
                 .filter(it -> !it.elementModifiers().contains(Modifier.STATIC))
-                .filter(it -> !it.hasAnnotation(QUERY))
+                .filter(it -> !it.hasAnnotation(DATA_QUERY))
                 .findFirst()
                 .ifPresent(it -> {
                     throw methodError(it, "JDBC repository methods must be annotated with @Data.Query: "
@@ -168,7 +168,7 @@ final class JdbcRepositoryClassGenerator {
                 .accessModifier(AccessModifier.PACKAGE_PRIVATE);
 
         repositoryInfo.interfaceInfo()
-                .findAnnotation(PERSISTENCE_UNIT)
+                .findAnnotation(DATA_PERSISTENCE_UNIT)
                 .ifPresentOrElse(annotation -> generateNamedJdbcConstructor(ctr, annotation),
                                  () -> {
                                      ctr.addParameter(JDBC_OPERATIONS, "jdbc");
@@ -255,7 +255,7 @@ final class JdbcRepositoryClassGenerator {
                                           TypedElementInfo methodInfo,
                                           StatementBinding binding) {
         TypeName returnType = methodInfo.typeName();
-        if (returnType.equals(STREAM) || returnType.equals(PAGE) || returnType.equals(SLICE)) {
+        if (returnType.equals(STREAM) || returnType.equals(DATA_PAGE) || returnType.equals(DATA_SLICE)) {
             throw unsupportedReturnType(methodInfo);
         }
         if (returnType.isList() || returnType.equals(COLLECTION)) {
@@ -323,7 +323,7 @@ final class JdbcRepositoryClassGenerator {
         boolean optional = returnType.isOptional();
         TypeName keyType = optional ? typeArgument(methodInfo) : returnType;
         if (returnType.isList() || returnType.equals(COLLECTION) || returnType.equals(STREAM)
-                || returnType.equals(PAGE) || returnType.equals(SLICE)
+                || returnType.equals(DATA_PAGE) || returnType.equals(DATA_SLICE)
                 || returnType.equals(TypeNames.PRIMITIVE_VOID) || returnType.equals(TypeNames.BOXED_VOID)) {
             throw unsupportedReturnType(methodInfo);
         }
@@ -402,17 +402,19 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private String statementPlanFactory(TypedElementInfo methodInfo, StatementBinding binding) {
-        if (methodInfo.hasAnnotation(GENERATED_KEYS)) {
+        if (methodInfo.hasAnnotation(DATA_GENERATED_KEYS)) {
             return "generatedKeys";
         }
         if (isQuery(binding.statement())) {
             return "query";
         }
+        // Even for "create table ...", it is considered as JdbcStatementPlan.update("create table ...")
+        // This might not work well with certain JDBC drivers or most of the drivers
         return "update";
     }
 
     private String generatedKeyArguments(TypedElementInfo methodInfo) {
-        if (!methodInfo.hasAnnotation(GENERATED_KEYS)) {
+        if (!methodInfo.hasAnnotation(DATA_GENERATED_KEYS)) {
             return "";
         }
         StringBuilder builder = new StringBuilder();
@@ -477,7 +479,7 @@ final class JdbcRepositoryClassGenerator {
                                       + methodInfo.elementName());
         }
         boolean explicit = parameters.stream()
-                .anyMatch(parameter -> parameter.hasAnnotation(PARAM) || parameter.hasAnnotation(BIND));
+                .anyMatch(parameter -> parameter.hasAnnotation(DATA_PARAM) || parameter.hasAnnotation(DATA_BIND));
         if (explicit) {
             return explicitStatementBinding(statement, markers, parameters, methodInfo, hasNamedMarkers);
         }
@@ -825,7 +827,7 @@ final class JdbcRepositoryClassGenerator {
                                                                 TypedElementInfo methodInfo) {
         Map<Integer, String> byIndex = new LinkedHashMap<>();
         for (TypedElementInfo parameter : parameters) {
-            if (parameter.hasAnnotation(BIND)) {
+            if (parameter.hasAnnotation(DATA_BIND)) {
                 throw methodError(methodInfo,
                                   "@Data.Bind can be used only with named JDBC parameters on method parameter "
                                           + parameter.elementName()
@@ -888,7 +890,7 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private ParamBinding explicitParamBinding(TypedElementInfo parameter, TypedElementInfo methodInfo) {
-        Optional<Annotation> annotation = parameter.findAnnotation(PARAM);
+        Optional<Annotation> annotation = parameter.findAnnotation(DATA_PARAM);
         if (annotation.isEmpty()) {
             return null;
         }
@@ -921,7 +923,7 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private BindPrefixBinding explicitBindBinding(TypedElementInfo parameter, TypedElementInfo methodInfo) {
-        Optional<Annotation> annotation = parameter.findAnnotation(BIND);
+        Optional<Annotation> annotation = parameter.findAnnotation(DATA_BIND);
         if (annotation.isEmpty()) {
             return null;
         }
@@ -1029,11 +1031,11 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private RepositoryMethodAnalysis analyzeMethod(TypedElementInfo methodInfo) {
-        String sql = methodInfo.annotation(QUERY)
+        String sql = methodInfo.annotation(DATA_QUERY)
                 .value()
                 .orElseThrow(() -> methodError(methodInfo, "@Data.Query annotation value is missing"));
         StatementBinding binding = statementBinding(sql, methodInfo);
-        boolean generatedKeys = methodInfo.hasAnnotation(GENERATED_KEYS);
+        boolean generatedKeys = methodInfo.hasAnnotation(DATA_GENERATED_KEYS);
         boolean query = isQuery(binding.statement());
         if (generatedKeys && query) {
             throw methodError(methodInfo,
@@ -1048,7 +1050,7 @@ final class JdbcRepositoryClassGenerator {
     }
 
     private List<String> generatedKeyColumnNames(TypedElementInfo methodInfo) {
-        return methodInfo.findAnnotation(GENERATED_KEYS)
+        return methodInfo.findAnnotation(DATA_GENERATED_KEYS)
                 .flatMap(Annotation::stringValues)
                 .orElseGet(List::of);
     }

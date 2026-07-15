@@ -45,6 +45,14 @@ import io.helidon.common.types.TypeName;
 import io.helidon.common.types.TypeNames;
 import io.helidon.common.types.TypedElementInfo;
 
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_KEY;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_KEYS;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAP;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAPPER;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_MAPS;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.DATA_REDUCE_WITH;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_RESULT_SET_ROW_VIEW;
+import static io.helidon.data.jdbc.codegen.JdbcCodegenTypes.JDBC_ROW_REDUCER;
 import static io.helidon.data.jdbc.codegen.JdbcPersistenceGenerator.GENERATOR;
 
 /**
@@ -61,17 +69,9 @@ final class JdbcReducerCodegen {
     private static final TypeName ARRAY_LIST = TypeName.create(ArrayList.class);
     private static final TypeName BIG_DECIMAL = TypeName.create(BigDecimal.class);
     private static final TypeName HASH_SET = TypeName.create(HashSet.class);
-    private static final TypeName JDBC_ROW_REDUCER = TypeName.create("io.helidon.data.jdbc.JdbcRowReducer");
-    private static final TypeName JDBC_ROW_VIEW = TypeName.create("io.helidon.data.jdbc.JdbcResultSetRowView");
-    private static final TypeName KEY_ANNOTATION = TypeName.create("io.helidon.data.Data.Key");
-    private static final TypeName KEYS_ANNOTATION = TypeName.create("io.helidon.data.Data.Keys");
     private static final TypeName LINKED_HASH_MAP = TypeName.create(LinkedHashMap.class);
     private static final TypeName LINKED_HASH_SET = TypeName.create("java.util.LinkedHashSet");
-    private static final TypeName MAP_ANNOTATION = TypeName.create("io.helidon.data.Data.Map");
-    private static final TypeName MAPPER_ANNOTATION = TypeName.create("io.helidon.data.Data.Mapper");
-    private static final TypeName MAPS_ANNOTATION = TypeName.create("io.helidon.data.Data.Maps");
     private static final TypeName OBJECTS = TypeName.create("java.util.Objects");
-    private static final TypeName REDUCE_WITH_ANNOTATION = TypeName.create("io.helidon.data.Data.ReduceWith");
     private static final TypeName SQL_EXCEPTION = TypeName.create(SQLException.class);
 
     private final CodegenContext codegenContext;
@@ -116,7 +116,7 @@ final class JdbcReducerCodegen {
     }
 
     private Optional<TypeName> explicitReducer(TypeName resultType, TypedElementInfo methodInfo) {
-        Optional<Annotation> reduceWith = methodInfo.findAnnotation(REDUCE_WITH_ANNOTATION);
+        Optional<Annotation> reduceWith = methodInfo.findAnnotation(DATA_REDUCE_WITH);
         if (reduceWith.isEmpty()) {
             return Optional.empty();
         }
@@ -128,7 +128,7 @@ final class JdbcReducerCodegen {
                 .orElseThrow(() -> new CodegenException("@Data.ReduceWith reducer type cannot be resolved: "
                                                                 + reducerType.fqName(),
                                                         methodInfo.originatingElement()));
-        if (reducerInfo.hasAnnotation(MAPPER_ANNOTATION)) {
+        if (reducerInfo.hasAnnotation(DATA_MAPPER)) {
             return Optional.empty();
         }
         TypeName expectedType = TypeName.builder(JDBC_ROW_REDUCER)
@@ -267,7 +267,7 @@ final class JdbcReducerCodegen {
     }
 
     private Optional<TypeInfo> reduceWithType(TypeName resultType, TypedElementInfo methodInfo) {
-        Optional<Annotation> reduceWith = methodInfo.findAnnotation(REDUCE_WITH_ANNOTATION);
+        Optional<Annotation> reduceWith = methodInfo.findAnnotation(DATA_REDUCE_WITH);
         if (reduceWith.isEmpty()) {
             return Optional.empty();
         }
@@ -279,7 +279,7 @@ final class JdbcReducerCodegen {
                 .orElseThrow(() -> new CodegenException("@Data.ReduceWith reducer type cannot be resolved: "
                                                                 + reducerType.fqName(),
                                                         methodInfo.originatingElement()));
-        Annotation mapperAnnotation = reducerInfo.findAnnotation(MAPPER_ANNOTATION)
+        Annotation mapperAnnotation = reducerInfo.findAnnotation(DATA_MAPPER)
                 .orElseThrow(() -> new CodegenException("@Data.ReduceWith currently requires a @Data.Mapper contract: "
                                                                 + reducerType.fqName(),
                                                         methodInfo.originatingElement()));
@@ -466,7 +466,7 @@ final class JdbcReducerCodegen {
                 .accessModifier(AccessModifier.PUBLIC)
                 .returnType(TypeNames.PRIMITIVE_VOID)
                 .addAnnotation(Annotations.OVERRIDE)
-                .addParameter(JDBC_ROW_VIEW, "row")
+                .addParameter(JDBC_RESULT_SET_ROW_VIEW, "row")
                 .addThrows(SQL_EXCEPTION);
         appendKey(method, root);
         method.addContent("if (key.stream().allMatch(")
@@ -529,7 +529,7 @@ final class JdbcReducerCodegen {
 
         inner.addConstructor(ctr -> {
             ctr.accessModifier(AccessModifier.PRIVATE)
-                    .addParameter(JDBC_ROW_VIEW, "row")
+                    .addParameter(JDBC_RESULT_SET_ROW_VIEW, "row")
                     .addThrows(SQL_EXCEPTION);
             node.scalars().values().forEach(scalar -> {
                 ctr.addContent("this.")
@@ -552,7 +552,7 @@ final class JdbcReducerCodegen {
         method.name("add")
                 .accessModifier(AccessModifier.PRIVATE)
                 .returnType(TypeNames.PRIMITIVE_VOID)
-                .addParameter(JDBC_ROW_VIEW, "row")
+                .addParameter(JDBC_RESULT_SET_ROW_VIEW, "row")
                 .addThrows(SQL_EXCEPTION);
         node.children().values().forEach(child -> method.addContentLine("add" + child.methodSuffix() + "(row);"));
     }
@@ -561,7 +561,7 @@ final class JdbcReducerCodegen {
         method.name("add" + child.methodSuffix())
                 .accessModifier(AccessModifier.PRIVATE)
                 .returnType(TypeNames.PRIMITIVE_VOID)
-                .addParameter(JDBC_ROW_VIEW, "row")
+                .addParameter(JDBC_RESULT_SET_ROW_VIEW, "row")
                 .addThrows(SQL_EXCEPTION);
         appendKey(method, child);
         method.addContent("if (key.stream().allMatch(")
@@ -1001,11 +1001,11 @@ final class JdbcReducerCodegen {
         Map<String, Mapping> localTargets = new LinkedHashMap<>();
         annotated.annotations()
                 .stream()
-                .filter(annotation -> annotation.typeName().equals(MAP_ANNOTATION))
+                .filter(annotation -> annotation.typeName().equals(DATA_MAP))
                 .forEach(annotation -> addMapping(mappings, localTargets, annotation));
         annotated.annotations()
                 .stream()
-                .filter(annotation -> annotation.typeName().equals(MAPS_ANNOTATION))
+                .filter(annotation -> annotation.typeName().equals(DATA_MAPS))
                 .flatMap(annotation -> annotation.annotationValues().orElseGet(List::of).stream())
                 .forEach(annotation -> addMapping(mappings, localTargets, annotation));
     }
@@ -1030,17 +1030,17 @@ final class JdbcReducerCodegen {
     }
 
     private boolean hasMappings(Annotated annotated) {
-        return annotated.hasAnnotation(MAP_ANNOTATION) || annotated.hasAnnotation(MAPS_ANNOTATION);
+        return annotated.hasAnnotation(DATA_MAP) || annotated.hasAnnotation(DATA_MAPS);
     }
 
     private void addKeys(Map<String, List<String>> keys, Annotated annotated) {
         annotated.annotations()
                 .stream()
-                .filter(annotation -> annotation.typeName().equals(KEY_ANNOTATION))
+                .filter(annotation -> annotation.typeName().equals(DATA_KEY))
                 .forEach(annotation -> addKey(keys, annotation));
         annotated.annotations()
                 .stream()
-                .filter(annotation -> annotation.typeName().equals(KEYS_ANNOTATION))
+                .filter(annotation -> annotation.typeName().equals(DATA_KEYS))
                 .flatMap(annotation -> annotation.annotationValues().orElseGet(List::of).stream())
                 .forEach(annotation -> addKey(keys, annotation));
     }
