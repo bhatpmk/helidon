@@ -21,10 +21,10 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
- * Immutable, invocation-scoped JDBC query request and factory for typed traversal requests.
+ * Immutable, invocation-scoped JDBC query request and factory for typed callback-based row traversal requests.
  * <p>
  * A regular request contains portable statement settings and may be passed to materializing, cardinality, reduction, or
- * generated-key terminals. The {@link ForEach} and {@link ForEachWhile} variants additionally contain one synchronous
+ * generated-key terminals. The {@link VisitAll} and {@link VisitWhile} variants additionally contain one synchronous
  * callback. No request contains SQL, bindings, mapping metadata, transaction state, or a JDBC resource. A configured
  * request setting overrides the corresponding setting on the statement stage. An unset setting preserves the statement,
  * client, datasource, or driver value.
@@ -51,15 +51,15 @@ public final class JdbcQueryRequest {
     }
 
     /**
-     * Creates a consume-all request using provider and driver statement defaults.
+     * Creates a request that visits every mapped row using provider and driver statement defaults.
      *
      * @param action callback invoked for every mapped row
      * @param <T> mapped row type
-     * @return immutable consume-all request
+     * @return immutable visit-all request
      * @throws NullPointerException if {@code action} is {@code null}
      */
-    public static <T> ForEach<T> forEach(Consumer<? super T> action) {
-        return new ForEach<>(Objects.requireNonNull(action, "Row action must not be null"), JdbcStatementOptions.EMPTY);
+    public static <T> VisitAll<T> visitAll(Consumer<? super T> action) {
+        return new VisitAll<>(Objects.requireNonNull(action, "Row action must not be null"), JdbcStatementOptions.EMPTY);
     }
 
     /**
@@ -70,8 +70,8 @@ public final class JdbcQueryRequest {
      * @return immutable predicate traversal request
      * @throws NullPointerException if {@code action} is {@code null}
      */
-    public static <T> ForEachWhile<T> forEachWhile(Predicate<? super T> action) {
-        return new ForEachWhile<>(Objects.requireNonNull(action, "Row continuation predicate must not be null"),
+    public static <T> VisitWhile<T> visitWhile(Predicate<? super T> action) {
+        return new VisitWhile<>(Objects.requireNonNull(action, "Row continuation predicate must not be null"),
                                   JdbcStatementOptions.EMPTY);
     }
 
@@ -95,7 +95,7 @@ public final class JdbcQueryRequest {
     }
 
     /**
-     * Immutable request to consume every mapped row.
+     * Immutable request to visit every mapped row.
      * <p>
      * The provider invokes the callback synchronously and does not expose a JDBC resource to it. The value may be reused
      * sequentially. Concurrent reuse is safe only when the supplied callback is itself safe for concurrent invocation;
@@ -103,11 +103,11 @@ public final class JdbcQueryRequest {
      *
      * @param <T> mapped row type
      */
-    public static final class ForEach<T> implements Consumer<T> {
+    public static final class VisitAll<T> implements Consumer<T> {
         private final Consumer<? super T> action;
         private final JdbcStatementOptions options;
 
-        private ForEach(Consumer<? super T> action, JdbcStatementOptions options) {
+        private VisitAll(Consumer<? super T> action, JdbcStatementOptions options) {
             this.action = action;
             this.options = options;
         }
@@ -115,7 +115,7 @@ public final class JdbcQueryRequest {
         /**
          * Passes one mapped row to the configured callback.
          * <p>
-         * Applications normally pass this request to {@link JdbcClient.Rows#forEach(ForEach)}. This method also keeps
+         * Applications normally pass this request to {@link JdbcClient.Rows#visitAll(VisitAll)}. This method also keeps
          * the request usable by another public {@link JdbcClient} implementation without exposing the wrapped callback.
          *
          * @param value mapped row
@@ -136,7 +136,7 @@ public final class JdbcQueryRequest {
     }
 
     /**
-     * Immutable request to consume rows until exhaustion or predicate-directed termination.
+     * Immutable request to visit rows until exhaustion or predicate-directed termination.
      * <p>
      * The provider invokes the predicate synchronously and does not expose a JDBC resource to it. The value may be
      * reused sequentially. Concurrent reuse is safe only when the supplied predicate is itself safe for concurrent
@@ -144,11 +144,11 @@ public final class JdbcQueryRequest {
      *
      * @param <T> mapped row type
      */
-    public static final class ForEachWhile<T> implements Predicate<T> {
+    public static final class VisitWhile<T> implements Predicate<T> {
         private final Predicate<? super T> action;
         private final JdbcStatementOptions options;
 
-        private ForEachWhile(Predicate<? super T> action, JdbcStatementOptions options) {
+        private VisitWhile(Predicate<? super T> action, JdbcStatementOptions options) {
             this.action = action;
             this.options = options;
         }
@@ -156,7 +156,7 @@ public final class JdbcQueryRequest {
         /**
          * Passes one mapped row to the configured continuation predicate.
          * <p>
-         * Applications normally pass this request to {@link JdbcClient.Rows#forEachWhile(ForEachWhile)}. This method
+         * Applications normally pass this request to {@link JdbcClient.Rows#visitWhile(VisitWhile)}. This method
          * also keeps the request usable by another public {@link JdbcClient} implementation without exposing the
          * wrapped predicate.
          *
@@ -179,9 +179,9 @@ public final class JdbcQueryRequest {
     }
 
     /**
-     * Mutable, single-use builder for a regular or traversal query request.
+     * Mutable, single-use builder for a regular query request or callback-based row traversal request.
      * <p>
-     * Calling {@link #build()}, {@link #forEach(Consumer)}, or {@link #forEachWhile(Predicate)} creates one immutable
+     * Calling {@link #build()}, {@link #visitAll(Consumer)}, or {@link #visitWhile(Predicate)} creates one immutable
      * request snapshot and permanently completes this builder. Further configuration or request creation fails. The
      * builder is not thread-safe.
      *
@@ -266,17 +266,17 @@ public final class JdbcQueryRequest {
         }
 
         /**
-         * Completes this builder with consume-all traversal.
+         * Completes this builder with a request that visits every mapped row.
          *
          * @param action callback invoked for every mapped row
-         * @return immutable consume-all request
+         * @return immutable visit-all request
          * @throws NullPointerException if {@code action} is {@code null}
          * @throws IllegalStateException if this builder has already created a request
          */
-        public ForEach<T> forEach(Consumer<? super T> action) {
+        public VisitAll<T> visitAll(Consumer<? super T> action) {
             Objects.requireNonNull(action, "Row action must not be null");
             complete();
-            return new ForEach<>(action, options.build());
+            return new VisitAll<>(action, options.build());
         }
 
         /**
@@ -287,10 +287,10 @@ public final class JdbcQueryRequest {
          * @throws NullPointerException if {@code action} is {@code null}
          * @throws IllegalStateException if this builder has already created a request
          */
-        public ForEachWhile<T> forEachWhile(Predicate<? super T> action) {
+        public VisitWhile<T> visitWhile(Predicate<? super T> action) {
             Objects.requireNonNull(action, "Row continuation predicate must not be null");
             complete();
-            return new ForEachWhile<>(action, options.build());
+            return new VisitWhile<>(action, options.build());
         }
 
         private void complete() {

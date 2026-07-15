@@ -283,10 +283,10 @@ final class JdbcMethodGenerator {
         case ITEM -> addTerminal(method, "one", requestArgument);
         case OPTIONAL -> addTerminal(method, "optional", requestArgument);
         case LIST -> addTerminal(method, "list", requestArgument);
-        case FOR_EACH -> method.addContent(".forEach(")
+        case VISIT_ALL -> method.addContent(".visitAll(")
                 .addContent(plan.requestParameter().elementName())
                 .addContentLine(");");
-        case FOR_EACH_WHILE -> method.addContent(".forEachWhile(")
+        case VISIT_WHILE -> method.addContent(".visitWhile(")
                 .addContent(plan.requestParameter().elementName())
                 .addContentLine(");");
         default -> throw new AssertionError("Unknown JDBC return shape: " + plan.returnShape());

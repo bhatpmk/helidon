@@ -26,8 +26,8 @@ final class JdbcCodegenTypes {
     static final String DEFAULT_NAME = "@default";
     static final TypeName JDBC_CLIENT = TypeName.create("io.helidon.data.jdbc.JdbcClient");
     static final TypeName JDBC_QUERY_REQUEST = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest");
-    static final TypeName JDBC_QUERY_FOR_EACH = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest.ForEach");
-    static final TypeName JDBC_QUERY_FOR_EACH_WHILE = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest.ForEachWhile");
+    static final TypeName JDBC_QUERY_VISIT_ALL = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest.VisitAll");
+    static final TypeName JDBC_QUERY_VISIT_WHILE = TypeName.create("io.helidon.data.jdbc.JdbcQueryRequest.VisitWhile");
     static final TypeName ROW_MAPPER = TypeName.create("io.helidon.data.jdbc.JdbcClient.RowMapper");
     static final TypeName ROW_REDUCER = TypeName.create("io.helidon.data.jdbc.JdbcClient.RowReducer");
     static final TypeName DATA_QUERY = TypeName.create("io.helidon.data.Data.Query");

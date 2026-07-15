@@ -265,12 +265,12 @@ public interface JdbcClient {
         /**
          * Visits every mapped row synchronously using constant result-buffer memory.
          *
-         * @param request immutable consume-all request, must not be {@code null}
+         * @param request immutable visit-all request, must not be {@code null}
          * @throws NullPointerException if {@code request} is {@code null}
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        void forEach(JdbcQueryRequest.ForEach<T> request);
+        void visitAll(JdbcQueryRequest.VisitAll<T> request);
 
         /**
          * Visits mapped rows until exhaustion or until the predicate returns {@code false}.
@@ -281,7 +281,7 @@ public interface JdbcClient {
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        boolean forEachWhile(JdbcQueryRequest.ForEachWhile<T> request);
+        boolean visitWhile(JdbcQueryRequest.VisitWhile<T> request);
     }
 
     /**

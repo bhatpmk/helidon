@@ -177,13 +177,13 @@ class JdbcRunnerTest {
         List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
-                .forEach(JdbcQueryRequest.forEach(pushed::add));
+                .visitAll(JdbcQueryRequest.visitAll(pushed::add));
         assertEquals(List.of("Ada", "Grace", "Linus"), pushed);
 
         List<String> stopped = new ArrayList<>();
         boolean exhausted = client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
-                .forEachWhile(JdbcQueryRequest.forEachWhile(value -> {
+                .visitWhile(JdbcQueryRequest.visitWhile(value -> {
                     stopped.add(value);
                     return stopped.size() < 2;
                 }));
@@ -194,10 +194,10 @@ class JdbcRunnerTest {
     @Test
     void reusesAnImmutableRequestAcrossSequentialExecutions() {
         List<String> values = new ArrayList<>();
-        JdbcQueryRequest.ForEach<String> request = JdbcQueryRequest.forEach(values::add);
+        JdbcQueryRequest.VisitAll<String> request = JdbcQueryRequest.visitAll(values::add);
 
-        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).forEach(request);
-        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).forEach(request);
+        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).visitAll(request);
+        client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).visitAll(request);
 
         assertEquals(List.of("Ada", "Grace", "Linus", "Ada", "Grace", "Linus"), values);
 
@@ -213,25 +213,25 @@ class JdbcRunnerTest {
         List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS WHERE ID < 0")
                 .map(String.class)
-                .forEach(JdbcQueryRequest.forEach(pushed::add));
+                .visitAll(JdbcQueryRequest.visitAll(pushed::add));
         assertTrue(pushed.isEmpty());
 
         assertTrue(client.create("SELECT NAME FROM USERS WHERE ID < 0")
                            .map(String.class)
-                           .forEachWhile(JdbcQueryRequest.forEachWhile(value -> false)));
+                           .visitWhile(JdbcQueryRequest.visitWhile(value -> false)));
     }
 
     @Test
     void nullTraversalActionDoesNotConsumeTheRowsStage() {
         JdbcClient.Rows<String> rows = client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class);
 
-        assertThrows(NullPointerException.class, () -> rows.forEach(null));
+        assertThrows(NullPointerException.class, () -> rows.visitAll(null));
         List<String> values = new ArrayList<>();
-        rows.forEach(JdbcQueryRequest.forEach(values::add));
+        rows.visitAll(JdbcQueryRequest.visitAll(values::add));
 
         assertEquals(List.of("Ada", "Grace", "Linus"), values);
         assertThrows(IllegalStateException.class,
-                     () -> rows.forEach(JdbcQueryRequest.forEach(ignored -> { })));
+                     () -> rows.visitAll(JdbcQueryRequest.visitAll(ignored -> { })));
 
         JdbcClient.Rows<String> regularRows = client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class);
         assertThrows(NullPointerException.class, () -> regularRows.list(null));

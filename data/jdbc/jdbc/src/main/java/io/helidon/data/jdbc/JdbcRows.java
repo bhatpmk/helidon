@@ -113,24 +113,24 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     }
 
     /**
-     * Delegates complete push traversal.
+     * Delegates callback-based traversal of every mapped row.
      *
-     * @param request consume-all request
+     * @param request visit-all request
      */
     @Override
-    public void forEach(JdbcQueryRequest.ForEach<T> request) {
-        statement.forEach(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
+    public void visitAll(JdbcQueryRequest.VisitAll<T> request) {
+        statement.visitAll(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
     }
 
     /**
-     * Delegates predicate-controlled push traversal.
+     * Delegates predicate-controlled callback-based row traversal.
      *
      * @param request predicate traversal request
      * @return true only after normal exhaustion
      */
     @Override
-    public boolean forEachWhile(JdbcQueryRequest.ForEachWhile<T> request) {
-        return statement.forEachWhile(mapper,
+    public boolean visitWhile(JdbcQueryRequest.VisitWhile<T> request) {
+        return statement.visitWhile(mapper,
                                       plan,
                                       Objects.requireNonNull(request, "Query request must not be null"));
     }

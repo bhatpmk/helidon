@@ -42,10 +42,10 @@ import io.helidon.data.NonUniqueResultException;
  * <p>Generated declarative repositories reach this class only through the
  * public {@link JdbcClient} stages. Keeping lease acquisition, preparation,
  * binding, execution, row mapping, warning handling, exception translation,
- * and cleanup here prevents the materializing, reducer, and push terminals
+ * and cleanup here prevents the materializing, reducer, and callback-based traversal terminals
  * from developing different JDBC semantics.</p>
  *
- * <p>Query terminals share {@link JdbcStreamingCursor}; update-only execution
+ * <p>Query terminals share {@link JdbcResultCursor}; update-only execution
  * uses the direct update path and does not create a cursor. JDBC resources are
  * always provider-owned. A transaction lease can therefore release the
  * operation without closing the transaction's physical connection.</p>
@@ -251,7 +251,7 @@ final class JdbcRunner {
      * @return the only mapped value
      */
     <T> T one(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
-        try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
+        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
             if (!cursor.hasNextValue()) {
                 throw new NoResultException("JDBC query returned no rows");
             }
@@ -273,7 +273,7 @@ final class JdbcRunner {
      * @return empty for no row, otherwise the mapped value
      */
     <T> Optional<T> optional(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
-        try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
+        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
             if (!cursor.hasNextValue()) {
                 return Optional.empty();
             }
@@ -295,7 +295,7 @@ final class JdbcRunner {
      * @return materialized mapped values
      */
     <T> List<T> list(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
-        try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
+        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
             List<T> result = new ArrayList<>();
             // The cursor remains incremental, while this terminal deliberately materializes the returned list.
             while (cursor.hasNextValue()) {
@@ -323,7 +323,7 @@ final class JdbcRunner {
             reducer.accept(row);
             return Boolean.TRUE;
         };
-        try (JdbcStreamingCursor<Boolean> cursor = openCursor(operation, acceptingMapper)) {
+        try (JdbcResultCursor<Boolean> cursor = openResultCursor(operation, acceptingMapper)) {
             while (cursor.hasNextValue()) {
                 cursor.nextValue();
             }
@@ -332,17 +332,17 @@ final class JdbcRunner {
     }
 
     /**
-     * Executes push traversal until the result set is exhausted.
+     * Visits every mapped row until the result set is exhausted.
      *
      * @param operation immutable query operation
      * @param mapper mapper invoked for each row
      * @param action callback invoked for each mapped value
      * @param <T> mapped type
      */
-    <T> void forEach(JdbcOperation operation,
-                     JdbcClient.RowMapper<T> mapper,
-                     Consumer<? super T> action) {
-        try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
+    <T> void visitAll(JdbcOperation operation,
+                      JdbcClient.RowMapper<T> mapper,
+                      Consumer<? super T> action) {
+        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
             while (cursor.hasNextValue()) {
                 action.accept(cursor.nextValue());
             }
@@ -350,7 +350,7 @@ final class JdbcRunner {
     }
 
     /**
-     * Executes push traversal until exhaustion or predicate-directed stop.
+     * Visits mapped rows until exhaustion or predicate-directed stop.
      *
      * @param operation immutable query operation
      * @param mapper mapper invoked for each row
@@ -358,10 +358,10 @@ final class JdbcRunner {
      * @param <T> mapped type
      * @return true after normal exhaustion, false after predicate stop
      */
-    <T> boolean forEachWhile(JdbcOperation operation,
-                             JdbcClient.RowMapper<T> mapper,
-                             Predicate<? super T> action) {
-        try (JdbcStreamingCursor<T> cursor = openCursor(operation, mapper)) {
+    <T> boolean visitWhile(JdbcOperation operation,
+                           JdbcClient.RowMapper<T> mapper,
+                           Predicate<? super T> action) {
+        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
             while (cursor.hasNextValue()) {
                 if (!action.test(cursor.nextValue())) {
                     // Leaving this scope closes the current result immediately; no lifecycle handle escapes to the caller.
@@ -385,7 +385,7 @@ final class JdbcRunner {
      * @param <T> mapped type
      * @return open provider-owned cursor
      */
-    private <T> JdbcStreamingCursor<T> openCursor(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
+    private <T> JdbcResultCursor<T> openResultCursor(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
         JdbcConnectionLease lease = null;
         PreparedStatement statement = null;
         ResultSet resultSet = null;
@@ -431,7 +431,7 @@ final class JdbcRunner {
             }
             // Metadata is resolved once so every row mapper can use label lookup without per-row metadata work.
             JdbcColumnLayout columns = JdbcColumnLayout.create(resultSet.getMetaData(), operation);
-            return new JdbcStreamingCursor<>(operation, lease, statement, resultSet, columns, mapper);
+            return new JdbcResultCursor<>(operation, lease, statement, resultSet, columns, mapper);
         } catch (SQLException e) {
             // Partial-open failures have the same ownership rules as failures after the cursor is returned.
             preserveWarnings(e, lease == null ? null : lease.connection(), statement, resultSet);
@@ -711,7 +711,7 @@ final class JdbcRunner {
      * cleanup remain identical. It is not used by update-only
      * {@code execute()}, and it never reaches application code.</p>
      */
-    private static final class JdbcStreamingCursor<T> implements AutoCloseable {
+    private static final class JdbcResultCursor<T> implements AutoCloseable {
         /** Operation metadata used for diagnostics and row conversion errors. */
         private final JdbcOperation operation;
         /** Logical lease that owns or borrows the physical connection. */
@@ -741,7 +741,7 @@ final class JdbcRunner {
          * @param columns cached result-column layout
          * @param mapper row mapper
          */
-        private JdbcStreamingCursor(JdbcOperation operation,
+        private JdbcResultCursor(JdbcOperation operation,
                                     JdbcConnectionLease lease,
                                     PreparedStatement statement,
                                     ResultSet resultSet,

@@ -112,7 +112,7 @@ public final class JdbcStatementOptions {
      * Mutable builder for immutable {@link JdbcStatementOptions} instances.
      * <p>
      * A builder is not thread-safe. It may be reused; each call to {@link #build()} creates an independent immutable
-     * snapshot. Streaming request construction instead uses the single-use {@link JdbcQueryRequest.Builder}.
+     * snapshot. Callback-based row traversal instead uses the single-use {@link JdbcQueryRequest.Builder}.
      */
     public static final class Builder {
         private Integer fetchSize;

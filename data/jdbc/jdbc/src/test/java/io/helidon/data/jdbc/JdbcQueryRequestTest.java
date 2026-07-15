@@ -42,10 +42,10 @@ class JdbcQueryRequestTest {
     void directFactoriesUseDriverDefaultsAndPermitCallbackVariance() {
         List<Object> values = new ArrayList<>();
         Consumer<Object> consumer = values::add;
-        JdbcQueryRequest.ForEach<String> each = JdbcQueryRequest.forEach(consumer);
+        JdbcQueryRequest.VisitAll<String> each = JdbcQueryRequest.visitAll(consumer);
 
         Predicate<CharSequence> whileNonEmpty = value -> !value.isEmpty();
-        JdbcQueryRequest.ForEachWhile<String> eachWhile = JdbcQueryRequest.forEachWhile(whileNonEmpty);
+        JdbcQueryRequest.VisitWhile<String> eachWhile = JdbcQueryRequest.visitWhile(whileNonEmpty);
 
         each.accept("first");
         each.accept("second");
@@ -59,12 +59,12 @@ class JdbcQueryRequestTest {
     @Test
     void configuredBuilderCreatesAnImmutableRequestSnapshot() {
         List<String> values = new ArrayList<>();
-        JdbcQueryRequest.ForEach<String> request = JdbcQueryRequest.<String>builder()
+        JdbcQueryRequest.VisitAll<String> request = JdbcQueryRequest.<String>builder()
                 .fetchSize(25)
                 .queryTimeout(Duration.ofSeconds(3))
                 .maxRows(200)
                 .poolableHint(true)
-                .forEach(values::add);
+                .visitAll(values::add);
 
         request.accept("one");
         request.accept("two");
@@ -94,15 +94,15 @@ class JdbcQueryRequestTest {
     @Test
     void builderRejectsEveryOperationAfterCreatingARequest() {
         JdbcQueryRequest.Builder<String> builder = JdbcQueryRequest.builder();
-        JdbcQueryRequest.ForEach<String> request = builder.fetchSize(4).forEach(ignored -> { });
+        JdbcQueryRequest.VisitAll<String> request = builder.fetchSize(4).visitAll(ignored -> { });
 
         assertThrows(IllegalStateException.class, () -> builder.fetchSize(5));
         assertThrows(IllegalStateException.class, () -> builder.queryTimeout(Duration.ZERO));
         assertThrows(IllegalStateException.class, () -> builder.maxRows(5));
         assertThrows(IllegalStateException.class, () -> builder.poolableHint(false));
         assertThrows(IllegalStateException.class, builder::build);
-        assertThrows(IllegalStateException.class, () -> builder.forEach(ignored -> { }));
-        assertThrows(IllegalStateException.class, () -> builder.forEachWhile(ignored -> true));
+        assertThrows(IllegalStateException.class, () -> builder.visitAll(ignored -> { }));
+        assertThrows(IllegalStateException.class, () -> builder.visitWhile(ignored -> true));
 
         request.accept("still immutable and usable");
         assertEquals(4, request.options().fetchSize());
@@ -111,11 +111,11 @@ class JdbcQueryRequestTest {
     @Test
     void eitherRequestVariantCompletesTheSameBuilder() {
         JdbcQueryRequest.Builder<String> builder = JdbcQueryRequest.builder();
-        JdbcQueryRequest.ForEachWhile<String> request = builder.forEachWhile(ignored -> false);
+        JdbcQueryRequest.VisitWhile<String> request = builder.visitWhile(ignored -> false);
 
         assertFalse(request.test("value"));
-        assertThrows(IllegalStateException.class, () -> builder.forEach(ignored -> { }));
-        assertThrows(IllegalStateException.class, () -> builder.forEachWhile(ignored -> true));
+        assertThrows(IllegalStateException.class, () -> builder.visitAll(ignored -> { }));
+        assertThrows(IllegalStateException.class, () -> builder.visitWhile(ignored -> true));
         assertThrows(IllegalStateException.class, builder::build);
     }
 
@@ -126,19 +126,19 @@ class JdbcQueryRequestTest {
 
         assertEquals(9, request.options().fetchSize());
         assertThrows(IllegalStateException.class, builder::build);
-        assertThrows(IllegalStateException.class, () -> builder.forEach(ignored -> { }));
-        assertThrows(IllegalStateException.class, () -> builder.forEachWhile(ignored -> true));
+        assertThrows(IllegalStateException.class, () -> builder.visitAll(ignored -> { }));
+        assertThrows(IllegalStateException.class, () -> builder.visitWhile(ignored -> true));
         assertThrows(IllegalStateException.class, () -> builder.fetchSize(10));
     }
 
     @Test
     void nullCallbackIsRejectedWithoutCompletingTheBuilder() {
-        assertThrows(NullPointerException.class, () -> JdbcQueryRequest.forEach(null));
-        assertThrows(NullPointerException.class, () -> JdbcQueryRequest.forEachWhile(null));
+        assertThrows(NullPointerException.class, () -> JdbcQueryRequest.visitAll(null));
+        assertThrows(NullPointerException.class, () -> JdbcQueryRequest.visitWhile(null));
 
         JdbcQueryRequest.Builder<String> builder = JdbcQueryRequest.builder();
-        assertThrows(NullPointerException.class, () -> builder.forEach(null));
-        builder.forEach(ignored -> { });
+        assertThrows(NullPointerException.class, () -> builder.visitAll(null));
+        builder.visitAll(ignored -> { });
     }
 
     @Test

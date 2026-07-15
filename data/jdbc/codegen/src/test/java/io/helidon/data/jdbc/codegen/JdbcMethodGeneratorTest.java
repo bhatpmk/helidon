@@ -101,15 +101,15 @@ class JdbcMethodGeneratorTest {
                             Pokemon mappedRequested(JdbcQueryRequest request, long id);
 
                             @Data.Query("select cast(ID as bigint) as id, NAME as name from POKEMON where ID >= :minimum")
-                            void visitRecords(JdbcQueryRequest.ForEach<Pokemon> request, long minimum);
+                            void visitRecords(JdbcQueryRequest.VisitAll<Pokemon> request, long minimum);
 
                             @Data.Query("select ID as id, NAME as name from POKEMON where ID = :id")
                             @Data.RowMapper(PokemonMapper.class)
-                            void visitMapped(JdbcQueryRequest.ForEach<Pokemon> request, long id);
+                            void visitMapped(JdbcQueryRequest.VisitAll<Pokemon> request, long id);
 
                             @Data.Query("select ID as id from POKEMON")
                             @Data.BeanMapping(GeneratedBean.class)
-                            void visitBeans(JdbcQueryRequest.ForEach<GeneratedBean> request);
+                            void visitBeans(JdbcQueryRequest.VisitAll<GeneratedBean> request);
                         }
 
                         record Pokemon(long id, String name) {
@@ -158,9 +158,9 @@ class JdbcMethodGeneratorTest {
         assertTrue(source.contains(".map(MAPPER_MAPPED_REQUESTED).one(request)"), source);
         assertTrue(source.contains(".generatedKeys(MAPPER_INSERT_RECORD, \"ID\").one()"), source);
         assertTrue(source.contains(".generatedKeys(MAPPER_INSERT_BEAN, \"ID\").one()"), source);
-        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_VISIT_RECORDS).forEach(request)"), source);
-        assertTrue(source.contains(".bind(1, id).map(MAPPER_VISIT_MAPPED).forEach(request)"), source);
-        assertTrue(source.contains(".map(MAPPER_VISIT_BEANS).forEach(request)"), source);
+        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_VISIT_RECORDS).visitAll(request)"), source);
+        assertTrue(source.contains(".bind(1, id).map(MAPPER_VISIT_MAPPED).visitAll(request)"), source);
+        assertTrue(source.contains(".map(MAPPER_VISIT_BEANS).visitAll(request)"), source);
         assertTrue(source.contains("@Tx.Required"), source);
     }
 
@@ -245,10 +245,10 @@ class JdbcMethodGeneratorTest {
                             List<String> requestedList(JdbcQueryRequest request, long id);
 
                             @Data.Query("select NAME from CONTACT where ID >= :id")
-                            void visit(JdbcQueryRequest.ForEach<String> request, long id);
+                            void visit(JdbcQueryRequest.VisitAll<String> request, long id);
 
                             @Data.Query("select NAME from CONTACT where ID >= :id")
-                            boolean visitUntil(JdbcQueryRequest.ForEachWhile<String> request, long id);
+                            boolean visitUntil(JdbcQueryRequest.VisitWhile<String> request, long id);
 
                             @Data.Update("delete from CONTACT where ID = :id")
                             void delete(long id);
@@ -270,8 +270,8 @@ class JdbcMethodGeneratorTest {
         assertTrue(source.contains(".bind(1, id).bind(2, id).bind(3, type, JDBCType.CHAR)"
                                            + ".map(String.class).list()"), source);
         assertTrue(source.contains(".bind(1, id).bind(2, id).map(String.class).list(request)"), source);
-        assertTrue(source.contains(".bind(1, id).map(String.class).forEach(request)"), source);
-        assertTrue(source.contains(".bind(1, id).map(String.class).forEachWhile(request)"), source);
+        assertTrue(source.contains(".bind(1, id).map(String.class).visitAll(request)"), source);
+        assertTrue(source.contains(".bind(1, id).map(String.class).visitWhile(request)"), source);
         assertTrue(source.contains(".bind(1, id).execute();"), source);
     }
 
@@ -347,7 +347,7 @@ class JdbcMethodGeneratorTest {
                         @Data.Repository @Data.Provider("jdbc")
                         interface NonLeadingRequestRepository {
                             @Data.Query("select NAME from CONTACT where ID = :id")
-                            void invalid(long id, JdbcQueryRequest.ForEach<String> request);
+                            void invalid(long id, JdbcQueryRequest.VisitAll<String> request);
                         }
                         """,
                                  "only as the leading parameter");
@@ -358,33 +358,33 @@ class JdbcMethodGeneratorTest {
                         @Data.Repository @Data.Provider("jdbc")
                         interface DuplicateRequestRepository {
                             @Data.Query("select NAME from CONTACT")
-                            void invalid(JdbcQueryRequest.ForEach<String> first,
-                                         JdbcQueryRequest.ForEach<String> second);
+                            void invalid(JdbcQueryRequest.VisitAll<String> first,
+                                         JdbcQueryRequest.VisitAll<String> second);
                         }
                         """,
                                  "permitted once and only as the leading parameter");
-        assertCompilationFailure("ForEachReturnRepository.java", """
+        assertCompilationFailure("VisitAllReturnRepository.java", """
                         package example;
                         import io.helidon.data.Data;
                         import io.helidon.data.jdbc.JdbcQueryRequest;
                         @Data.Repository @Data.Provider("jdbc")
-                        interface ForEachReturnRepository {
+                        interface VisitAllReturnRepository {
                             @Data.Query("select NAME from CONTACT")
-                            String invalid(JdbcQueryRequest.ForEach<String> request);
+                            String invalid(JdbcQueryRequest.VisitAll<String> request);
                         }
                         """,
-                                 "JdbcQueryRequest.ForEach methods must return void");
-        assertCompilationFailure("ForEachWhileReturnRepository.java", """
+                                 "JdbcQueryRequest.VisitAll methods must return void");
+        assertCompilationFailure("VisitWhileReturnRepository.java", """
                         package example;
                         import io.helidon.data.Data;
                         import io.helidon.data.jdbc.JdbcQueryRequest;
                         @Data.Repository @Data.Provider("jdbc")
-                        interface ForEachWhileReturnRepository {
+                        interface VisitWhileReturnRepository {
                             @Data.Query("select NAME from CONTACT")
-                            void invalid(JdbcQueryRequest.ForEachWhile<String> request);
+                            void invalid(JdbcQueryRequest.VisitWhile<String> request);
                         }
                         """,
-                                 "JdbcQueryRequest.ForEachWhile methods must return primitive boolean");
+                                 "JdbcQueryRequest.VisitWhile methods must return primitive boolean");
         assertCompilationFailure("RawRequestRepository.java", """
                         package example;
                         import io.helidon.data.Data;
@@ -392,7 +392,7 @@ class JdbcMethodGeneratorTest {
                         @Data.Repository @Data.Provider("jdbc")
                         interface RawRequestRepository {
                             @Data.Query("select NAME from CONTACT")
-                            void invalid(JdbcQueryRequest.ForEach request);
+                            void invalid(JdbcQueryRequest.VisitAll request);
                         }
                         """,
                                  "requires one concrete mapped row type");
@@ -403,7 +403,7 @@ class JdbcMethodGeneratorTest {
                         @Data.Repository @Data.Provider("jdbc")
                         interface WildcardRequestRepository {
                             @Data.Query("select NAME from CONTACT")
-                            void invalid(JdbcQueryRequest.ForEach<?> request);
+                            void invalid(JdbcQueryRequest.VisitAll<?> request);
                         }
                         """,
                                  "wildcard row types are not supported");
@@ -416,7 +416,7 @@ class JdbcMethodGeneratorTest {
                         interface TypedRequestRepository {
                             @Data.Query("select NAME from CONTACT")
                             void invalid(@Data.JdbcType(JDBCType.VARCHAR)
-                                         JdbcQueryRequest.ForEach<String> request);
+                                         JdbcQueryRequest.VisitAll<String> request);
                         }
                         """,
                                  "must not carry @Data.JdbcType");
@@ -427,7 +427,7 @@ class JdbcMethodGeneratorTest {
                         @Data.Repository @Data.Provider("jdbc")
                         interface UpdateRequestRepository {
                             @Data.Update("delete from CONTACT")
-                            void invalid(JdbcQueryRequest.ForEach<String> request);
+                            void invalid(JdbcQueryRequest.VisitAll<String> request);
                         }
                         """,
                                  "@Data.Update methods do not support JdbcQueryRequest");
@@ -450,7 +450,7 @@ class JdbcMethodGeneratorTest {
                         interface GeneratedKeyRequestRepository {
                             @Data.Update("insert into CONTACT(NAME) values ('name')")
                             @Data.GeneratedKeys("ID")
-                            void invalid(JdbcQueryRequest.ForEach<Long> request);
+                            void invalid(JdbcQueryRequest.VisitAll<Long> request);
                         }
                         """,
                                  "JDBC traversal requests are supported only on @Data.Query methods");
@@ -463,7 +463,7 @@ class JdbcMethodGeneratorTest {
                         interface MapperRequestMismatchRepository {
                             @Data.Query("select NAME from CONTACT")
                             @Data.RowMapper(LongMapper.class)
-                            void invalid(JdbcQueryRequest.ForEach<String> request);
+                            void invalid(JdbcQueryRequest.VisitAll<String> request);
                         }
                         final class LongMapper implements JdbcClient.RowMapper<Long> {
                             public LongMapper() { }
@@ -484,7 +484,7 @@ class JdbcMethodGeneratorTest {
                             @Data.BeanMapping(value = Child.class,
                                               propertyPath = "children",
                                               identityProperty = "childId")
-                            void invalid(JdbcQueryRequest.ForEach<Contact> request);
+                            void invalid(JdbcQueryRequest.VisitAll<Contact> request);
                         }
                         class Contact {
                             private Long contactId;
@@ -754,7 +754,7 @@ class JdbcMethodGeneratorTest {
                         interface TraversalReducerRepository {
                             @Data.Query("select NAME from CONTACT")
                             @Data.RowReducer(NameReducer.class)
-                            void invalid(JdbcQueryRequest.ForEach<String> request);
+                            void invalid(JdbcQueryRequest.VisitAll<String> request);
                         }
                         final class NameReducer implements JdbcClient.RowReducer<String> {
                             public void accept(JdbcClient.Row row) { }

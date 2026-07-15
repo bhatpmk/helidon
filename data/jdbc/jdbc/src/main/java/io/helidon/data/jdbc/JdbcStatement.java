@@ -282,22 +282,22 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
-     * Delegates push traversal that consumes every row.
+     * Delegates callback-based traversal that visits every row.
      *
      * @param mapper row mapper
      * @param plan preparation plan
-     * @param request consume-all request
+     * @param request visit-all request
      * @param <T> mapped value type
      */
-    <T> void forEach(JdbcClient.RowMapper<T> mapper,
-                     JdbcPreparationPlan plan,
-                     JdbcQueryRequest.ForEach<T> request) {
+    <T> void visitAll(JdbcClient.RowMapper<T> mapper,
+                      JdbcPreparationPlan plan,
+                      JdbcQueryRequest.VisitAll<T> request) {
         apply(request.options());
-        runner.forEach(operation(plan), mapper, request);
+        runner.visitAll(operation(plan), mapper, request);
     }
 
     /**
-     * Delegates push traversal with predicate-directed early termination.
+     * Delegates callback-based row traversal with predicate-directed early termination.
      *
      * @param mapper row mapper
      * @param plan preparation plan
@@ -305,11 +305,11 @@ final class JdbcStatement implements JdbcClient.Statement {
      * @param <T> mapped value type
      * @return true only after normal exhaustion
      */
-    <T> boolean forEachWhile(JdbcClient.RowMapper<T> mapper,
-                             JdbcPreparationPlan plan,
-                             JdbcQueryRequest.ForEachWhile<T> request) {
+    <T> boolean visitWhile(JdbcClient.RowMapper<T> mapper,
+                           JdbcPreparationPlan plan,
+                           JdbcQueryRequest.VisitWhile<T> request) {
         apply(request.options());
-        return runner.forEachWhile(operation(plan), mapper, request);
+        return runner.visitWhile(operation(plan), mapper, request);
     }
 
     /**

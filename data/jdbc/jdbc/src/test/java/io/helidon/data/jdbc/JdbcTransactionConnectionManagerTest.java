@@ -125,10 +125,10 @@ class JdbcTransactionConnectionManagerTest {
         List<String> pushed = new ArrayList<>();
         client.create("select VALUE from TEST")
                 .map(String.class)
-                .forEach(JdbcQueryRequest.forEach(pushed::add));
+                .visitAll(JdbcQueryRequest.visitAll(pushed::add));
         assertFalse(client.create("select VALUE from TEST")
                             .map(String.class)
-                            .forEachWhile(JdbcQueryRequest.forEachWhile(value -> false)));
+                            .visitWhile(JdbcQueryRequest.visitWhile(value -> false)));
         List<String> materialized = client.create("select VALUE from TEST")
                 .map(String.class)
                 .list(JdbcQueryRequest.builder().fetchSize(2).build());

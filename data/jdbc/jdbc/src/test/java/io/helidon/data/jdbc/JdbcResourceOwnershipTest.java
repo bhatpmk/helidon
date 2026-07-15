@@ -59,7 +59,7 @@ class JdbcResourceOwnershipTest {
 
         assertFalse(client.create("select VALUE from TEST")
                             .map(String.class)
-                            .forEachWhile(JdbcQueryRequest.forEachWhile(ignored -> false)));
+                            .visitWhile(JdbcQueryRequest.visitWhile(ignored -> false)));
 
         List<String> events = recording.events();
         assertEquals(1, events.stream().filter("result.next"::equals).count());
@@ -75,7 +75,7 @@ class JdbcResourceOwnershipTest {
 
         client.create("select VALUE from TEST")
                 .map(String.class)
-                .forEach(JdbcQueryRequest.forEach(consumed::add));
+                .visitAll(JdbcQueryRequest.visitAll(consumed::add));
 
         assertEquals(List.of("first", "second", "third"), consumed);
         assertEquals(4, recording.events().stream().filter("result.next"::equals).count());
@@ -118,16 +118,16 @@ class JdbcResourceOwnershipTest {
         RecordingJdbc recording = new RecordingJdbc().rows("first", "second");
         JdbcClient client = new JdbcClientImpl(recording.dataSource());
         List<String> consumed = new ArrayList<>();
-        JdbcQueryRequest.ForEach<String> request = JdbcQueryRequest.<String>builder()
+        JdbcQueryRequest.VisitAll<String> request = JdbcQueryRequest.<String>builder()
                 .fetchSize(37)
                 .queryTimeout(Duration.ofSeconds(4))
                 .poolableHint(true)
-                .forEach(consumed::add);
+                .visitAll(consumed::add);
 
         client.create("select VALUE from TEST")
                 .options(JdbcStatementOptions.builder().fetchSize(5).maxRows(91).build())
                 .map(String.class)
-                .forEach(request);
+                .visitAll(request);
 
         assertEquals(List.of("first", "second"), consumed);
         List<String> events = recording.events();
@@ -168,7 +168,7 @@ class JdbcResourceOwnershipTest {
 
         client.create("select VALUE from TEST")
                 .map(String.class)
-                .forEach(JdbcQueryRequest.forEach(ignored -> { }));
+                .visitAll(JdbcQueryRequest.visitAll(ignored -> { }));
 
         assertFalse(recording.events().stream().anyMatch(event -> event.startsWith("statement.fetchSize:")));
         assertFalse(recording.events().stream().anyMatch(event -> event.startsWith("statement.queryTimeout:")));
@@ -196,7 +196,7 @@ class JdbcResourceOwnershipTest {
         IllegalStateException actual = assertThrows(IllegalStateException.class,
                                                     () -> client.create("select VALUE from TEST")
                                                             .map(String.class)
-                                                            .forEach(JdbcQueryRequest.forEach(ignored -> {
+                                                            .visitAll(JdbcQueryRequest.visitAll(ignored -> {
                                                                 throw expected;
                                                             })));
 
@@ -217,7 +217,7 @@ class JdbcResourceOwnershipTest {
                                                                 .map(row -> {
                                                                     throw expected;
                                                                 })
-                                                                .forEach(JdbcQueryRequest.forEach(ignored -> { })));
+                                                                .visitAll(JdbcQueryRequest.visitAll(ignored -> { })));
 
         assertSame(expected, actual);
         assertClosesInOwnershipOrder(recording.events());
@@ -232,7 +232,7 @@ class JdbcResourceOwnershipTest {
         IllegalStateException actual = assertThrows(IllegalStateException.class,
                                                     () -> client.create("select VALUE from TEST")
                                                             .map(String.class)
-                                                            .forEachWhile(JdbcQueryRequest.forEachWhile(ignored -> {
+                                                            .visitWhile(JdbcQueryRequest.visitWhile(ignored -> {
                                                                 throw expected;
                                                             })));
 
@@ -254,7 +254,7 @@ class JdbcResourceOwnershipTest {
         DataException actual = assertThrows(DataException.class,
                                             () -> client.create("select VALUE from TEST")
                                                     .map(String.class)
-                                                    .forEach(JdbcQueryRequest.forEach(ignored -> { })));
+                                                    .visitAll(JdbcQueryRequest.visitAll(ignored -> { })));
 
         assertSame(readFailure, actual.getCause());
         assertTrue(actual.getMessage().contains("SQLState=42000"));
@@ -279,7 +279,7 @@ class JdbcResourceOwnershipTest {
         IllegalStateException actual = assertThrows(IllegalStateException.class,
                                                     () -> client.create("select VALUE from TEST")
                                                             .map(String.class)
-                                                            .forEach(JdbcQueryRequest.forEach(row -> {
+                                                            .visitAll(JdbcQueryRequest.visitAll(row -> {
                                                                 throw expected;
                                                             })));
 
@@ -300,7 +300,7 @@ class JdbcResourceOwnershipTest {
         for (int i = 0; i < 20; i++) {
             assertFalse(client.create("select VALUE from TEST")
                                 .map(String.class)
-                                .forEachWhile(JdbcQueryRequest.forEachWhile(value -> {
+                                .visitWhile(JdbcQueryRequest.visitWhile(value -> {
                                     consumed.incrementAndGet();
                                     return false;
                                 })));

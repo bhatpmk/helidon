@@ -26,17 +26,17 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
-class JdbcStreamingPoolTest {
+class JdbcRowTraversalPoolTest {
 
     @Test
     void everyTraversalOfferReturnsItsConnectionToASingleConnectionPool() throws SQLException {
         HikariConfig config = new HikariConfig();
-        config.setJdbcUrl("jdbc:h2:mem:jdbc_streaming_pool;DB_CLOSE_DELAY=-1");
+        config.setJdbcUrl("jdbc:h2:mem:jdbc_row_traversal_pool;DB_CLOSE_DELAY=-1");
         config.setDriverClassName("org.h2.Driver");
         config.setMaximumPoolSize(1);
         config.setMinimumIdle(0);
         config.setConnectionTimeout(500);
-        config.setPoolName("jdbc-streaming-test");
+        config.setPoolName("jdbc-row-traversal-test");
 
         try (HikariDataSource dataSource = new HikariDataSource(config)) {
             initialize(dataSource);
@@ -47,12 +47,12 @@ class JdbcStreamingPoolTest {
                 List<String> visited = new ArrayList<>();
                 client.create("SELECT NAME FROM USERS ORDER BY ID")
                         .map(String.class)
-                        .forEach(JdbcQueryRequest.forEach(visited::add));
+                        .visitAll(JdbcQueryRequest.visitAll(visited::add));
                 assertEquals(List.of("Ada", "Grace", "Linus"), visited);
 
                 assertFalse(client.create("SELECT NAME FROM USERS ORDER BY ID")
                                     .map(String.class)
-                                    .forEachWhile(JdbcQueryRequest.forEachWhile(ignored -> false)));
+                                    .visitWhile(JdbcQueryRequest.visitWhile(ignored -> false)));
 
                 assertEquals(List.of("Ada", "Grace", "Linus"),
                              client.create("SELECT NAME FROM USERS ORDER BY ID")

@@ -105,8 +105,8 @@ final class JdbcMethodPlan {
     //
     // A note about return type
     // `one()`, `optional()`, and `list()` come from the return type.
-    // `JdbcQueryRequest.ForEach<T>` selects `forEach(...)` and requires `void`.
-    // `JdbcQueryRequest.ForEachWhile<T>` selects `forEachWhile(...)` and requires primitive `boolean`.
+    // `JdbcQueryRequest.VisitAll<T>` selects `visitAll(...)` and requires `void`.
+    // `JdbcQueryRequest.VisitWhile<T>` selects `visitWhile(...)` and requires primitive `boolean`.
     // Updates require primitive `long` or `void`.
     static JdbcMethodPlan create(TypedElementInfo method, CodegenContext context) {
         boolean query = method.hasAnnotation(JdbcCodegenTypes.DATA_QUERY);
@@ -215,9 +215,9 @@ final class JdbcMethodPlan {
             TypedElementInfo parameter = parameters.get(i);
             TypeName raw = parameter.typeName().genericTypeName();
             boolean regular = raw.equals(JdbcCodegenTypes.JDBC_QUERY_REQUEST);
-            boolean forEach = raw.equals(JdbcCodegenTypes.JDBC_QUERY_FOR_EACH);
-            boolean forEachWhile = raw.equals(JdbcCodegenTypes.JDBC_QUERY_FOR_EACH_WHILE);
-            if (regular || forEach || forEachWhile) {
+            boolean visitAll = raw.equals(JdbcCodegenTypes.JDBC_QUERY_VISIT_ALL);
+            boolean visitWhile = raw.equals(JdbcCodegenTypes.JDBC_QUERY_VISIT_WHILE);
+            if (regular || visitAll || visitWhile) {
                 if (i != 0 || result.parameter() != null) {
                     throw failure(method, "JdbcQueryRequest is permitted once and only as the leading parameter");
                 }
@@ -236,7 +236,7 @@ final class JdbcMethodPlan {
                 }
                 result = new Request(parameter,
                                      regular ? RequestKind.REGULAR
-                                             : forEach ? RequestKind.FOR_EACH : RequestKind.FOR_EACH_WHILE,
+                                             : visitAll ? RequestKind.VISIT_ALL : RequestKind.VISIT_WHILE,
                                      mappedType);
             } else if (raw.equals(JdbcCodegenTypes.CONSUMER) || raw.equals(JdbcCodegenTypes.PREDICATE)) {
                 throw failure(method, "Traversal callbacks must be supplied through a leading JdbcQueryRequest");
@@ -247,11 +247,11 @@ final class JdbcMethodPlan {
 
     private static Return returnPlan(TypedElementInfo method, Request request) {
         TypeName returnType = method.typeName();
-        if (request.kind() == RequestKind.FOR_EACH) {
-            return new Return(ReturnShape.FOR_EACH, request.mappedType());
+        if (request.kind() == RequestKind.VISIT_ALL) {
+            return new Return(ReturnShape.VISIT_ALL, request.mappedType());
         }
-        if (request.kind() == RequestKind.FOR_EACH_WHILE) {
-            return new Return(ReturnShape.FOR_EACH_WHILE, request.mappedType());
+        if (request.kind() == RequestKind.VISIT_WHILE) {
+            return new Return(ReturnShape.VISIT_WHILE, request.mappedType());
         }
         if (returnType.isOptional()) {
             return new Return(ReturnShape.OPTIONAL, singleTypeArgument(method, returnType));
@@ -286,12 +286,12 @@ final class JdbcMethodPlan {
         if (operation == Operation.GENERATED_KEYS && request.traversal()) {
             throw failure(method, "JDBC traversal requests are supported only on @Data.Query methods");
         }
-        if (request.kind() == RequestKind.FOR_EACH_WHILE) {
+        if (request.kind() == RequestKind.VISIT_WHILE) {
             if (!method.typeName().equals(TypeNames.PRIMITIVE_BOOLEAN)) {
-                throw failure(method, "JdbcQueryRequest.ForEachWhile methods must return primitive boolean");
+                throw failure(method, "JdbcQueryRequest.VisitWhile methods must return primitive boolean");
             }
-        } else if (request.kind() == RequestKind.FOR_EACH && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
-            throw failure(method, "JdbcQueryRequest.ForEach methods must return void");
+        } else if (request.kind() == RequestKind.VISIT_ALL && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
+            throw failure(method, "JdbcQueryRequest.VisitAll methods must return void");
         } else if (request.kind() == RequestKind.REGULAR && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
             throw failure(method, "A regular JdbcQueryRequest method requires a non-void mapped result");
         } else if (request.kind() == RequestKind.NONE && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
@@ -475,8 +475,8 @@ final class JdbcMethodPlan {
         ITEM,
         OPTIONAL,
         LIST,
-        FOR_EACH,
-        FOR_EACH_WHILE
+        VISIT_ALL,
+        VISIT_WHILE
     }
 
     enum MappingKind {
@@ -492,8 +492,8 @@ final class JdbcMethodPlan {
     enum RequestKind {
         NONE,
         REGULAR,
-        FOR_EACH,
-        FOR_EACH_WHILE
+        VISIT_ALL,
+        VISIT_WHILE
     }
 
     record BeanMapping(TypeName type, String propertyPath, String identityProperty) {
@@ -504,7 +504,7 @@ final class JdbcMethodPlan {
 
     private record Request(TypedElementInfo parameter, RequestKind kind, TypeName mappedType) {
         private boolean traversal() {
-            return kind == RequestKind.FOR_EACH || kind == RequestKind.FOR_EACH_WHILE;
+            return kind == RequestKind.VISIT_ALL || kind == RequestKind.VISIT_WHILE;
         }
     }
 
