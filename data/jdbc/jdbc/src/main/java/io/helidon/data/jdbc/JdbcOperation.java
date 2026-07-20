@@ -23,7 +23,7 @@ import java.util.Objects;
  *
  * <p>The fluent stages are mutable while an application or generated
  * repository assembles a statement. This object freezes the SQL text, ordered
- * bindings, options, and preparation contract before the runner borrows any
+ * bindings, statement options, and preparation contract before the runner borrows any
  * JDBC resource. The runner can therefore execute a stable operation even
  * though the original statement stage is no longer accessible for mutation.</p>
  */
@@ -33,7 +33,7 @@ final class JdbcOperation {
     private final String sql;
     /** Ordered bind snapshots; the array is cloned by the statement stage before construction. */
     private final Bind[] binds;
-    /** Per-operation options to overlay on the client defaults. */
+    /** Immutable per-operation statement options. */
     private final JdbcStatementOptions options;
     /** Result and statement-preparation contract selected by the terminal. */
     private final JdbcPreparationPlan preparationPlan;
@@ -43,7 +43,7 @@ final class JdbcOperation {
      *
      * @param sql SQL to execute
      * @param binds ordered bind snapshots
-     * @param options operation-specific options
+     * @param options immutable statement options
      * @param preparationPlan statement result contract
      */
     JdbcOperation(String sql,
@@ -52,7 +52,7 @@ final class JdbcOperation {
                   JdbcPreparationPlan preparationPlan) {
         this.sql = sql;
         this.binds = binds;
-        this.options = options;
+        this.options = Objects.requireNonNull(options, "Statement options must not be null");
         this.preparationPlan = preparationPlan;
     }
 
@@ -95,9 +95,9 @@ final class JdbcOperation {
     }
 
     /**
-     * Returns options captured for this operation.
+     * Returns the immutable statement options captured by the terminal.
      *
-     * @return operation options
+     * @return statement options
      */
     JdbcStatementOptions options() {
         return options;

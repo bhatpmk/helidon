@@ -27,8 +27,6 @@ import io.helidon.common.features.api.Features;
 @Features.Incubating
 module io.helidon.data {
 
-    requires java.sql;
-
     requires static io.helidon.common.features.api;
     requires io.helidon.service.registry;
     requires transitive io.helidon.builder.api;

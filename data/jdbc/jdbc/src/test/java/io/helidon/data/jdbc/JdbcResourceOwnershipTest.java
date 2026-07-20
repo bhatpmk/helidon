@@ -29,6 +29,13 @@ import io.helidon.data.DataException;
 
 import org.junit.jupiter.api.Test;
 
+import static org.hamcrest.CoreMatchers.hasItems;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.sameInstance;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.lessThan;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -59,7 +66,7 @@ class JdbcResourceOwnershipTest {
 
         assertFalse(client.create("select VALUE from TEST")
                             .map(String.class)
-                            .visitWhile(JdbcQueryRequest.visitWhile(ignored -> false)));
+                            .visitWhile(JdbcResultRequest.visitWhile(ignored -> false)));
 
         List<String> events = recording.events();
         assertEquals(1, events.stream().filter("result.next"::equals).count());
@@ -75,7 +82,7 @@ class JdbcResourceOwnershipTest {
 
         client.create("select VALUE from TEST")
                 .map(String.class)
-                .visitAll(JdbcQueryRequest.visitAll(consumed::add));
+                .visitAll(JdbcResultRequest.visitAll(consumed::add));
 
         assertEquals(List.of("first", "second", "third"), consumed);
         assertEquals(4, recording.events().stream().filter("result.next"::equals).count());
@@ -83,7 +90,7 @@ class JdbcResourceOwnershipTest {
     }
 
     @Test
-    void appliesOptionsAndBindsOnlyWhenTerminalStarts() {
+    void appliesStatementOptionsBeforeQueryBinds() {
         RecordingJdbc recording = new RecordingJdbc();
         JdbcClient client = new JdbcClientImpl(recording.dataSource());
         JdbcClient.Rows<String> rows = client.create("select VALUE from TEST where A = ? or B = ?")
@@ -97,68 +104,111 @@ class JdbcResourceOwnershipTest {
                 .bindNull(2, JDBCType.VARCHAR)
                 .map(String.class);
 
-        assertTrue(recording.events().isEmpty(), "Building a statement must not perform JDBC I/O");
-        assertEquals(List.of("row"), rows.list());
+        assertThat(recording.events(), is(empty()));
+        assertThat(rows.list(), is(List.of("row")));
 
         List<String> events = recording.events();
-        assertTrue(events.contains("statement.fetchSize:37"), events::toString);
-        assertTrue(events.contains("statement.queryTimeout:4"), events::toString);
-        assertTrue(events.contains("statement.maxRows:91"), events::toString);
-        assertTrue(events.contains("statement.poolable:true"), events::toString);
-        assertTrue(events.contains("statement.bind:1:value"), events::toString);
-        assertTrue(events.contains("statement.bindNull:2:" + JDBCType.VARCHAR.getVendorTypeNumber()), events::toString);
-        assertTrue(events.indexOf("statement.prepare") < events.indexOf("statement.fetchSize:37"), events::toString);
-        assertTrue(events.indexOf("statement.maxRows:91") < events.indexOf("statement.poolable:true"), events::toString);
-        assertTrue(events.indexOf("statement.bindNull:2:" + JDBCType.VARCHAR.getVendorTypeNumber())
-                           < events.indexOf("statement.execute"), events::toString);
+        assertThat(events,
+                   hasItems("statement.fetchSize:37",
+                            "statement.maxRows:91",
+                            "statement.queryTimeout:4",
+                            "statement.poolable:true",
+                            "statement.bind:1:value",
+                            "statement.bindNull:2:" + JDBCType.VARCHAR.getVendorTypeNumber()));
+        assertThat(events.indexOf("statement.prepare"), lessThan(events.indexOf("statement.fetchSize:37")));
+        assertThat(events.indexOf("statement.fetchSize:37"), lessThan(events.indexOf("statement.maxRows:91")));
+        assertThat(events.indexOf("statement.maxRows:91"), lessThan(events.indexOf("statement.queryTimeout:4")));
+        assertThat(events.indexOf("statement.queryTimeout:4"), lessThan(events.indexOf("statement.poolable:true")));
+        assertThat(events.indexOf("statement.poolable:true"), lessThan(events.indexOf("statement.bind:1:value")));
+        assertThat(events.indexOf("statement.bindNull:2:" + JDBCType.VARCHAR.getVendorTypeNumber()),
+                   lessThan(events.indexOf("statement.execute")));
     }
 
     @Test
-    void queryRequestSettingsOverlayStatementSettingsBeforeExecution() {
+    void appliesStatementOptionsToUpdatesThroughTheSharedRunner() {
+        RecordingJdbc recording = new RecordingJdbc().updateCount(7);
+        JdbcClient client = new JdbcClientImpl(recording.dataSource());
+
+        long count = client.create("update TEST set VALUE = ?")
+                .options(JdbcStatementOptions.builder().fetchSize(5).maxRows(11).build())
+                .bind(1, "updated")
+                .execute();
+
+        assertThat(count, is(7L));
+        List<String> events = recording.events();
+        assertThat(events, hasItems("statement.fetchSize:5", "statement.maxRows:11", "statement.bind:1:updated"));
+        assertThat(events.indexOf("statement.maxRows:11"), lessThan(events.indexOf("statement.bind:1:updated")));
+        assertThat(events.indexOf("statement.bind:1:updated"), lessThan(events.indexOf("statement.execute")));
+        assertClosesInOwnershipOrderWithoutResult(events);
+    }
+
+    @Test
+    void callbackRequestComposesStatementOptionsWithoutOwningResources() {
         RecordingJdbc recording = new RecordingJdbc().rows("first", "second");
         JdbcClient client = new JdbcClientImpl(recording.dataSource());
         List<String> consumed = new ArrayList<>();
-        JdbcQueryRequest.VisitAll<String> request = JdbcQueryRequest.<String>builder()
-                .fetchSize(37)
-                .queryTimeout(Duration.ofSeconds(4))
-                .poolableHint(true)
-                .visitAll(consumed::add);
+        JdbcResultRequest.VisitAll<String> request = JdbcResultRequest.<String>visitAll(consumed::add)
+                .withOptions(JdbcStatementOptions.builder().fetchSize(17).poolableHint(false).build());
 
         client.create("select VALUE from TEST")
-                .options(JdbcStatementOptions.builder().fetchSize(5).maxRows(91).build())
+                .options(JdbcStatementOptions.builder().fetchSize(3).maxRows(41).build())
                 .map(String.class)
                 .visitAll(request);
 
-        assertEquals(List.of("first", "second"), consumed);
-        List<String> events = recording.events();
-        assertTrue(events.contains("statement.fetchSize:37"), events::toString);
-        assertTrue(events.contains("statement.queryTimeout:4"), events::toString);
-        assertTrue(events.contains("statement.maxRows:91"), events::toString);
-        assertTrue(events.contains("statement.poolable:true"), events::toString);
-        assertTrue(events.indexOf("statement.poolable:true") < events.indexOf("statement.execute"), events::toString);
+        assertThat(consumed, is(List.of("first", "second")));
+        assertThat(recording.events(),
+                   hasItems("statement.fetchSize:17", "statement.maxRows:41", "statement.poolable:false"));
+        assertThat(recording.events().indexOf("statement.poolable:false"),
+                   lessThan(recording.events().indexOf("statement.execute")));
     }
 
     @Test
-    void regularQueryRequestSettingsApplyAtTheMaterializingTerminal() {
-        RecordingJdbc recording = new RecordingJdbc().rows("first", "second");
+    void fallsBackToLegacyMaximumRowsWithoutNarrowing() {
+        RecordingJdbc recording = new RecordingJdbc().largeMaxRowsUnsupported();
         JdbcClient client = new JdbcClientImpl(recording.dataSource());
-        JdbcQueryRequest request = JdbcQueryRequest.builder()
-                .fetchSize(23)
-                .queryTimeout(Duration.ofSeconds(2))
-                .maxRows(71)
-                .poolableHint(false)
-                .build();
-        JdbcClient.Rows<String> rows = client.create("select VALUE from TEST").map(String.class);
 
-        assertTrue(recording.events().isEmpty(), "Building a request and rows stage must not perform JDBC I/O");
-        assertEquals(List.of("first", "second"), rows.list(request));
+        assertThat(client.create("select VALUE from TEST")
+                           .options(JdbcStatementOptions.builder().maxRows(23).build())
+                           .map(String.class)
+                           .list(),
+                   is(List.of("row")));
 
-        List<String> events = recording.events();
-        assertTrue(events.contains("statement.fetchSize:23"), events::toString);
-        assertTrue(events.contains("statement.queryTimeout:2"), events::toString);
-        assertTrue(events.contains("statement.maxRows:71"), events::toString);
-        assertTrue(events.contains("statement.poolable:false"), events::toString);
-        assertTrue(events.indexOf("statement.poolable:false") < events.indexOf("statement.execute"), events::toString);
+        assertThat(recording.events(), hasItems("statement.maxRows:23", "statement.legacyMaxRows:23"));
+    }
+
+    @Test
+    void rejectsAnUnrepresentableLegacyMaximumRowsFallback() {
+        RecordingJdbc recording = new RecordingJdbc().largeMaxRowsUnsupported();
+        JdbcClient client = new JdbcClientImpl(recording.dataSource());
+
+        DataException failure = assertThrows(DataException.class,
+                                             () -> client.create("select VALUE from TEST")
+                                                     .options(JdbcStatementOptions.builder()
+                                                                      .maxRows((long) Integer.MAX_VALUE + 1)
+                                                                      .build())
+                                                     .map(String.class)
+                                                     .list());
+
+        assertThat(failure.getCause(), instanceOf(java.sql.SQLFeatureNotSupportedException.class));
+        assertThat(recording.events().contains("statement.legacyMaxRows:" + ((long) Integer.MAX_VALUE + 1)), is(false));
+        assertClosesInOwnershipOrderWithoutResult(recording.events());
+    }
+
+    @Test
+    void optionFailureIsTranslatedAndClosesThePreparedResources() {
+        SQLException optionFailure = new SQLException("fetch size failed", "42000", 91);
+        RecordingJdbc recording = new RecordingJdbc().failFetchSize(optionFailure);
+        JdbcClient client = new JdbcClientImpl(recording.dataSource());
+
+        DataException failure = assertThrows(DataException.class,
+                                             () -> client.create("select VALUE from TEST")
+                                                     .options(JdbcStatementOptions.builder().fetchSize(9).build())
+                                                     .map(String.class)
+                                                     .list());
+
+        assertThat(failure.getCause(), sameInstance(optionFailure));
+        assertThat(recording.events().contains("statement.execute"), is(false));
+        assertClosesInOwnershipOrderWithoutResult(recording.events());
     }
 
     @Test
@@ -168,7 +218,7 @@ class JdbcResourceOwnershipTest {
 
         client.create("select VALUE from TEST")
                 .map(String.class)
-                .visitAll(JdbcQueryRequest.visitAll(ignored -> { }));
+                .visitAll(JdbcResultRequest.visitAll(ignored -> { }));
 
         assertFalse(recording.events().stream().anyMatch(event -> event.startsWith("statement.fetchSize:")));
         assertFalse(recording.events().stream().anyMatch(event -> event.startsWith("statement.queryTimeout:")));
@@ -196,7 +246,7 @@ class JdbcResourceOwnershipTest {
         IllegalStateException actual = assertThrows(IllegalStateException.class,
                                                     () -> client.create("select VALUE from TEST")
                                                             .map(String.class)
-                                                            .visitAll(JdbcQueryRequest.visitAll(ignored -> {
+                                                            .visitAll(JdbcResultRequest.visitAll(ignored -> {
                                                                 throw expected;
                                                             })));
 
@@ -217,7 +267,7 @@ class JdbcResourceOwnershipTest {
                                                                 .map(row -> {
                                                                     throw expected;
                                                                 })
-                                                                .visitAll(JdbcQueryRequest.visitAll(ignored -> { })));
+                                                                .visitAll(JdbcResultRequest.visitAll(ignored -> { })));
 
         assertSame(expected, actual);
         assertClosesInOwnershipOrder(recording.events());
@@ -232,7 +282,7 @@ class JdbcResourceOwnershipTest {
         IllegalStateException actual = assertThrows(IllegalStateException.class,
                                                     () -> client.create("select VALUE from TEST")
                                                             .map(String.class)
-                                                            .visitWhile(JdbcQueryRequest.visitWhile(ignored -> {
+                                                            .visitWhile(JdbcResultRequest.visitWhile(ignored -> {
                                                                 throw expected;
                                                             })));
 
@@ -254,7 +304,7 @@ class JdbcResourceOwnershipTest {
         DataException actual = assertThrows(DataException.class,
                                             () -> client.create("select VALUE from TEST")
                                                     .map(String.class)
-                                                    .visitAll(JdbcQueryRequest.visitAll(ignored -> { })));
+                                                    .visitAll(JdbcResultRequest.visitAll(ignored -> { })));
 
         assertSame(readFailure, actual.getCause());
         assertTrue(actual.getMessage().contains("SQLState=42000"));
@@ -279,7 +329,7 @@ class JdbcResourceOwnershipTest {
         IllegalStateException actual = assertThrows(IllegalStateException.class,
                                                     () -> client.create("select VALUE from TEST")
                                                             .map(String.class)
-                                                            .visitAll(JdbcQueryRequest.visitAll(row -> {
+                                                            .visitAll(JdbcResultRequest.visitAll(row -> {
                                                                 throw expected;
                                                             })));
 
@@ -300,7 +350,7 @@ class JdbcResourceOwnershipTest {
         for (int i = 0; i < 20; i++) {
             assertFalse(client.create("select VALUE from TEST")
                                 .map(String.class)
-                                .visitWhile(JdbcQueryRequest.visitWhile(value -> {
+                                .visitWhile(JdbcResultRequest.visitWhile(value -> {
                                     consumed.incrementAndGet();
                                     return false;
                                 })));
@@ -333,7 +383,7 @@ class JdbcResourceOwnershipTest {
         });
 
         assertEquals(3, result);
-        assertThrows(IllegalStateException.class, () -> retained.get().get(1, String.class));
+        assertThrows(IllegalStateException.class, () -> retained.get().optional(1, String.class));
         assertEquals(4, recording.events().stream().filter("result.next"::equals).count());
         assertClosesInOwnershipOrder(recording.events());
     }
@@ -391,5 +441,9 @@ class JdbcResourceOwnershipTest {
     private static void assertClosesInOwnershipOrder(List<String> events) {
         assertTrue(events.indexOf("result.close") < events.indexOf("statement.close"), events::toString);
         assertTrue(events.indexOf("statement.close") < events.indexOf("connection.close"), events::toString);
+    }
+
+    private static void assertClosesInOwnershipOrderWithoutResult(List<String> events) {
+        assertThat(events.indexOf("statement.close"), lessThan(events.indexOf("connection.close")));
     }
 }

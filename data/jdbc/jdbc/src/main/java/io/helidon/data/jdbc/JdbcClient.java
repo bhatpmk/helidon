@@ -55,12 +55,11 @@ public interface JdbcClient {
     interface Statement {
 
         /**
-         * Applies per-execution statement options.
+         * Applies immutable options to this statement description.
          * <p>
-         * A setting embedded in a later {@link JdbcQueryRequest} overrides the corresponding value. An unset request
-         * setting preserves this value.
+         * Repeated calls overlay explicitly configured fields. No JDBC work is performed until a terminal operation.
          *
-         * @param options immutable execution options, must not be {@code null}
+         * @param options immutable statement options, must not be {@code null}
          * @return this statement stage
          * @throws NullPointerException if {@code options} is {@code null}
          * @throws IllegalStateException if a terminal operation has already started
@@ -82,13 +81,14 @@ public interface JdbcClient {
         /**
          * Binds a value using an explicit JDBC type.
          * <p>
-         * A {@code null} value is permitted by this overload and is passed through the typed JDBC binding path.
+         * Use this overload when the value requires an explicit JDBC type. SQL {@code NULL} is represented only by
+         * {@link #bindNull(int, SQLType)}.
          *
          * @param index one-based parameter position
-         * @param value value to bind, which may be {@code null}
+         * @param value value to bind, must not be {@code null}
          * @param type JDBC type, must not be {@code null}
          * @return this statement stage
-         * @throws NullPointerException if {@code type} is {@code null}
+         * @throws NullPointerException if {@code value} or {@code type} is {@code null}
          * @throws IllegalArgumentException if the index is invalid or the position was already bound
          * @throws IllegalStateException if a terminal operation has already started
          */
@@ -131,19 +131,6 @@ public interface JdbcClient {
         <R> R reduce(RowReducer<R> reducer);
 
         /**
-         * Executes a query and reduces all physical rows using invocation-specific statement settings.
-         *
-         * @param reducer result-set-scoped reducer, must not be {@code null}
-         * @param request regular query request, must not be {@code null}
-         * @param <R> logical result type
-         * @return reduced result
-         * @throws NullPointerException if {@code reducer} or {@code request} is {@code null}
-         * @throws IllegalStateException if this statement has already executed or has missing bindings
-         * @throws DataException if JDBC processing fails
-         */
-        <R> R reduce(RowReducer<R> reducer, JdbcQueryRequest request);
-
-        /**
          * Selects an explicit row mapper for a query.
          *
          * @param mapper mapper invoked once for each consumed row, must not be {@code null}
@@ -157,8 +144,9 @@ public interface JdbcClient {
         /**
          * Selects mapping of column one to a supported scalar type.
          * <p>
-         * This method never performs reflective bean or record mapping. A primitive class requires a non-null column;
-         * the corresponding wrapper class permits SQL {@code NULL}.
+         * This method never performs reflective bean or record mapping. Scalar mapping requires a non-null column for
+         * both primitive and reference classes. Applications that model SQL {@code NULL} use an explicit mapper with
+         * {@link Row#optional(int, Class)}.
          *
          * @param scalarType supported scalar class, must not be {@code null}
          * @param <T> mapped scalar type
@@ -184,6 +172,59 @@ public interface JdbcClient {
          * @throws IllegalStateException if this statement has already executed
          */
         <T> Rows<T> generatedKeys(RowMapper<T> mapper, String... columnNames);
+
+        /**
+         * Invokes an input-only stored procedure that must not produce result channels or output values.
+         *
+         * @param call immutable callable parameter layout, must not be {@code null}
+         * @throws NullPointerException if {@code call} is {@code null}
+         * @throws IllegalArgumentException if the layout is invalid for this statement
+         * @throws IllegalStateException if this statement has already executed or has missing bindings
+         * @throws DataException if preparation, execution, result validation, or cleanup fails
+         */
+        void call(JdbcCall call);
+
+        /**
+         * Invokes a stored procedure or function and returns its detached scalar output values.
+         * <p>
+         * This terminal accepts only OUT, INOUT, and function-return values that use supported scalar Java types. Cursor
+         * outputs and direct result channels require a callback-scoped call. The provider reads every value and closes
+         * all JDBC resources before this method returns.
+         *
+         * @param call immutable callable parameter layout, must not be {@code null}
+         * @return detached scalar output values
+         * @throws NullPointerException if {@code call} is {@code null}
+         * @throws IllegalArgumentException if the layout contains a cursor or has no scalar outputs
+         * @throws IllegalStateException if this statement has already executed or has missing bindings
+         * @throws DataException if execution produces a direct result channel or JDBC processing fails
+         */
+        CallOutputValues callForOutputs(JdbcCall call);
+
+        /**
+         * Invokes a stored procedure or function and consumes its results through a scoped callback.
+         *
+         * @param call immutable callable parameter layout, must not be {@code null}
+         * @param request immutable callback request, must not be {@code null}
+         * @throws NullPointerException if either argument is {@code null}
+         * @throws IllegalArgumentException if the layout is invalid for this statement
+         * @throws IllegalStateException if this statement has already executed or has missing bindings
+         * @throws DataException if preparation, execution, callback processing, or cleanup fails
+         */
+        void call(JdbcCall call, JdbcResultRequest.Call request);
+
+        /**
+         * Invokes a stored procedure or function and constructs a detached application result in a scoped callback.
+         *
+         * @param call immutable callable parameter layout, must not be {@code null}
+         * @param request immutable callback request, must not be {@code null}
+         * @param <R> detached result type
+         * @return callback result, never {@code null}
+         * @throws NullPointerException if either argument is {@code null}
+         * @throws IllegalArgumentException if the layout is invalid for this statement
+         * @throws IllegalStateException if this statement has already executed or has missing bindings
+         * @throws DataException if preparation, execution, callback processing, or cleanup fails
+         */
+        <R> R call(JdbcCall call, JdbcResultRequest.CallWith<R> request);
     }
 
     /**
@@ -199,26 +240,13 @@ public interface JdbcClient {
         /**
          * Returns exactly one mapped row.
          *
-         * @return the only row
+         * @return the only row, never {@code null}
          * @throws io.helidon.data.NoResultException if no row exists
          * @throws io.helidon.data.NonUniqueResultException if more than one row exists
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
         T one();
-
-        /**
-         * Returns exactly one mapped row using invocation-specific statement settings.
-         *
-         * @param request regular query request, must not be {@code null}
-         * @return the only row
-         * @throws NullPointerException if {@code request} is {@code null}
-         * @throws io.helidon.data.NoResultException if no row exists
-         * @throws io.helidon.data.NonUniqueResultException if more than one row exists
-         * @throws IllegalStateException if this stage has already executed
-         * @throws DataException if JDBC processing fails
-         */
-        T one(JdbcQueryRequest request);
 
         /**
          * Returns zero or one mapped row.
@@ -231,36 +259,13 @@ public interface JdbcClient {
         Optional<T> optional();
 
         /**
-         * Returns zero or one mapped row using invocation-specific statement settings.
-         *
-         * @param request regular query request, must not be {@code null}
-         * @return an optional containing the row, or empty when no row exists
-         * @throws NullPointerException if {@code request} is {@code null}
-         * @throws io.helidon.data.NonUniqueResultException if more than one row exists
-         * @throws IllegalStateException if this stage has already executed
-         * @throws DataException if JDBC processing fails
-         */
-        Optional<T> optional(JdbcQueryRequest request);
-
-        /**
          * Materializes all mapped rows in encounter order.
          *
-         * @return mapped rows; never {@code null}
+         * @return mapped rows without {@code null} elements; never {@code null}
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
         List<T> list();
-
-        /**
-         * Materializes all mapped rows using invocation-specific statement settings.
-         *
-         * @param request regular query request, must not be {@code null}
-         * @return mapped rows in encounter order; never {@code null}
-         * @throws NullPointerException if {@code request} is {@code null}
-         * @throws IllegalStateException if this stage has already executed
-         * @throws DataException if JDBC processing fails
-         */
-        List<T> list(JdbcQueryRequest request);
 
         /**
          * Visits every mapped row synchronously using constant result-buffer memory.
@@ -270,7 +275,7 @@ public interface JdbcClient {
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        void visitAll(JdbcQueryRequest.VisitAll<T> request);
+        void visitAll(JdbcResultRequest.VisitAll<T> request);
 
         /**
          * Visits mapped rows until exhaustion or until the predicate returns {@code false}.
@@ -281,14 +286,284 @@ public interface JdbcClient {
          * @throws IllegalStateException if this stage has already executed
          * @throws DataException if JDBC processing fails
          */
-        boolean visitWhile(JdbcQueryRequest.VisitWhile<T> request);
+        boolean visitWhile(JdbcResultRequest.VisitWhile<T> request);
+    }
+
+    /**
+     * Callback-scoped view of one stored-procedure or function invocation.
+     * <p>
+     * Direct JDBC result channels must be consumed or discarded before cursor and scalar outputs are accessed. This
+     * view exposes no JDBC object and becomes invalid when the enclosing call callback returns.
+     */
+    interface CallScope {
+        /**
+         * Returns the ordered direct result channels reported by callable execution.
+         *
+         * @return callback-scoped direct results
+         * @throws IllegalStateException if the call callback is no longer active
+         */
+        CallResults results();
+
+        /**
+         * Returns the declared cursor and scalar outputs.
+         *
+         * @return callback-scoped outputs
+         * @throws IllegalStateException if the call callback is no longer active
+         */
+        CallOutputs outputs();
+    }
+
+    /**
+     * Ordered direct result sets and update counts reported by a callable statement.
+     */
+    interface CallResults {
+        /**
+         * Visits every direct result channel in JDBC encounter order.
+         * <p>
+         * Each row channel must invoke exactly one mapping terminal or {@link CallRows#discard()} before the visitor
+         * returns from that channel.
+         *
+         * @param visitor result visitor, must not be {@code null}
+         * @throws NullPointerException if {@code visitor} is {@code null}
+         * @throws IllegalStateException if results were already consumed or the callback is no longer active
+         * @throws DataException if result advancement or cleanup fails
+         */
+        void visit(CallResultVisitor visitor);
+
+        /**
+         * Drains and closes every direct result channel.
+         *
+         * @throws IllegalStateException if results were already consumed or the callback is no longer active
+         * @throws DataException if result advancement or cleanup fails
+         */
+        void discard();
+    }
+
+    /**
+     * Synchronous visitor for direct callable result sets and update counts.
+     */
+    @FunctionalInterface
+    interface CallResultVisitor {
+        /**
+         * Visits one direct result set.
+         *
+         * @param resultSetIndex zero-based result-set index among direct row channels
+         * @param rows callback-scoped row-bearing channel
+         */
+        void rows(int resultSetIndex, CallRows rows);
+
+        /**
+         * Visits one direct update count.
+         * <p>
+         * The default implementation explicitly discards the count.
+         *
+         * @param itemIndex zero-based index among all direct result channels
+         * @param count large JDBC update count
+         */
+        default void updateCount(int itemIndex, long count) {
+        }
+    }
+
+    /**
+     * Unmapped, callback-scoped rows from a direct callable result or cursor output.
+     */
+    interface CallRows {
+        /**
+         * Selects an explicit mapper for this row channel.
+         *
+         * @param mapper row mapper, must not be {@code null}
+         * @param <T> mapped row type
+         * @return scoped mapped-row terminals
+         * @throws NullPointerException if {@code mapper} is {@code null}
+         * @throws IllegalStateException if this channel was already selected or is no longer active
+         */
+        <T> ScopedRows<T> map(RowMapper<T> mapper);
+
+        /**
+         * Selects non-null column-one scalar mapping for this row channel.
+         *
+         * @param scalarType supported scalar type, must not be {@code null}
+         * @param <T> mapped scalar type
+         * @return scoped mapped-row terminals
+         * @throws NullPointerException if {@code scalarType} is {@code null}
+         * @throws IllegalArgumentException if the scalar type is unsupported
+         * @throws IllegalStateException if this channel was already selected or is no longer active
+         */
+        <T> ScopedRows<T> map(Class<T> scalarType);
+
+        /**
+         * Explicitly discards this row channel without mapping it.
+         *
+         * @throws IllegalStateException if this channel was already selected or is no longer active
+         * @throws DataException if closing the channel fails
+         */
+        void discard();
+    }
+
+    /**
+     * Mapping, cardinality, reduction, and traversal terminals for one callback-scoped callable row channel.
+     * <p>
+     * Exactly one terminal may be invoked. The stage becomes invalid when its terminal completes or the enclosing call
+     * callback returns, whichever happens first.
+     *
+     * @param <T> mapped row type
+     */
+    interface ScopedRows<T> {
+        /**
+         * Returns exactly one mapped row.
+         *
+         * @return the only row, never {@code null}
+         */
+        T one();
+
+        /**
+         * Returns zero or one mapped row.
+         *
+         * @return optional mapped row
+         */
+        Optional<T> optional();
+
+        /**
+         * Materializes all mapped rows in encounter order.
+         *
+         * @return detached mapped rows without {@code null} elements
+         */
+        List<T> list();
+
+        /**
+         * Reduces all physical rows into one detached value.
+         *
+         * @param reducer result-set-scoped reducer, must not be {@code null}
+         * @param <R> reduced result type
+         * @return detached reduced result, never {@code null}
+         */
+        <R> R reduce(RowReducer<R> reducer);
+
+        /**
+         * Visits every mapped row synchronously.
+         *
+         * @param request visit-all request, must not be {@code null}
+         */
+        void visitAll(JdbcResultRequest.VisitAll<T> request);
+
+        /**
+         * Visits rows until exhaustion or predicate-directed termination.
+         *
+         * @param request visit-while request, must not be {@code null}
+         * @return {@code true} after exhaustion, or {@code false} after normal early termination
+         */
+        boolean visitWhile(JdbcResultRequest.VisitWhile<T> request);
+
+        /**
+         * Explicitly discards all rows in this channel.
+         */
+        void discard();
+    }
+
+    /**
+     * Scalar OUT, INOUT, and function-return values from a callable statement.
+     * <p>
+     * A value returned by {@link Statement#callForOutputs(JdbcCall)} is detached and remains valid after the terminal
+     * closes its JDBC resources. The callback-scoped {@link CallOutputs} subtype additionally enforces callable result
+     * ordering while its owning callback remains active.
+     */
+    interface CallOutputValues {
+        /**
+         * Reads a required scalar output by logical name.
+         *
+         * @param name declared output name, must not be {@code null} or blank
+         * @param type declared output Java type, must not be {@code null}
+         * @param <T> output type
+         * @return non-null output value
+         */
+        <T> T required(String name, Class<T> type);
+
+        /**
+         * Reads a required scalar output by one-based JDBC position.
+         *
+         * @param index declared output position
+         * @param type declared output Java type, must not be {@code null}
+         * @param <T> output type
+         * @return non-null output value
+         */
+        <T> T required(int index, Class<T> type);
+
+        /**
+         * Reads a nullable scalar output by logical name.
+         *
+         * @param name declared output name, must not be {@code null} or blank
+         * @param type declared output Java type, must not be {@code null}
+         * @param <T> output type
+         * @return optional output value
+         */
+        <T> Optional<T> optional(String name, Class<T> type);
+
+        /**
+         * Reads a nullable scalar output by one-based JDBC position.
+         *
+         * @param index declared output position
+         * @param type declared output Java type, must not be {@code null}
+         * @param <T> output type
+         * @return optional output value
+         */
+        <T> Optional<T> optional(int index, Class<T> type);
+    }
+
+    /**
+     * Callback-scoped cursor and scalar outputs from a callable statement.
+     * <p>
+     * Direct results must be complete before any output is accessed. Cursor outputs are consumed or discarded one at a
+     * time before scalar outputs are read. This ordering avoids driver behavior that invalidates open result sets when
+     * an OUT value is accessed.
+     */
+    interface CallOutputs extends CallOutputValues {
+
+        /**
+         * Opens a declared cursor output by logical name.
+         *
+         * @param name declared cursor name, must not be {@code null} or blank
+         * @return callback-scoped cursor rows
+         */
+        CallRows cursor(String name);
+
+        /**
+         * Opens a declared cursor output by one-based JDBC position.
+         *
+         * @param index declared cursor position
+         * @return callback-scoped cursor rows
+         */
+        CallRows cursor(int index);
+
+        /**
+         * Retrieves and closes a declared cursor output without consuming rows.
+         *
+         * @param name declared cursor name, must not be {@code null} or blank
+         */
+        void discardCursor(String name);
+
+        /**
+         * Retrieves and closes a declared cursor output without consuming rows.
+         *
+         * @param index declared cursor position
+         */
+        void discardCursor(int index);
     }
 
     /**
      * Maps one callback-scoped row to an application value.
+     * <p>
+     * Applications may register an implementation as a service. A generated declarative repository resolves a mapper
+     * selected by {@code Jdbc.RowMapper(SomeMapper.class)} by its concrete service type. The marker form
+     * {@code Jdbc.RowMapper} requires this contract with the exact {@code T} type. For an unannotated, non-scalar query,
+     * the repository also resolves a mapper by this generic contract, but the service is optional when the generator can
+     * map a record directly. A present service overrides the generated record mapper.
+     * <p>
+     * A mapper held by a singleton repository can be invoked concurrently and therefore must be stateless or
+     * thread-safe. The provider owns the JDBC resources and exposes only the callback-scoped {@link Row} view.
      *
      * @param <T> mapped value type
      */
+    @Service.Contract
     @FunctionalInterface
     interface RowMapper<T> {
 
@@ -298,7 +573,7 @@ public interface JdbcClient {
          * The row is valid only for this invocation and must not be retained.
          *
          * @param row current row, never {@code null}
-         * @return mapped value
+         * @return mapped value, never {@code null}
          */
         T map(Row row);
     }
@@ -328,7 +603,7 @@ public interface JdbcClient {
          * <p>
          * This method is not invoked when row traversal or {@link #accept(Row)} fails.
          *
-         * @return logical result
+         * @return logical result, never {@code null}
          */
         R finish();
     }
@@ -342,28 +617,32 @@ public interface JdbcClient {
     interface Row {
 
         /**
-         * Reads a nullable value by one-based column index.
+         * Reads an optional value by one-based column index.
          *
          * @param index one-based result column index
          * @param type supported target scalar type, must not be {@code null}
          * @param <T> target type
-         * @return converted value, or {@code null} for SQL {@code NULL}
+         * @return converted value, or an empty optional for SQL {@code NULL}
+         * @throws NullPointerException if {@code type} is {@code null}
+         * @throws IllegalArgumentException if the index or target type is unsupported
          * @throws DataException if the value cannot be read or converted
          * @throws IllegalStateException if this row is no longer callback-scoped
          */
-        <T> T get(int index, Class<T> type);
+        <T> Optional<T> optional(int index, Class<T> type);
 
         /**
-         * Reads a nullable value by column label.
+         * Reads an optional value by column label.
          *
          * @param label result column label, must not be {@code null} or blank
          * @param type supported target scalar type, must not be {@code null}
          * @param <T> target type
-         * @return converted value, or {@code null} for SQL {@code NULL}
+         * @return converted value, or an empty optional for SQL {@code NULL}
+         * @throws NullPointerException if {@code label} or {@code type} is {@code null}
+         * @throws IllegalArgumentException if the label is blank or the target type is unsupported
          * @throws DataException if the label is absent or the value cannot be read or converted
          * @throws IllegalStateException if this row is no longer callback-scoped
          */
-        <T> T get(String label, Class<T> type);
+        <T> Optional<T> optional(String label, Class<T> type);
 
         /**
          * Reads a required value by one-based column index.
@@ -372,6 +651,8 @@ public interface JdbcClient {
          * @param type supported target scalar type, must not be {@code null}
          * @param <T> target type
          * @return non-null converted value
+         * @throws NullPointerException if {@code type} is {@code null}
+         * @throws IllegalArgumentException if the index or target type is unsupported
          * @throws DataException if the value is SQL {@code NULL}, cannot be read, or cannot be converted
          * @throws IllegalStateException if this row is no longer callback-scoped
          */
@@ -384,6 +665,8 @@ public interface JdbcClient {
          * @param type supported target scalar type, must not be {@code null}
          * @param <T> target type
          * @return non-null converted value
+         * @throws NullPointerException if {@code label} or {@code type} is {@code null}
+         * @throws IllegalArgumentException if the label is blank or the target type is unsupported
          * @throws DataException if the label is absent, the value is SQL {@code NULL}, or conversion fails
          * @throws IllegalStateException if this row is no longer callback-scoped
          */

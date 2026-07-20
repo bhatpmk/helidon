@@ -33,7 +33,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -69,9 +68,14 @@ class JdbcRunnerTest {
                              .one());
         assertThrows(NonUniqueResultException.class,
                      () -> client.create("SELECT NAME FROM USERS").map(String.class).one());
-        assertNull(client.create("SELECT CAST(NULL AS BIGINT)").map(Long.class).one());
+        assertThrows(DataException.class,
+                     () -> client.create("SELECT CAST(NULL AS BIGINT)").map(Long.class).one());
         assertThrows(DataException.class,
                      () -> client.create("SELECT CAST(NULL AS BIGINT)").map(long.class).one());
+        assertEquals(Optional.empty(),
+                     client.create("SELECT CAST(NULL AS BIGINT)")
+                             .map(row -> row.optional(1, Long.class))
+                             .one());
     }
 
     @Test
@@ -97,31 +101,30 @@ class JdbcRunnerTest {
                 .bindNull(1, JDBCType.VARCHAR)
                 .generatedKeys(row -> row.required("ID", Long.class), "ID")
                 .one();
-        assertNull(client.create("SELECT NAME FROM USERS WHERE ID = ?")
-                           .bind(1, nullNameId)
-                           .map(String.class)
-                           .one());
+        assertEquals(Optional.empty(),
+                     client.create("SELECT NAME FROM USERS WHERE ID = ?")
+                             .bind(1, nullNameId)
+                             .map(row -> row.optional(1, String.class))
+                             .one());
     }
 
     @Test
-    void appliesRegularRequestsToCardinalityAndGeneratedKeyTerminals() {
-        JdbcQueryRequest request = JdbcQueryRequest.builder().fetchSize(8).build();
-
+    void supportsCardinalityAndGeneratedKeyTerminals() {
         assertEquals(List.of("Ada", "Grace", "Linus"),
-                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list(request));
+                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list());
         assertEquals(Optional.of("Ada"),
                      client.create("SELECT NAME FROM USERS WHERE ID = 1")
                              .map(String.class)
-                             .optional(JdbcQueryRequest.defaults()));
+                             .optional());
         assertEquals("Grace",
                      client.create("SELECT NAME FROM USERS WHERE ID = 2")
                              .map(String.class)
-                             .one(request));
+                             .one());
 
         long id = client.create("INSERT INTO USERS (NAME) VALUES (?)")
                 .bind(1, "Edsger")
                 .generatedKeys(row -> row.required(1, Long.class))
-                .one(request);
+                .one();
         assertEquals("Edsger",
                      client.create("SELECT NAME FROM USERS WHERE ID = ?")
                              .bind(1, id)
@@ -152,7 +155,7 @@ class JdbcRunnerTest {
     }
 
     @Test
-    void appliesARegularRequestToReduction() {
+    void reducesRows() {
         int count = client.create("SELECT ID FROM USERS ORDER BY ID")
                 .reduce(new JdbcClient.RowReducer<>() {
                     private int rows;
@@ -167,9 +170,31 @@ class JdbcRunnerTest {
                     public Integer finish() {
                         return rows;
                     }
-                }, JdbcQueryRequest.builder().fetchSize(4).build());
+                });
 
         assertEquals(3, count);
+    }
+
+    @Test
+    void rejectsNullMapperAndReducerResults() {
+        assertThrows(DataException.class,
+                     () -> client.create("SELECT ID FROM USERS WHERE ID = 1")
+                             .map(row -> null)
+                             .one());
+
+        assertThrows(DataException.class,
+                     () -> client.create("SELECT ID FROM USERS WHERE ID = 1")
+                             .reduce(new JdbcClient.RowReducer<>() {
+                                 @Override
+                                 public void accept(JdbcClient.Row row) {
+                                     row.required(1, Long.class);
+                                 }
+
+                                 @Override
+                                 public Object finish() {
+                                     return null;
+                                 }
+                             }));
     }
 
     @Test
@@ -177,13 +202,13 @@ class JdbcRunnerTest {
         List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
-                .visitAll(JdbcQueryRequest.visitAll(pushed::add));
+                .visitAll(JdbcResultRequest.visitAll(pushed::add));
         assertEquals(List.of("Ada", "Grace", "Linus"), pushed);
 
         List<String> stopped = new ArrayList<>();
         boolean exhausted = client.create("SELECT NAME FROM USERS ORDER BY ID")
                 .map(String.class)
-                .visitWhile(JdbcQueryRequest.visitWhile(value -> {
+                .visitWhile(JdbcResultRequest.visitWhile(value -> {
                     stopped.add(value);
                     return stopped.size() < 2;
                 }));
@@ -194,18 +219,15 @@ class JdbcRunnerTest {
     @Test
     void reusesAnImmutableRequestAcrossSequentialExecutions() {
         List<String> values = new ArrayList<>();
-        JdbcQueryRequest.VisitAll<String> request = JdbcQueryRequest.visitAll(values::add);
+        JdbcResultRequest.VisitAll<String> request = JdbcResultRequest.visitAll(values::add);
 
         client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).visitAll(request);
         client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).visitAll(request);
 
         assertEquals(List.of("Ada", "Grace", "Linus", "Ada", "Grace", "Linus"), values);
 
-        JdbcQueryRequest regular = JdbcQueryRequest.builder().fetchSize(2).build();
         assertEquals(List.of("Ada", "Grace", "Linus"),
-                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list(regular));
-        assertEquals(List.of("Ada", "Grace", "Linus"),
-                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list(regular));
+                     client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class).list());
     }
 
     @Test
@@ -213,12 +235,12 @@ class JdbcRunnerTest {
         List<String> pushed = new ArrayList<>();
         client.create("SELECT NAME FROM USERS WHERE ID < 0")
                 .map(String.class)
-                .visitAll(JdbcQueryRequest.visitAll(pushed::add));
+                .visitAll(JdbcResultRequest.visitAll(pushed::add));
         assertTrue(pushed.isEmpty());
 
         assertTrue(client.create("SELECT NAME FROM USERS WHERE ID < 0")
                            .map(String.class)
-                           .visitWhile(JdbcQueryRequest.visitWhile(value -> false)));
+                           .visitWhile(JdbcResultRequest.visitWhile(value -> false)));
     }
 
     @Test
@@ -227,15 +249,14 @@ class JdbcRunnerTest {
 
         assertThrows(NullPointerException.class, () -> rows.visitAll(null));
         List<String> values = new ArrayList<>();
-        rows.visitAll(JdbcQueryRequest.visitAll(values::add));
+        rows.visitAll(JdbcResultRequest.visitAll(values::add));
 
         assertEquals(List.of("Ada", "Grace", "Linus"), values);
         assertThrows(IllegalStateException.class,
-                     () -> rows.visitAll(JdbcQueryRequest.visitAll(ignored -> { })));
+                     () -> rows.visitAll(JdbcResultRequest.visitAll(ignored -> { })));
 
         JdbcClient.Rows<String> regularRows = client.create("SELECT NAME FROM USERS ORDER BY ID").map(String.class);
-        assertThrows(NullPointerException.class, () -> regularRows.list(null));
-        assertEquals(List.of("Ada", "Grace", "Linus"), regularRows.list(JdbcQueryRequest.defaults()));
+        assertEquals(List.of("Ada", "Grace", "Linus"), regularRows.list());
     }
 
     @Test
@@ -247,7 +268,7 @@ class JdbcRunnerTest {
                     return row.required(1, Long.class);
                 })
                 .one();
-        assertThrows(IllegalStateException.class, () -> retainedRow.get().get(1, Long.class));
+        assertThrows(IllegalStateException.class, () -> retainedRow.get().optional(1, Long.class));
 
     }
 
@@ -265,6 +286,9 @@ class JdbcRunnerTest {
                      () -> client.create("SELECT NAME FROM USERS WHERE ID = ?").bind(2, 1L));
         assertThrows(NullPointerException.class,
                      () -> client.create("SELECT NAME FROM USERS WHERE ID = ?").bind(1, null));
+        assertThrows(NullPointerException.class,
+                     () -> client.create("SELECT NAME FROM USERS WHERE ID = ?")
+                             .bind(1, null, JDBCType.BIGINT));
         assertThrows(IllegalArgumentException.class,
                      () -> client.create("INSERT INTO USERS (NAME) VALUES ('duplicate key names')")
                              .generatedKeys(row -> row.required(1, Long.class), "ID", "id"));

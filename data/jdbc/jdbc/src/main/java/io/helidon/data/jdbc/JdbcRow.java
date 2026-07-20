@@ -30,6 +30,7 @@ import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -83,6 +84,14 @@ final class JdbcRow implements JdbcClient.Row {
         return SUPPORTED_TYPES.contains(normalized(type));
     }
 
+    static Class<?> normalizedScalar(Class<?> type) {
+        Class<?> normalized = normalized(type);
+        if (!SUPPORTED_TYPES.contains(normalized)) {
+            throw new IllegalArgumentException("Unsupported JDBC scalar type: " + type.getTypeName());
+        }
+        return normalized;
+    }
+
     void activate() {
         active = true;
     }
@@ -92,25 +101,27 @@ final class JdbcRow implements JdbcClient.Row {
     }
 
     @Override
-    public <T> T get(int index, Class<T> type) {
+    public <T> Optional<T> optional(int index, Class<T> type) {
         ensureActive();
         validateIndex(index);
-        return read(index, type);
+        return Optional.ofNullable(read(index, type));
     }
 
     @Override
-    public <T> T get(String label, Class<T> type) {
+    public <T> Optional<T> optional(String label, Class<T> type) {
         ensureActive();
         Objects.requireNonNull(label, "Column label must not be null");
         if (label.isBlank()) {
             throw new IllegalArgumentException("Column label must not be blank");
         }
-        return read(columns.index(label), type);
+        return Optional.ofNullable(read(columns.index(label), type));
     }
 
     @Override
     public <T> T required(int index, Class<T> type) {
-        T value = get(index, type);
+        ensureActive();
+        validateIndex(index);
+        T value = read(index, type);
         if (value == null) {
             throw new DataException("Required result column " + index + " contains SQL NULL");
         }
@@ -119,7 +130,12 @@ final class JdbcRow implements JdbcClient.Row {
 
     @Override
     public <T> T required(String label, Class<T> type) {
-        T value = get(label, type);
+        ensureActive();
+        Objects.requireNonNull(label, "Column label must not be null");
+        if (label.isBlank()) {
+            throw new IllegalArgumentException("Column label must not be blank");
+        }
+        T value = read(columns.index(label), type);
         if (value == null) {
             throw new DataException("Required result column '" + label + "' contains SQL NULL");
         }

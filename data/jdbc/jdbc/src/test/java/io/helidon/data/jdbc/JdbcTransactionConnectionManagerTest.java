@@ -47,7 +47,7 @@ class JdbcTransactionConnectionManagerTest {
             assertSame(physical, second.connection());
         }
 
-        JdbcClient client = new JdbcClientImpl(dataSource, JdbcStatementOptions.EMPTY, manager);
+        JdbcClient client = new JdbcClientImpl(dataSource, manager);
         assertEquals(1, client.create("INSERT INTO ITEMS VALUES (?)").bind(1, 1).execute());
         manager.commit("tx-1");
         manager.end();
@@ -63,7 +63,7 @@ class JdbcTransactionConnectionManagerTest {
         JdbcTransactionConnectionManager manager = new JdbcTransactionConnectionManager();
         manager.start("jdbc");
         manager.begin("tx-2");
-        JdbcClient client = new JdbcClientImpl(firstDataSource, JdbcStatementOptions.EMPTY, manager);
+        JdbcClient client = new JdbcClientImpl(firstDataSource, manager);
         client.create("INSERT INTO ITEMS VALUES (?)").bind(1, 1).execute();
 
         assertThrows(DataException.class, () -> manager.acquire(secondDataSource));
@@ -120,18 +120,18 @@ class JdbcTransactionConnectionManagerTest {
         JdbcTransactionConnectionManager manager = new JdbcTransactionConnectionManager();
         manager.start("jdbc");
         manager.begin("streaming");
-        JdbcClient client = new JdbcClientImpl(dataSource, JdbcStatementOptions.EMPTY, manager);
+        JdbcClient client = new JdbcClientImpl(dataSource, manager);
 
         List<String> pushed = new ArrayList<>();
         client.create("select VALUE from TEST")
                 .map(String.class)
-                .visitAll(JdbcQueryRequest.visitAll(pushed::add));
+                .visitAll(JdbcResultRequest.visitAll(pushed::add));
         assertFalse(client.create("select VALUE from TEST")
                             .map(String.class)
-                            .visitWhile(JdbcQueryRequest.visitWhile(value -> false)));
+                            .visitWhile(JdbcResultRequest.visitWhile(value -> false)));
         List<String> materialized = client.create("select VALUE from TEST")
                 .map(String.class)
-                .list(JdbcQueryRequest.builder().fetchSize(2).build());
+                .list();
         int reduced = client.create("select VALUE from TEST").reduce(new JdbcClient.RowReducer<>() {
             private int count;
 
@@ -160,6 +160,29 @@ class JdbcTransactionConnectionManagerTest {
         assertEquals(1, recording.events().stream().filter("connection.close"::equals).count());
         assertTrue(recording.events().indexOf("statement.close")
                            < recording.events().indexOf("connection.commit"));
+    }
+
+    @Test
+    void callableTerminalUsesTheTransactionOwnedConnection() {
+        RecordingJdbc recording = new RecordingJdbc();
+        var dataSource = recording.dataSource();
+        JdbcTransactionConnectionManager manager = new JdbcTransactionConnectionManager();
+        manager.start("jdbc");
+        manager.begin("call");
+        JdbcClient client = new JdbcClientImpl(dataSource, manager);
+
+        client.create("{call NOTIFY(?)}")
+                .bind(1, "ready")
+                .call(JdbcCall.builder().in(1).build());
+
+        assertEquals(1, recording.events().stream().filter("call.close"::equals).count());
+        assertFalse(recording.events().contains("connection.close"));
+
+        manager.commit("call");
+        manager.end();
+
+        assertEquals(1, recording.events().stream().filter("connection.close"::equals).count());
+        assertTrue(recording.events().indexOf("call.close") < recording.events().indexOf("connection.commit"));
     }
 
     private static JdbcDataSource initializedDataSource(String name) {

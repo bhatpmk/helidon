@@ -22,8 +22,8 @@ import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 class JdbcClientApiTest {
 
@@ -31,12 +31,17 @@ class JdbcClientApiTest {
     void exposesOnlyApprovedTopLevelApiTypes() {
         Set<Class<?>> publicTypes = Arrays.stream(new Class<?>[] {
                         JdbcClient.class,
-                        JdbcQueryRequest.class,
+                        Jdbc.class,
+                        JdbcCall.class,
+                        JdbcResultRequest.class,
                         JdbcStatementOptions.class,
                         JdbcClientImpl.class,
                         JdbcStatement.class,
                         JdbcRows.class,
                         JdbcRunner.class,
+                        JdbcQueryHandler.class,
+                        JdbcUpdateHandler.class,
+                        JdbcCallHandler.class,
                         JdbcRow.class,
                         JdbcColumnLayout.class,
                         JdbcConnectionLease.class,
@@ -48,11 +53,17 @@ class JdbcClientApiTest {
                 .filter(type -> Modifier.isPublic(type.getModifiers()))
                 .collect(Collectors.toSet());
 
-        assertEquals(Set.of(JdbcClient.class,
-                            JdbcQueryRequest.class,
-                            JdbcStatementOptions.class,
-                            JdbcPersistenceUnitConfig.class),
-                     publicTypes);
-        assertTrue(JdbcClient.class.isInterface());
+        assertThat(publicTypes,
+                   is(Set.of(JdbcClient.class,
+                             Jdbc.class,
+                             JdbcCall.class,
+                             JdbcResultRequest.class,
+                             JdbcStatementOptions.class,
+                             JdbcPersistenceUnitConfig.class)));
+        assertThat(JdbcClient.class.isInterface(), is(true));
+        assertThat(Arrays.stream(JdbcClient.Row.class.getDeclaredMethods())
+                           .map(java.lang.reflect.Method::getName)
+                           .collect(Collectors.toSet()),
+                   is(Set.of("optional", "required")));
     }
 }

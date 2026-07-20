@@ -15,7 +15,6 @@
  */
 package io.helidon.data.jdbc.codegen;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -62,15 +61,19 @@ final class JdbcMethodPlan {
     private final MappingKind mappingKind;
     private final TypeName mappedType;
     private final TypedElementInfo requestParameter;
+    private final TypedElementInfo optionsParameter;
     private final RequestKind requestKind;
     private final JdbcSqlParameterPlan parameterPlan;
+    private final JdbcCallParameterPlan callParameterPlan;
+    private final JdbcCallResultPlan callResultPlan;
     private final List<String> generatedColumns;
     private final List<String> aliases;
-    private final List<BeanMapping> beanMappings;
+    private final List<String> identityPaths;
     private final TypeName explicitMapper;
     private final TypeName explicitReducer;
     private String sqlFieldName;
     private String mapperFieldName;
+    private String callFieldName;
 
     private JdbcMethodPlan(TypedElementInfo method,
                            Operation operation,
@@ -78,11 +81,14 @@ final class JdbcMethodPlan {
                            MappingKind mappingKind,
                            TypeName mappedType,
                            TypedElementInfo requestParameter,
+                           TypedElementInfo optionsParameter,
                            RequestKind requestKind,
                            JdbcSqlParameterPlan parameterPlan,
+                           JdbcCallParameterPlan callParameterPlan,
+                           JdbcCallResultPlan callResultPlan,
                            List<String> generatedColumns,
                            List<String> aliases,
-                           List<BeanMapping> beanMappings,
+                           List<String> identityPaths,
                            TypeName explicitMapper,
                            TypeName explicitReducer) {
         this.method = method;
@@ -91,158 +97,256 @@ final class JdbcMethodPlan {
         this.mappingKind = mappingKind;
         this.mappedType = mappedType;
         this.requestParameter = requestParameter;
+        this.optionsParameter = optionsParameter;
         this.requestKind = requestKind;
         this.parameterPlan = parameterPlan;
+        this.callParameterPlan = callParameterPlan;
+        this.callResultPlan = callResultPlan;
         this.generatedColumns = generatedColumns;
         this.aliases = aliases;
-        this.beanMappings = beanMappings;
+        this.identityPaths = identityPaths;
         this.explicitMapper = explicitMapper;
         this.explicitReducer = explicitReducer;
     }
 
-    // This method validates the annotations, parameters, return shape, mapping, generated keys, etc.
-    // during the code generation.
-    //
-    // A note about return type
-    // `one()`, `optional()`, and `list()` come from the return type.
-    // `JdbcQueryRequest.VisitAll<T>` selects `visitAll(...)` and requires `void`.
-    // `JdbcQueryRequest.VisitWhile<T>` selects `visitWhile(...)` and requires primitive `boolean`.
-    // Updates require primitive `long` or `void`.
+    // Validates the complete repository contract before any source is emitted. Return cardinality selects one(),
+    // optional(), or list(); a leading JdbcResultRequest selects traversal; and update methods return void, int, or long.
     static JdbcMethodPlan create(TypedElementInfo method, CodegenContext context) {
-        boolean query = method.hasAnnotation(JdbcCodegenTypes.DATA_QUERY);
-        boolean update = method.hasAnnotation(JdbcCodegenTypes.DATA_UPDATE);
-        if (query == update) {
-            throw failure(method, query
-                    ? "A repository method cannot combine @Data.Query and @Data.Update"
-                    : "An abstract JDBC repository method requires @Data.Query or @Data.Update");
-        }
-
-        Operation operation = query ? Operation.QUERY : Operation.UPDATE;
-        Annotation statementAnnotation = method.annotation(query
-                                                                    ? JdbcCodegenTypes.DATA_QUERY
-                                                                    : JdbcCodegenTypes.DATA_UPDATE);
+        Annotation statementAnnotation = method.findAnnotation(JdbcCodegenTypes.JDBC_STATEMENT)
+                .orElseThrow(() -> failure(method, "An abstract JDBC repository method requires @Jdbc.Statement"));
         String sql = statementAnnotation.stringValue()
                 .orElseThrow(() -> failure(method, "SQL annotation value is missing"));
-
-        boolean generatedKeys = method.hasAnnotation(JdbcCodegenTypes.DATA_GENERATED_KEYS);
-        if (generatedKeys && operation != Operation.UPDATE) {
-            throw failure(method, "@Data.GeneratedKeys is legal only with @Data.Update");
-        }
-        if (generatedKeys) {
-            operation = Operation.GENERATED_KEYS;
+        if (sql.isBlank()) {
+            throw failure(method, "@Jdbc.Statement SQL must not be blank");
         }
 
         List<TypedElementInfo> parameters = method.parameterArguments();
-        Request request = request(parameters, method);
-        int firstBindable = request.parameter() == null ? 0 : 1;
+        InvocationControl control = invocationControl(parameters, method);
+        Request request = control.request();
+        Return returnPlan = returnPlan(method, request);
+
+        int firstBindable = control.present() ? 1 : 0;
         List<TypedElementInfo> bindable = List.copyOf(parameters.subList(firstBindable, parameters.size()));
 
-        // We need compile time correspondence between named markers and method parameters
-        JdbcSqlParameterPlan parameterPlan = JdbcSqlParameterPlan.create(sql, bindable, method);
-
-        Return returnPlan = returnPlan(method, request);
+        List<String> identityPaths = identityPaths(method);
+        boolean identityReduction = !identityPaths.isEmpty();
+        Annotation rowMapperAnnotation = method.findAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER).orElse(null);
+        boolean rowMapperRequested = rowMapperAnnotation != null;
+        TypeName explicitMapper = rowMapperAnnotation == null
+                ? null
+                : rowMapperAnnotation.typeValue()
+                        .filter(type -> !TypeNames.BOXED_VOID.equals(type))
+                        .orElse(null);
+        TypeName explicitReducer = method.findAnnotation(JdbcCodegenTypes.JDBC_ROW_REDUCER)
+                .flatMap(Annotation::typeValue)
+                .orElse(null);
+        boolean generatedKeys = method.hasAnnotation(JdbcCodegenTypes.JDBC_GENERATED_KEYS);
+        boolean callableAnnotations = JdbcCallParameterPlan.callableAnnotations(method);
+        OperationEvidence evidence = new OperationEvidence(generatedKeys,
+                                                           identityReduction,
+                                                           rowMapperRequested,
+                                                           explicitReducer != null,
+                                                           callableAnnotations);
+        Operation operation = operation(method, returnPlan, request, evidence);
+        if (generatedKeys) {
+            if (operation != Operation.UPDATE) {
+                throw failure(method, "@Jdbc.GeneratedKeys requires UPDATE execution");
+            }
+            operation = Operation.GENERATED_KEYS;
+        }
         validateOperationReturn(method, operation, returnPlan, request);
 
-        List<BeanMapping> beanMappings = beanMappings(method);
-        TypeName explicitMapper = method.findAnnotation(JdbcCodegenTypes.DATA_ROW_MAPPER)
-                .flatMap(Annotation::typeValue)
-                .orElse(null);
-        TypeName explicitReducer = method.findAnnotation(JdbcCodegenTypes.DATA_ROW_REDUCER)
-                .flatMap(Annotation::typeValue)
-                .orElse(null);
-        ExplicitMapping explicitMapping = new ExplicitMapping(explicitMapper, explicitReducer);
-        if (explicitReducer != null && (explicitMapper != null || !beanMappings.isEmpty())) {
-            throw failure(method, "@Data.RowReducer cannot be combined with @Data.RowMapper or @Data.BeanMapping");
+        if (callableAnnotations && operation != Operation.CALL) {
+            throw failure(method, "JDBC callable parameter annotations require CALL execution");
         }
-        if (explicitMapper != null && !beanMappings.isEmpty()) {
-            throw failure(method, "@Data.RowMapper and @Data.BeanMapping cannot be combined");
+
+        JdbcCallParameterPlan callParameterPlan = operation == Operation.CALL
+                ? JdbcCallParameterPlan.create(sql, bindable, method)
+                : null;
+        JdbcSqlParameterPlan parameterPlan = operation == Operation.CALL
+                ? null
+                : JdbcSqlParameterPlan.create(sql, bindable, method);
+        JdbcCallResultPlan callResultPlan = operation == Operation.CALL
+                ? JdbcCallResultPlan.create(method, context, callParameterPlan, request.call())
+                : null;
+
+        ExplicitMapping explicitMapping = new ExplicitMapping(rowMapperRequested, explicitMapper, explicitReducer);
+        if (explicitReducer != null && (rowMapperRequested || identityReduction)) {
+            throw failure(method, "@Jdbc.RowReducer cannot be combined with @Jdbc.RowMapper "
+                    + "or @Jdbc.IdentityReducer");
+        }
+        if (rowMapperRequested && identityReduction) {
+            throw failure(method, "@Jdbc.RowMapper and @Jdbc.IdentityReducer cannot be combined");
         }
         if (operation == Operation.UPDATE
-                && (!beanMappings.isEmpty() || explicitMapper != null || explicitReducer != null)) {
+                && (identityReduction || rowMapperRequested || explicitReducer != null)) {
             throw failure(method, "Result mapping annotations are not legal on an update-count method");
         }
+        if (operation == Operation.CALL
+                && (identityReduction || rowMapperRequested || explicitReducer != null)) {
+            throw failure(method, "CALL execution does not support repository-level row mapping annotations; "
+                    + "map each scoped result channel inside the call callback");
+        }
+        if (identityReduction && operation != Operation.QUERY) {
+            throw failure(method, "@Jdbc.IdentityReducer is legal only for QUERY execution");
+        }
+        if (identityReduction && request.traversal()) {
+            throw failure(method, "@Jdbc.IdentityReducer cannot use a JDBC query traversal request");
+        }
         if (explicitReducer != null && operation != Operation.QUERY) {
-            throw failure(method, "@Data.RowReducer is legal only on @Data.Query methods");
+            throw failure(method, "@Jdbc.RowReducer is legal only for QUERY execution");
         }
         if (explicitReducer != null && request.traversal()) {
-            throw failure(method, "@Data.RowReducer cannot use a JDBC query traversal request");
+            throw failure(method, "@Jdbc.RowReducer cannot use a JDBC query traversal request");
         }
 
         List<String> generatedColumns = generatedKeys
-                ? method.annotation(JdbcCodegenTypes.DATA_GENERATED_KEYS).stringValues().orElse(List.of())
+                ? method.annotation(JdbcCodegenTypes.JDBC_GENERATED_KEYS).stringValues().orElse(List.of())
                 : List.of();
         if (generatedColumns.stream().anyMatch(String::isBlank)) {
-            throw failure(method, "@Data.GeneratedKeys column names must not be blank");
+            throw failure(method, "@Jdbc.GeneratedKeys column names must not be blank");
         }
-        List<String> aliases = generatedKeys
+        List<String> aliases = operation == Operation.CALL
+                ? List.of()
+                : generatedKeys
                 ? generatedColumns
                 : JdbcProjectionAliasLexer.aliases(sql);
         Set<String> normalizedAliases = new HashSet<>();
         if (aliases.stream().map(alias -> alias.toLowerCase(Locale.ROOT)).anyMatch(alias -> !normalizedAliases.add(alias))) {
             throw failure(method, "Duplicate result column alias or generated-key column");
         }
-        MappingKind mappingKind = operation == Operation.UPDATE
+        MappingKind mappingKind = operation == Operation.UPDATE || operation == Operation.CALL
                 ? MappingKind.NONE
                 : mappingKind(method,
                               context,
+                              operation,
                               returnPlan.mappedType(),
                               aliases,
-                              beanMappings,
-                              explicitMapping,
-                              request);
-        if (generatedKeys && mappingKind == MappingKind.GRAPH) {
-            throw failure(method, "Generated-key rows do not support generated graph reduction");
-        }
-
+                              identityReduction,
+                              explicitMapping);
         return new JdbcMethodPlan(method,
                                   operation,
                                   returnPlan.shape(),
                                   mappingKind,
                                   returnPlan.mappedType(),
                                   request.parameter(),
+                                  control.optionsParameter(),
                                   request.kind(),
                                   parameterPlan,
+                                  callParameterPlan,
+                                  callResultPlan,
                                   List.copyOf(generatedColumns),
                                   aliases,
-                                  beanMappings,
+                                  identityPaths,
                                   explicitMapper,
                                   explicitReducer);
     }
 
-    private static Request request(List<TypedElementInfo> parameters, TypedElementInfo method) {
-        Request result = new Request(null, RequestKind.NONE, null);
+    private static Operation operation(TypedElementInfo method,
+                                       Return returnPlan,
+                                       Request request,
+                                       OperationEvidence evidence) {
+        Annotation execution = method.findAnnotation(JdbcCodegenTypes.JDBC_EXECUTION).orElse(null);
+        if (execution != null) {
+            String value = execution.stringValue()
+                    .orElseThrow(() -> failure(method, "@Jdbc.Execution value is missing"));
+            return switch (value) {
+            case "QUERY" -> Operation.QUERY;
+            case "UPDATE" -> Operation.UPDATE;
+            case "CALL" -> Operation.CALL;
+            default -> throw failure(method, "Unsupported @Jdbc.Execution value: " + value);
+            };
+        }
+
+        if (evidence.generatedKeys()) {
+            return Operation.UPDATE;
+        }
+        if (request.call() || evidence.callableAnnotations()) {
+            return Operation.CALL;
+        }
+        if (request.traversal()
+                || evidence.identityReduction()
+                || evidence.rowMapper()
+                || evidence.rowReducer()) {
+            return Operation.QUERY;
+        }
+        if (returnPlan.shape() == ReturnShape.OPTIONAL || returnPlan.shape() == ReturnShape.LIST) {
+            return Operation.QUERY;
+        }
+
+        TypeName returnType = method.typeName();
+        if (returnType.equals(TypeNames.PRIMITIVE_VOID)) {
+            return Operation.UPDATE;
+        }
+        if (returnType.equals(TypeNames.PRIMITIVE_INT) || returnType.equals(TypeNames.PRIMITIVE_LONG)) {
+            throw failure(method, "Cannot infer JDBC execution from primitive " + returnType.fqName()
+                    + " return type; add @Jdbc.Execution(Jdbc.ExecutionType.QUERY) or "
+                    + "@Jdbc.Execution(Jdbc.ExecutionType.UPDATE)");
+        }
+        return Operation.QUERY;
+    }
+
+    private static InvocationControl invocationControl(List<TypedElementInfo> parameters, TypedElementInfo method) {
+        Request request = new Request(null, RequestKind.NONE, null);
+        TypedElementInfo options = null;
         for (int i = 0; i < parameters.size(); i++) {
             TypedElementInfo parameter = parameters.get(i);
             TypeName raw = parameter.typeName().genericTypeName();
-            boolean regular = raw.equals(JdbcCodegenTypes.JDBC_QUERY_REQUEST);
-            boolean visitAll = raw.equals(JdbcCodegenTypes.JDBC_QUERY_VISIT_ALL);
-            boolean visitWhile = raw.equals(JdbcCodegenTypes.JDBC_QUERY_VISIT_WHILE);
-            if (regular || visitAll || visitWhile) {
-                if (i != 0 || result.parameter() != null) {
-                    throw failure(method, "JdbcQueryRequest is permitted once and only as the leading parameter");
+            boolean regular = raw.equals(JdbcCodegenTypes.JDBC_RESULT_REQUEST);
+            boolean visitAll = raw.equals(JdbcCodegenTypes.JDBC_RESULT_VISIT_ALL);
+            boolean visitWhile = raw.equals(JdbcCodegenTypes.JDBC_RESULT_VISIT_WHILE);
+            boolean call = raw.equals(JdbcCodegenTypes.JDBC_RESULT_CALL);
+            boolean callWith = raw.equals(JdbcCodegenTypes.JDBC_RESULT_CALL_WITH);
+            boolean callableInput = parameter.hasAnnotation(JdbcCodegenTypes.JDBC_IN_PARAMETER)
+                    || parameter.hasAnnotation(JdbcCodegenTypes.JDBC_IN_OUT_PARAMETER);
+            if (callableInput && (regular || visitAll || visitWhile || call || callWith
+                    || raw.equals(JdbcCodegenTypes.JDBC_STATEMENT_OPTIONS))) {
+                throw failure(method, "JDBC invocation-control parameters cannot be IN or INOUT call parameters");
+            }
+            if (regular) {
+                throw failure(method, "JdbcResultRequest supports only typed traversal and call requests");
+            }
+            if (visitAll || visitWhile || call || callWith) {
+                if (i != 0 || request.parameter() != null || options != null) {
+                    throw failure(method, "JdbcResultRequest is permitted once and only as the leading invocation "
+                            + "control parameter");
                 }
-                if (parameter.hasAnnotation(JdbcCodegenTypes.DATA_JDBC_TYPE)) {
-                    throw failure(method, "JdbcQueryRequest must not carry @Data.JdbcType");
+                int expectedArguments = visitAll || visitWhile || callWith ? 1 : 0;
+                if (parameter.typeName().typeArguments().size() != expectedArguments) {
+                    throw failure(method,
+                                  call
+                                          ? "JdbcResultRequest.Call must not declare a type argument"
+                                          : callWith
+                                                  ? "JdbcResultRequest.CallWith requires one concrete result type"
+                                                  : "JDBC traversal request requires one concrete mapped row type");
                 }
-                TypeName mappedType = null;
-                if (!regular) {
-                    if (parameter.typeName().typeArguments().size() != 1) {
-                        throw failure(method, "JDBC traversal request requires one concrete mapped row type");
-                    }
-                    mappedType = parameter.typeName().typeArguments().getFirst();
-                    if (mappedType.wildcard()) {
-                        throw failure(method, "JDBC traversal request wildcard row types are not supported");
-                    }
+                TypeName mappedType = expectedArguments == 0
+                        ? TypeNames.BOXED_VOID
+                        : parameter.typeName().typeArguments().getFirst();
+                if (mappedType.wildcard()) {
+                    throw failure(method,
+                                  callWith
+                                          ? "JdbcResultRequest.CallWith wildcard result types are not supported"
+                                          : "JDBC traversal request wildcard row types are not supported");
                 }
-                result = new Request(parameter,
-                                     regular ? RequestKind.REGULAR
-                                             : visitAll ? RequestKind.VISIT_ALL : RequestKind.VISIT_WHILE,
-                                     mappedType);
+                request = new Request(parameter,
+                                      visitAll
+                                              ? RequestKind.VISIT_ALL
+                                              : visitWhile
+                                                      ? RequestKind.VISIT_WHILE
+                                                      : call ? RequestKind.CALL : RequestKind.CALL_WITH,
+                                      mappedType);
+            } else if (raw.equals(JdbcCodegenTypes.JDBC_STATEMENT_OPTIONS)) {
+                if (i != 0 || options != null || request.parameter() != null) {
+                    throw failure(method, "JdbcStatementOptions is permitted once and only as the leading invocation "
+                            + "control parameter and cannot be combined with JdbcResultRequest");
+                }
+                options = parameter;
             } else if (raw.equals(JdbcCodegenTypes.CONSUMER) || raw.equals(JdbcCodegenTypes.PREDICATE)) {
-                throw failure(method, "Traversal callbacks must be supplied through a leading JdbcQueryRequest");
+                throw failure(method, "Traversal callbacks must be supplied through a leading JdbcResultRequest");
             }
         }
-        return result;
+        return new InvocationControl(request, options);
     }
 
     private static Return returnPlan(TypedElementInfo method, Request request) {
@@ -252,6 +356,12 @@ final class JdbcMethodPlan {
         }
         if (request.kind() == RequestKind.VISIT_WHILE) {
             return new Return(ReturnShape.VISIT_WHILE, request.mappedType());
+        }
+        if (request.kind() == RequestKind.CALL) {
+            return new Return(ReturnShape.CALL, TypeNames.BOXED_VOID);
+        }
+        if (request.kind() == RequestKind.CALL_WITH) {
+            return new Return(ReturnShape.CALL_WITH, request.mappedType());
         }
         if (returnType.isOptional()) {
             return new Return(ReturnShape.OPTIONAL, singleTypeArgument(method, returnType));
@@ -273,27 +383,48 @@ final class JdbcMethodPlan {
                                                 Operation operation,
                                                 Return returnPlan,
                                                 Request request) {
+        if (request.call() && operation != Operation.CALL) {
+            throw failure(method, "JdbcResultRequest call requests are supported only for CALL execution");
+        }
+        if (request.traversal() && operation != Operation.QUERY) {
+            throw failure(method, "JdbcResultRequest traversal requests are supported only for QUERY execution");
+        }
         if (operation == Operation.UPDATE) {
             if (request.parameter() != null) {
-                throw failure(method, "@Data.Update methods do not support JdbcQueryRequest");
+                throw failure(method, "UPDATE execution does not support JdbcResultRequest");
             }
             if (!method.typeName().equals(TypeNames.PRIMITIVE_LONG)
+                    && !method.typeName().equals(TypeNames.PRIMITIVE_INT)
                     && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
-                throw failure(method, "@Data.Update methods must return primitive long or void");
+                throw failure(method, "UPDATE execution must return void, primitive int, or primitive long");
             }
             return;
         }
-        if (operation == Operation.GENERATED_KEYS && request.traversal()) {
-            throw failure(method, "JDBC traversal requests are supported only on @Data.Query methods");
+        if (operation == Operation.CALL) {
+            if (request.kind() == RequestKind.CALL) {
+                if (!method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
+                    throw failure(method, "JdbcResultRequest.Call methods must return void");
+                }
+                return;
+            }
+            if (request.kind() == RequestKind.CALL_WITH) {
+                if (!method.typeName().equals(request.mappedType())) {
+                    throw failure(method, "JdbcResultRequest.CallWith result type must exactly match the repository "
+                            + "method return type");
+                }
+                return;
+            }
+            if (request.parameter() != null) {
+                throw failure(method, "CALL execution requires JdbcResultRequest.Call or CallWith");
+            }
+            return;
         }
         if (request.kind() == RequestKind.VISIT_WHILE) {
             if (!method.typeName().equals(TypeNames.PRIMITIVE_BOOLEAN)) {
-                throw failure(method, "JdbcQueryRequest.VisitWhile methods must return primitive boolean");
+                throw failure(method, "JdbcResultRequest.VisitWhile methods must return primitive boolean");
             }
         } else if (request.kind() == RequestKind.VISIT_ALL && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
-            throw failure(method, "JdbcQueryRequest.VisitAll methods must return void");
-        } else if (request.kind() == RequestKind.REGULAR && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
-            throw failure(method, "A regular JdbcQueryRequest method requires a non-void mapped result");
+            throw failure(method, "JdbcResultRequest.VisitAll methods must return void");
         } else if (request.kind() == RequestKind.NONE && method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
             throw failure(method, "Mapped query and generated-key methods require a non-void result or traversal request");
         }
@@ -310,87 +441,109 @@ final class JdbcMethodPlan {
 
     private static MappingKind mappingKind(TypedElementInfo method,
                                            CodegenContext context,
+                                           Operation operation,
                                            TypeName mappedType,
                                            List<String> aliases,
-                                           List<BeanMapping> beanMappings,
-                                           ExplicitMapping explicitMapping,
-                                           Request request) {
+                                           boolean identityReduction,
+                                           ExplicitMapping explicitMapping) {
         if (explicitMapping.reducer() != null) {
             return MappingKind.REDUCER;
         }
+        if (identityReduction) {
+            return MappingKind.IDENTITY_REDUCTION;
+        }
+        if (explicitMapping.mapperRequested()) {
+            return explicitMapping.mapper() == null ? MappingKind.SERVICE : MappingKind.EXPLICIT;
+        }
         boolean dottedAlias = aliases.stream().anyMatch(alias -> alias.indexOf('.') > 0);
-        boolean graphDeclared = beanMappings.size() > 1
-                || beanMappings.stream().anyMatch(mapping -> !mapping.propertyPath().isEmpty()
-                        || !mapping.identityProperty().isEmpty());
-        if (graphDeclared && request.traversal()) {
-            throw failure(method, "Identity-defined graph reduction cannot use a JDBC query traversal request");
-        }
-        if (graphDeclared && explicitMapping.mapper() != null) {
-            throw failure(method, "@Data.RowMapper cannot be combined with generated graph reduction");
-        }
-        if (graphDeclared) {
-            return MappingKind.GRAPH;
-        }
-        if (explicitMapping.mapper() != null) {
-            return MappingKind.EXPLICIT;
-        }
-        if (dottedAlias) {
-            throw failure(method, "Dotted SQL projection aliases require a complete identity-bearing "
-                    + "@Data.BeanMapping set or an explicit mapper or reducer");
-        }
-        if (!beanMappings.isEmpty()) {
-            BeanMapping mapping = beanMappings.getFirst();
-            if (beanMappings.size() != 1
-                    || !mapping.propertyPath().isEmpty()
-                    || !mapping.identityProperty().isEmpty()) {
-                throw failure(method, "A flat bean result requires exactly one root @Data.BeanMapping with empty "
-                        + "propertyPath and identityProperty values");
-            }
-            return MappingKind.BEAN;
+        if (dottedAlias && operation != Operation.QUERY) {
+            throw failure(method, "Dotted SQL projection aliases require @Jdbc.IdentityReducer, "
+                    + "@Jdbc.RowMapper, or @Jdbc.RowReducer");
         }
         if (isScalar(mappedType)) {
             return MappingKind.SCALAR;
         }
-        TypeInfo resultInfo = context.typeInfo(mappedType.genericTypeName())
-                .orElseThrow(() -> failure(method, "Mapped result type information is unavailable: "
-                        + mappedType.resolvedName()));
+        TypeInfo resultInfo = context.typeInfo(mappedType.genericTypeName()).orElse(null);
+        if (operation == Operation.QUERY) {
+            if (!dottedAlias
+                    && resultInfo != null
+                    && resultInfo.kind() == ElementKind.RECORD
+                    && JdbcRecordMapperGenerator.canGenerate(method, mappedType, aliases, context)) {
+                return MappingKind.RECORD;
+            }
+            // A query result without a generated record mapping is supplied by a required RowMapper<T> service.
+            return MappingKind.SERVICE;
+        }
+        if (resultInfo == null) {
+            throw failure(method, "Mapped result type information is unavailable: " + mappedType.resolvedName());
+        }
         if (resultInfo.kind() == ElementKind.RECORD) {
             return MappingKind.RECORD;
         }
-        throw failure(method, "Non-record JDBC result requires @Data.BeanMapping, @Data.RowMapper, or @Data.RowReducer: "
+        throw failure(method, "Non-record JDBC result requires @Jdbc.RowMapper or @Jdbc.RowReducer: "
                 + mappedType.resolvedName());
     }
 
-    private static List<BeanMapping> beanMappings(TypedElementInfo method) {
-        List<Annotation> annotations = new ArrayList<>();
-        for (Annotation annotation : method.annotations()) {
-            if (annotation.typeName().equals(JdbcCodegenTypes.DATA_BEAN_MAPPING)) {
-                annotations.add(annotation);
-            } else if (annotation.typeName().equals(JdbcCodegenTypes.DATA_BEAN_MAPPINGS)) {
-                annotations.addAll(annotation.annotationValues().orElse(List.of()));
+    private static List<String> identityPaths(TypedElementInfo method) {
+        if (!method.hasAnnotation(JdbcCodegenTypes.JDBC_IDENTITY_REDUCER)) {
+            return List.of();
+        }
+        List<String> paths = method.annotation(JdbcCodegenTypes.JDBC_IDENTITY_REDUCER)
+                .stringValues("identityPaths")
+                .orElse(List.of());
+        if (paths.isEmpty()) {
+            throw failure(method, "@Jdbc.IdentityReducer requires at least one identity path");
+        }
+        Set<String> distinct = new HashSet<>();
+        for (String path : paths) {
+            if (!propertyPath(path)) {
+                throw failure(method, "Invalid @Jdbc.IdentityReducer identity path: '" + path + "'");
+            }
+            if (!distinct.add(path)) {
+                throw failure(method, "Duplicate @Jdbc.IdentityReducer identity path: '" + path + "'");
             }
         }
-        List<BeanMapping> result = new ArrayList<>(annotations.size());
-        Set<String> propertyPaths = new HashSet<>();
-        for (Annotation annotation : annotations) {
-            TypeName beanType = annotation.typeValue()
-                    .orElseThrow(() -> failure(method, "@Data.BeanMapping class value is missing"));
-            String propertyPath = annotation.stringValue("propertyPath").orElse("");
-            String identityProperty = annotation.stringValue("identityProperty").orElse("");
-            if (!propertyPaths.add(propertyPath)) {
-                throw failure(method, "Duplicate @Data.BeanMapping propertyPath: '" + propertyPath + "'");
-            }
-            result.add(new BeanMapping(beanType, propertyPath, identityProperty));
+        return List.copyOf(paths);
+    }
+
+    private static boolean propertyPath(String value) {
+        if (value.isBlank()) {
+            return false;
         }
-        return List.copyOf(result);
+        for (String segment : value.split("\\.", -1)) {
+            if (segment.isEmpty() || !Character.isJavaIdentifierStart(segment.charAt(0))) {
+                return false;
+            }
+            for (int i = 1; i < segment.length(); i++) {
+                if (!Character.isJavaIdentifierPart(segment.charAt(i))) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     static boolean isScalar(TypeName type) {
-        TypeName boxed = type.boxed().genericTypeName();
-        if (boxed.array() && boxed.componentType().map(TypeName::fqName).filter("byte"::equals).isPresent()) {
+        if (type.array() && type.componentType().map(TypeName::fqName).filter("byte"::equals).isPresent()) {
             return true;
         }
+        TypeName boxed = type.boxed().genericTypeName();
         return SCALAR_TYPES.contains(boxed.fqName());
+    }
+
+    /**
+     * Resolves the scalar value represented by an exact {@code Optional<T>} component.
+     *
+     * @param type candidate optional component type
+     * @return the supported scalar argument, or {@code null} when the type is not an exact supported optional scalar
+     */
+    static TypeName optionalScalarType(TypeName type) {
+        if (!type.genericTypeName().equals(JdbcCodegenTypes.OPTIONAL)
+                || type.typeArguments().size() != 1) {
+            return null;
+        }
+        TypeName valueType = type.typeArguments().getFirst();
+        return valueType.wildcard() || !isScalar(valueType) ? null : valueType;
     }
 
     static CodegenException failure(TypedElementInfo method, String message) {
@@ -421,12 +574,28 @@ final class JdbcMethodPlan {
         return requestParameter;
     }
 
+    TypedElementInfo optionsParameter() {
+        return optionsParameter;
+    }
+
     RequestKind requestKind() {
         return requestKind;
     }
 
     JdbcSqlParameterPlan parameterPlan() {
         return parameterPlan;
+    }
+
+    JdbcCallParameterPlan callParameterPlan() {
+        return callParameterPlan;
+    }
+
+    JdbcCallResultPlan callResultPlan() {
+        return callResultPlan;
+    }
+
+    String jdbcSql() {
+        return callParameterPlan == null ? parameterPlan.sql() : callParameterPlan.sql();
     }
 
     List<String> generatedColumns() {
@@ -437,8 +606,8 @@ final class JdbcMethodPlan {
         return aliases;
     }
 
-    List<BeanMapping> beanMappings() {
-        return beanMappings;
+    List<String> identityPaths() {
+        return identityPaths;
     }
 
     TypeName explicitMapper() {
@@ -465,10 +634,19 @@ final class JdbcMethodPlan {
         this.mapperFieldName = mapperFieldName;
     }
 
+    String callFieldName() {
+        return callFieldName;
+    }
+
+    void callFieldName(String callFieldName) {
+        this.callFieldName = callFieldName;
+    }
+
     enum Operation {
         QUERY,
         UPDATE,
-        GENERATED_KEYS
+        GENERATED_KEYS,
+        CALL
     }
 
     enum ReturnShape {
@@ -476,36 +654,53 @@ final class JdbcMethodPlan {
         OPTIONAL,
         LIST,
         VISIT_ALL,
-        VISIT_WHILE
+        VISIT_WHILE,
+        CALL,
+        CALL_WITH
     }
 
     enum MappingKind {
         NONE,
         SCALAR,
         RECORD,
-        BEAN,
+        SERVICE,
         EXPLICIT,
         REDUCER,
-        GRAPH
+        IDENTITY_REDUCTION
     }
 
     enum RequestKind {
         NONE,
-        REGULAR,
         VISIT_ALL,
-        VISIT_WHILE
+        VISIT_WHILE,
+        CALL,
+        CALL_WITH
     }
 
-    record BeanMapping(TypeName type, String propertyPath, String identityProperty) {
-    }
-
-    private record ExplicitMapping(TypeName mapper, TypeName reducer) {
+    private record ExplicitMapping(boolean mapperRequested, TypeName mapper, TypeName reducer) {
     }
 
     private record Request(TypedElementInfo parameter, RequestKind kind, TypeName mappedType) {
         private boolean traversal() {
             return kind == RequestKind.VISIT_ALL || kind == RequestKind.VISIT_WHILE;
         }
+
+        private boolean call() {
+            return kind == RequestKind.CALL || kind == RequestKind.CALL_WITH;
+        }
+    }
+
+    private record InvocationControl(Request request, TypedElementInfo optionsParameter) {
+        private boolean present() {
+            return request.parameter() != null || optionsParameter != null;
+        }
+    }
+
+    private record OperationEvidence(boolean generatedKeys,
+                                     boolean identityReduction,
+                                     boolean rowMapper,
+                                     boolean rowReducer,
+                                     boolean callableAnnotations) {
     }
 
     private record Return(ReturnShape shape, TypeName mappedType) {

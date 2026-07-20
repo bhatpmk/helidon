@@ -60,17 +60,6 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     }
 
     /**
-     * Delegates exactly-one cardinality with request settings.
-     *
-     * @param request regular query request
-     * @return one mapped value
-     */
-    @Override
-    public T one(JdbcQueryRequest request) {
-        return statement.one(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
-    }
-
-    /**
      * Delegates zero-or-one cardinality to the owning statement.
      *
      * @return optional mapped value
@@ -78,17 +67,6 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     @Override
     public Optional<T> optional() {
         return statement.optional(mapper, plan);
-    }
-
-    /**
-     * Delegates zero-or-one cardinality with request settings.
-     *
-     * @param request regular query request
-     * @return optional mapped value
-     */
-    @Override
-    public Optional<T> optional(JdbcQueryRequest request) {
-        return statement.optional(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
     }
 
     /**
@@ -102,23 +80,12 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
     }
 
     /**
-     * Delegates materializing list execution with request settings.
-     *
-     * @param request regular query request
-     * @return mapped values in encounter order
-     */
-    @Override
-    public List<T> list(JdbcQueryRequest request) {
-        return statement.list(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
-    }
-
-    /**
      * Delegates callback-based traversal of every mapped row.
      *
      * @param request visit-all request
      */
     @Override
-    public void visitAll(JdbcQueryRequest.VisitAll<T> request) {
+    public void visitAll(JdbcResultRequest.VisitAll<T> request) {
         statement.visitAll(mapper, plan, Objects.requireNonNull(request, "Query request must not be null"));
     }
 
@@ -129,7 +96,7 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
      * @return true only after normal exhaustion
      */
     @Override
-    public boolean visitWhile(JdbcQueryRequest.VisitWhile<T> request) {
+    public boolean visitWhile(JdbcResultRequest.VisitWhile<T> request) {
         return statement.visitWhile(mapper,
                                       plan,
                                       Objects.requireNonNull(request, "Query request must not be null"));

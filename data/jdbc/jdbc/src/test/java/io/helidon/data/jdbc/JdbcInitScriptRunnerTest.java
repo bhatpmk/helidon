@@ -49,7 +49,6 @@ class JdbcInitScriptRunnerTest {
     void loadsAndExecutesClasspathScript() throws Exception {
         JdbcDataSource dataSource = dataSource("jdbc:h2:mem:init_script;DB_CLOSE_DELAY=-1");
         JdbcRunner runner = new JdbcRunner(dataSource,
-                                           JdbcStatementOptions.EMPTY,
                                            JdbcConnectionLease.ownedProvider());
 
         new JdbcInitScriptRunner(runner).run(Path.of("jdbc-init.sql"));
@@ -70,7 +69,6 @@ class JdbcInitScriptRunnerTest {
             statement.execute("CREATE TABLE ITEMS (ID INT PRIMARY KEY)");
         }
         JdbcRunner runner = new JdbcRunner(dataSource,
-                                           JdbcStatementOptions.EMPTY,
                                            JdbcConnectionLease.ownedProvider());
 
         assertThrows(DataException.class,
@@ -89,7 +87,6 @@ class JdbcInitScriptRunnerTest {
     void missingAndEmptyScriptsFailBeforePublication() {
         JdbcDataSource dataSource = dataSource("jdbc:h2:mem:init_missing;DB_CLOSE_DELAY=-1");
         JdbcRunner runner = new JdbcRunner(dataSource,
-                                           JdbcStatementOptions.EMPTY,
                                            JdbcConnectionLease.ownedProvider());
 
         assertThrows(DataException.class,

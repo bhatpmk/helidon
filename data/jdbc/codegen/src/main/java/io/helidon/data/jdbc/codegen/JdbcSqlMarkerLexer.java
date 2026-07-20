@@ -29,12 +29,16 @@ final class JdbcSqlMarkerLexer {
     private final int length;
     private final StringBuilder jdbcSql;
     private final List<String> markers = new ArrayList<>();
+    private final Mode mode;
     private int index;
+    private boolean namedMarkers;
+    private boolean positionalMarkers;
 
-    private JdbcSqlMarkerLexer(String source) {
+    private JdbcSqlMarkerLexer(String source, Mode mode) {
         this.source = source;
         this.length = source.length();
         this.jdbcSql = new StringBuilder(source.length());
+        this.mode = mode;
     }
 
     static Result parse(String sql) {
@@ -44,8 +48,23 @@ final class JdbcSqlMarkerLexer {
         if (sql.isBlank()) {
             throw new IllegalArgumentException("SQL must not be blank");
         }
-        JdbcSqlMarkerLexer lexer = new JdbcSqlMarkerLexer(sql);
+        JdbcSqlMarkerLexer lexer = new JdbcSqlMarkerLexer(sql, Mode.NAMED);
         lexer.scan();
+        return new Result(lexer.jdbcSql.toString(), List.copyOf(lexer.markers));
+    }
+
+    static Result parseCall(String sql) {
+        if (sql == null) {
+            throw new NullPointerException("SQL must not be null");
+        }
+        if (sql.isBlank()) {
+            throw new IllegalArgumentException("SQL must not be blank");
+        }
+        JdbcSqlMarkerLexer lexer = new JdbcSqlMarkerLexer(sql, Mode.CALL);
+        lexer.scan();
+        if (lexer.namedMarkers && lexer.positionalMarkers) {
+            throw lexer.malformed("JDBC call SQL cannot mix named and positional markers");
+        }
         return new Result(lexer.jdbcSql.toString(), List.copyOf(lexer.markers));
     }
 
@@ -104,6 +123,7 @@ final class JdbcSqlMarkerLexer {
             throw malformed("Dotted named parameters are not supported");
         }
         markers.add(source.substring(start, end));
+        namedMarkers = true;
         jdbcSql.append('?');
         index = end;
     }
@@ -115,7 +135,13 @@ final class JdbcSqlMarkerLexer {
             index += 2;
             return;
         }
-        throw malformed("Declarative SQL accepts named ':name' markers only");
+        if (mode == Mode.NAMED) {
+            throw malformed("Declarative SQL accepts named ':name' markers only");
+        }
+        positionalMarkers = true;
+        markers.add("");
+        jdbcSql.append('?');
+        index++;
     }
 
     private void copyQuoted(char delimiter) {
@@ -258,5 +284,10 @@ final class JdbcSqlMarkerLexer {
     }
 
     record Result(String sql, List<String> markers) {
+    }
+
+    private enum Mode {
+        NAMED,
+        CALL
     }
 }

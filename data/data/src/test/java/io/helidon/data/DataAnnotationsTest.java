@@ -21,38 +21,15 @@ import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-import java.lang.reflect.Method;
-import java.sql.JDBCType;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.arrayContaining;
 
 class DataAnnotationsTest {
-
-    @Data.BeanMapping(value = RootBean.class, identityProperty = "rootId")
-    @Data.BeanMapping(value = ChildBean.class, propertyPath = "children", identityProperty = "childId")
-    private void repeatedBeanMappingsCompile() {
-    }
-
-    @Data.BeanMappings({
-            @Data.BeanMapping(value = RootBean.class, identityProperty = "rootId"),
-            @Data.BeanMapping(value = ChildBean.class, propertyPath = "children", identityProperty = "childId")
-    })
-    private void explicitBeanMappingContainerCompiles() {
-    }
-
-    @Data.RowReducer(Reducer.class)
-    private void rowReducerCompiles() {
-    }
-
-    @Data.Update("INSERT INTO EXAMPLE (NAME) VALUES (:name)")
-    @Data.GeneratedKeys("ID")
-    private long generatedKeysAnnotationsCompile(@Data.JdbcType(JDBCType.VARCHAR) String name) {
-        return 0;
-    }
 
     @Test
     void preservesExistingRepositoryAnnotationMetadata() {
@@ -62,71 +39,14 @@ class DataAnnotationsTest {
     @Test
     void preservesExistingQueryAnnotationMetadata() throws NoSuchMethodException {
         assertAnnotationMetadata(Data.Query.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertEquals(String.class, Data.Query.class.getDeclaredMethod("value").getReturnType());
-        assertNull(Data.Query.class.getAnnotation(Repeatable.class));
-    }
-
-    @Test
-    void definesUpdateAnnotationMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.Update.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertEquals(String.class, Data.Update.class.getDeclaredMethod("value").getReturnType());
-        assertNull(Data.Update.class.getAnnotation(Repeatable.class));
-    }
-
-    @Test
-    void definesGeneratedKeysAnnotationMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.GeneratedKeys.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        Method value = Data.GeneratedKeys.class.getDeclaredMethod("value");
-        assertEquals(String[].class, value.getReturnType());
-        assertArrayEquals(new String[0], (String[]) value.getDefaultValue());
-        assertNull(Data.GeneratedKeys.class.getAnnotation(Repeatable.class));
-    }
-
-    @Test
-    void definesRepeatableBeanMappingMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.BeanMapping.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertAnnotationMetadata(Data.BeanMappings.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertEquals(Data.BeanMappings.class, Data.BeanMapping.class.getAnnotation(Repeatable.class).value());
-        assertEquals(Class.class, Data.BeanMapping.class.getDeclaredMethod("value").getReturnType());
-        assertEquals("", Data.BeanMapping.class.getDeclaredMethod("propertyPath").getDefaultValue());
-        assertEquals("", Data.BeanMapping.class.getDeclaredMethod("identityProperty").getDefaultValue());
-        assertEquals(Data.BeanMapping[].class, Data.BeanMappings.class.getDeclaredMethod("value").getReturnType());
-        assertNull(Data.BeanMappings.class.getAnnotation(Repeatable.class));
-    }
-
-    @Test
-    void definesRowReducerMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.RowReducer.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertEquals(Class.class, Data.RowReducer.class.getDeclaredMethod("value").getReturnType());
-    }
-
-    @Test
-    void definesRowMapperAnnotationMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.RowMapper.class, RetentionPolicy.SOURCE, ElementType.METHOD);
-        assertEquals(Class.class, Data.RowMapper.class.getDeclaredMethod("value").getReturnType());
-        assertNull(Data.RowMapper.class.getAnnotation(Repeatable.class));
-    }
-
-    @Test
-    void definesJdbcTypeAnnotationMetadata() throws NoSuchMethodException {
-        assertAnnotationMetadata(Data.JdbcType.class, RetentionPolicy.SOURCE, ElementType.PARAMETER);
-        assertEquals(JDBCType.class, Data.JdbcType.class.getDeclaredMethod("value").getReturnType());
-        assertNull(Data.JdbcType.class.getAnnotation(Repeatable.class));
+        assertThat(Data.Query.class.getDeclaredMethod("value").getReturnType(), is((Object) String.class));
+        assertThat(Data.Query.class.getAnnotation(Repeatable.class), nullValue());
     }
 
     private static void assertAnnotationMetadata(Class<? extends Annotation> annotationType,
                                                  RetentionPolicy expectedRetention,
                                                  ElementType... expectedTargets) {
-        assertEquals(expectedRetention, annotationType.getAnnotation(Retention.class).value());
-        assertArrayEquals(expectedTargets, annotationType.getAnnotation(Target.class).value());
-    }
-
-    private static final class RootBean {
-    }
-
-    private static final class ChildBean {
-    }
-
-    private static final class Reducer {
+        assertThat(annotationType.getAnnotation(Retention.class).value(), is(expectedRetention));
+        assertThat(annotationType.getAnnotation(Target.class).value(), arrayContaining(expectedTargets));
     }
 }

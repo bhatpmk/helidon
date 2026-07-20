@@ -21,7 +21,7 @@ import java.util.Objects;
 /**
  * Package-private implementation of the public single-use statement stage.
  *
- * <p>This object stores SQL, bind values, and execution options while a
+ * <p>This object stores SQL, statement options, and bind values while a
  * generated repository assembles a call. It never acquires a connection or
  * prepares a JDBC statement. A terminal freezes the state into
  * {@link JdbcOperation} and delegates all I/O to {@link JdbcRunner}.</p>
@@ -53,15 +53,14 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
-     * Stores per-operation options without performing JDBC I/O.
+     * Overlays immutable statement options without performing JDBC I/O.
      *
      * @param options options to apply at terminal execution
      * @return this statement stage
      */
     @Override
     public JdbcClient.Statement options(JdbcStatementOptions options) {
-        ensureMutable();
-        this.options = Objects.requireNonNull(options, "Execution options must not be null");
+        applyOptions(Objects.requireNonNull(options, "Statement options must not be null"));
         return this;
     }
 
@@ -74,7 +73,7 @@ final class JdbcStatement implements JdbcClient.Statement {
      */
     @Override
     public JdbcClient.Statement bind(int index, Object value) {
-        Objects.requireNonNull(value, "Untyped bind value must not be null; use bindNull or the typed bind overload");
+        Objects.requireNonNull(value, "Bind value must not be null; use bindNull for SQL NULL");
         if (!JdbcRow.supportedScalar(value.getClass())) {
             throw new IllegalArgumentException("Unsupported JDBC bind value type: " + value.getClass().getTypeName());
         }
@@ -85,14 +84,16 @@ final class JdbcStatement implements JdbcClient.Statement {
      * Stores a value and explicit JDBC type at a one-based position.
      *
      * @param index one-based parameter position
-     * @param value value, possibly null when the type is explicit
+     * @param value non-null value
      * @param type JDBC type
      * @return this statement stage
      */
     @Override
     public JdbcClient.Statement bind(int index, Object value, SQLType type) {
         return bindInternal(index,
-                            new JdbcOperation.Bind(value,
+                            new JdbcOperation.Bind(Objects.requireNonNull(value,
+                                                                          "Bind value must not be null; use bindNull "
+                                                                                  + "for SQL NULL"),
                                                    Objects.requireNonNull(type, "JDBC bind type must not be null")));
     }
 
@@ -105,7 +106,9 @@ final class JdbcStatement implements JdbcClient.Statement {
      */
     @Override
     public JdbcClient.Statement bindNull(int index, SQLType type) {
-        return bind(index, null, type);
+        return bindInternal(index,
+                            new JdbcOperation.Bind(null,
+                                                   Objects.requireNonNull(type, "JDBC bind type must not be null")));
     }
 
     /**
@@ -133,21 +136,6 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
-     * Selects a reducer terminal and applies regular query-request settings before capturing the operation.
-     *
-     * @param reducer reducer that consumes callback-scoped rows
-     * @param request regular query request
-     * @param <R> logical result type
-     * @return reduced result
-     */
-    @Override
-    public <R> R reduce(JdbcClient.RowReducer<R> reducer, JdbcQueryRequest request) {
-        Objects.requireNonNull(reducer, "Row reducer must not be null");
-        apply(request);
-        return runner.reduce(operation(JdbcPreparationPlan.query()), reducer);
-    }
-
-    /**
      * Attaches an application row mapper to a query.
      *
      * @param mapper mapper invoked once per physical row
@@ -165,9 +153,9 @@ final class JdbcStatement implements JdbcClient.Statement {
     /**
      * Attaches the fixed scalar mapper for column one.
      *
-     * <p>Primitive types use {@code required} so SQL NULL cannot be silently
-     * unboxed. Reference types use {@code get} so SQL NULL remains representable
-     * by the mapped type.</p>
+     * <p>Scalar mapping is non-null for both primitive and reference types. Use
+     * an explicit row mapper with {@link JdbcClient.Row#optional(int, Class)}
+     * when SQL {@code NULL} is part of the application result model.</p>
      *
      * @param scalarType supported scalar type
      * @param <T> scalar type
@@ -179,9 +167,7 @@ final class JdbcStatement implements JdbcClient.Statement {
         if (!JdbcRow.supportedScalar(scalarType)) {
             throw new IllegalArgumentException("Unsupported JDBC scalar type: " + scalarType.getTypeName());
         }
-        return map(scalarType.isPrimitive()
-                           ? row -> row.required(1, scalarType)
-                           : row -> row.get(1, scalarType));
+        return map(row -> row.required(1, scalarType));
     }
 
     /**
@@ -200,6 +186,70 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
+     * Invokes an input-only callable operation with no result callback.
+     *
+     * @param call immutable callable parameter layout
+     */
+    @Override
+    public void call(JdbcCall call) {
+        Objects.requireNonNull(call, "JDBC call layout must not be null");
+        if (call.hasOutputs()) {
+            throw new IllegalArgumentException("A JDBC call with outputs requires callForOutputs or a callback request");
+        }
+        runner.call(operation(JdbcPreparationPlan.call(call)));
+    }
+
+    /**
+     * Invokes a callable operation and returns detached scalar outputs.
+     *
+     * @param call immutable callable parameter layout
+     * @return detached scalar output values
+     */
+    @Override
+    public JdbcClient.CallOutputValues callForOutputs(JdbcCall call) {
+        Objects.requireNonNull(call, "JDBC call layout must not be null");
+        if (call.hasCursorOutputs()) {
+            throw new IllegalArgumentException("A JDBC call with cursor outputs requires a callback request");
+        }
+        if (!call.hasScalarOutputs()) {
+            throw new IllegalArgumentException("A detached JDBC call requires at least one scalar output");
+        }
+        return runner.callForOutputs(operation(JdbcPreparationPlan.call(call)));
+    }
+
+    /**
+     * Invokes a callable operation with a void callback request.
+     *
+     * @param call immutable callable parameter layout
+     * @param request callback request
+     */
+    @Override
+    public void call(JdbcCall call, JdbcResultRequest.Call request) {
+        Objects.requireNonNull(request, "JDBC call request must not be null");
+        applyOptions(request.options());
+        runner.call(operation(JdbcPreparationPlan.call(Objects.requireNonNull(call,
+                                                                              "JDBC call layout must not be null"))),
+                    request);
+    }
+
+    /**
+     * Invokes a callable operation whose callback constructs a detached result.
+     *
+     * @param call immutable callable parameter layout
+     * @param request callback request
+     * @param <R> detached result type
+     * @return callback result
+     */
+    @Override
+    public <R> R call(JdbcCall call, JdbcResultRequest.CallWith<R> request) {
+        Objects.requireNonNull(request, "JDBC call request must not be null");
+        applyOptions(request.options());
+        return runner.call(operation(JdbcPreparationPlan.call(Objects.requireNonNull(call,
+                                                                                     "JDBC call layout must not be null"))),
+                           request);
+    }
+
+    /**
      * Delegates the one-row cardinality terminal after capturing the operation.
      *
      * @param mapper row mapper
@@ -208,20 +258,6 @@ final class JdbcStatement implements JdbcClient.Statement {
      * @return one mapped value
      */
     <T> T one(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
-        return runner.one(operation(plan), mapper);
-    }
-
-    /**
-     * Delegates exactly-one cardinality with regular request settings.
-     *
-     * @param mapper row mapper
-     * @param plan preparation plan
-     * @param request regular query request
-     * @param <T> mapped value type
-     * @return one mapped value
-     */
-    <T> T one(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan, JdbcQueryRequest request) {
-        apply(request);
         return runner.one(operation(plan), mapper);
     }
 
@@ -238,22 +274,6 @@ final class JdbcStatement implements JdbcClient.Statement {
     }
 
     /**
-     * Delegates zero-or-one cardinality with regular request settings.
-     *
-     * @param mapper row mapper
-     * @param plan preparation plan
-     * @param request regular query request
-     * @param <T> mapped value type
-     * @return optional mapped value
-     */
-    <T> java.util.Optional<T> optional(JdbcClient.RowMapper<T> mapper,
-                                       JdbcPreparationPlan plan,
-                                       JdbcQueryRequest request) {
-        apply(request);
-        return runner.optional(operation(plan), mapper);
-    }
-
-    /**
      * Delegates the materializing list terminal after capturing the operation.
      *
      * @param mapper row mapper
@@ -262,22 +282,6 @@ final class JdbcStatement implements JdbcClient.Statement {
      * @return mapped values in JDBC encounter order
      */
     <T> java.util.List<T> list(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
-        return runner.list(operation(plan), mapper);
-    }
-
-    /**
-     * Delegates list materialization with regular request settings.
-     *
-     * @param mapper row mapper
-     * @param plan preparation plan
-     * @param request regular query request
-     * @param <T> mapped value type
-     * @return mapped values in encounter order
-     */
-    <T> java.util.List<T> list(JdbcClient.RowMapper<T> mapper,
-                               JdbcPreparationPlan plan,
-                               JdbcQueryRequest request) {
-        apply(request);
         return runner.list(operation(plan), mapper);
     }
 
@@ -291,8 +295,8 @@ final class JdbcStatement implements JdbcClient.Statement {
      */
     <T> void visitAll(JdbcClient.RowMapper<T> mapper,
                       JdbcPreparationPlan plan,
-                      JdbcQueryRequest.VisitAll<T> request) {
-        apply(request.options());
+                      JdbcResultRequest.VisitAll<T> request) {
+        applyOptions(request.options());
         runner.visitAll(operation(plan), mapper, request);
     }
 
@@ -307,30 +311,19 @@ final class JdbcStatement implements JdbcClient.Statement {
      */
     <T> boolean visitWhile(JdbcClient.RowMapper<T> mapper,
                            JdbcPreparationPlan plan,
-                           JdbcQueryRequest.VisitWhile<T> request) {
-        apply(request.options());
+                           JdbcResultRequest.VisitWhile<T> request) {
+        applyOptions(request.options());
         return runner.visitWhile(operation(plan), mapper, request);
     }
 
     /**
-     * Applies a regular request without performing JDBC I/O.
+     * Overlays options while preserving the statement's single-use invariant.
      *
-     * @param request regular query request
+     * @param override explicitly configured option values
      */
-    private void apply(JdbcQueryRequest request) {
-        Objects.requireNonNull(request, "Query request must not be null");
-        apply(request.options());
-    }
-
-    /**
-     * Overlays invocation settings while preserving the statement's single-use invariant.
-     *
-     * @param requestOptions invocation-level statement settings
-     */
-    private void apply(JdbcStatementOptions requestOptions) {
+    private void applyOptions(JdbcStatementOptions override) {
         ensureMutable();
-        // Explicit statement values remain when the request leaves the corresponding setting unset.
-        options = options.overlay(requestOptions);
+        options = options.overlay(override);
     }
 
     /**
@@ -360,9 +353,13 @@ final class JdbcStatement implements JdbcClient.Statement {
      */
     private JdbcOperation operation(JdbcPreparationPlan plan) {
         ensureMutable();
-        for (int i = 0; i < binds.length; i++) {
-            if (binds[i] == null) {
-                throw new IllegalStateException("Missing bind value at JDBC position " + (i + 1));
+        if (plan.resultKind() == JdbcPreparationPlan.ResultKind.CALL) {
+            plan.call().validate(binds);
+        } else {
+            for (int i = 0; i < binds.length; i++) {
+                if (binds[i] == null) {
+                    throw new IllegalStateException("Missing bind value at JDBC position " + (i + 1));
+                }
             }
         }
         // Mark before delegation so re-entrant or concurrent terminal calls cannot reuse this stage.

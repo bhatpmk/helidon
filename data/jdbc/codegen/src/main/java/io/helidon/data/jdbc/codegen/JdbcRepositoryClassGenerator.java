@@ -58,11 +58,19 @@ final class JdbcRepositoryClassGenerator {
                         .isFinal(true)
                         .type(JdbcCodegenTypes.JDBC_CLIENT));
 
-        generateConstructor(classModel, repositoryInfo);
         generator.generateRepositoryMethods(repositoryInfo, classModel, codegenContext, repositoryGenerator);
     }
 
-    private static void generateConstructor(ClassModel.Builder classModel, RepositoryInfo repositoryInfo) {
+    /**
+     * Generates the repository constructor after method planning has identified its mapper dependencies.
+     *
+     * @param classModel generated repository class
+     * @param repositoryInfo repository metadata
+     * @param mapperDependencies statically typed mapper-service dependencies
+     */
+    static void generateConstructor(ClassModel.Builder classModel,
+                                    RepositoryInfo repositoryInfo,
+                                    Iterable<JdbcMethodGenerator.MapperDependency> mapperDependencies) {
         Constructor.Builder constructor = Constructor.builder()
                 .accessModifier(AccessModifier.PACKAGE_PRIVATE);
         Annotation provider = Annotation.builder()
@@ -94,7 +102,7 @@ final class JdbcRepositoryClassGenerator {
                                                  .addAnnotation(named)
                                                  .addAnnotation(provider)
                                                  .build())
-                        .addContent("this.jdbcClient = jdbcClient;");
+                        .addContentLine("this.jdbcClient = jdbcClient;");
             } else {
                 TypeName optionalClient = TypeName.builder(JdbcCodegenTypes.OPTIONAL)
                         .addTypeArgument(JdbcCodegenTypes.JDBC_CLIENT)
@@ -114,7 +122,7 @@ final class JdbcRepositoryClassGenerator {
                                               .addAnnotation(defaultNamed)
                                               .addAnnotation(provider)
                                               .build())
-                        .addContent("this.jdbcClient = namedJdbcClient.orElseGet(jdbcClient);");
+                        .addContentLine("this.jdbcClient = namedJdbcClient.orElseGet(jdbcClient);");
             }
         } else {
             constructor.addParameter(Parameter.builder()
@@ -123,7 +131,23 @@ final class JdbcRepositoryClassGenerator {
                                              .addAnnotation(defaultNamed)
                                              .addAnnotation(provider)
                                              .build())
-                    .addContent("this.jdbcClient = jdbcClient;");
+                    .addContentLine("this.jdbcClient = jdbcClient;");
+        }
+        for (JdbcMethodGenerator.MapperDependency dependency : mapperDependencies) {
+            constructor.addParameter(Parameter.builder()
+                                             .name(dependency.parameterName())
+                                             .type(dependency.parameterType())
+                                             .build())
+                    .addContent("this.")
+                    .addContent(dependency.fieldName())
+                    .addContent(" = ")
+                    .addContent(dependency.parameterName());
+            if (dependency.optional()) {
+                constructor.addContent(".orElse(")
+                        .addContent(dependency.fallbackFieldName())
+                        .addContent(")");
+            }
+            constructor.addContentLine(";");
         }
         classModel.addConstructor(constructor);
     }

@@ -23,8 +23,6 @@ import java.util.Map;
 import java.util.Set;
 
 import io.helidon.codegen.CodegenException;
-import io.helidon.common.types.Annotation;
-import io.helidon.common.types.TypeName;
 import io.helidon.common.types.TypedElementInfo;
 
 /**
@@ -40,7 +38,7 @@ final class JdbcSqlParameterPlan {
     }
 
     // This method rejects unused parameters, missing parameters, duplicate parameter names, collection-valued parameters,
-    // and unsupported types without `@Data.JdbcType`
+    // and types outside the provider's fixed declarative scalar table.
     static JdbcSqlParameterPlan create(String sql,
                                        List<TypedElementInfo> bindableParameters,
                                        TypedElementInfo method) {
@@ -62,9 +60,8 @@ final class JdbcSqlParameterPlan {
                 throw failure(method, "Collection-valued SQL parameters are not supported: "
                         + parameter.elementName());
             }
-            if (!JdbcMethodPlan.isScalar(parameter.typeName())
-                    && !parameter.hasAnnotation(JdbcCodegenTypes.DATA_JDBC_TYPE)) {
-                throw failure(method, "Unsupported declarative SQL parameter type without @Data.JdbcType: "
+            if (!JdbcMethodPlan.isScalar(parameter.typeName())) {
+                throw failure(method, "Unsupported declarative SQL parameter type: "
                         + parameter.typeName().resolvedName());
             }
         }
@@ -78,7 +75,7 @@ final class JdbcSqlParameterPlan {
                 throw failure(method, "SQL marker ':" + marker + "' has no matching repository parameter");
             }
             used.add(marker);
-            binds.add(new Bind(position++, parameter, jdbcType(parameter)));
+            binds.add(new Bind(position++, parameter));
         }
         for (TypedElementInfo parameter : bindableParameters) {
             if (!used.contains(parameter.elementName())) {
@@ -96,52 +93,10 @@ final class JdbcSqlParameterPlan {
         return binds;
     }
 
-    private static String jdbcType(TypedElementInfo parameter) {
-        String explicit = parameter.findAnnotation(JdbcCodegenTypes.DATA_JDBC_TYPE)
-                .flatMap(Annotation::value)
-                .map(value -> {
-                    int separator = Math.max(value.lastIndexOf('.'), value.lastIndexOf('#'));
-                    return separator < 0 ? value : value.substring(separator + 1);
-                })
-                .orElse(null);
-        if (explicit != null || parameter.typeName().primitive()) {
-            return explicit;
-        }
-        return inferredJdbcType(parameter.typeName());
-    }
-
-    private static String inferredJdbcType(TypeName type) {
-        if (type.array() && type.componentType().map(TypeName::fqName).filter("byte"::equals).isPresent()) {
-            return "VARBINARY";
-        }
-        return switch (type.boxed().genericTypeName().fqName()) {
-            case "java.lang.Boolean" -> "BOOLEAN";
-            case "java.lang.Byte" -> "TINYINT";
-            case "java.lang.Short" -> "SMALLINT";
-            case "java.lang.Integer" -> "INTEGER";
-            case "java.lang.Long" -> "BIGINT";
-            case "java.lang.Float" -> "REAL";
-            case "java.lang.Double" -> "DOUBLE";
-            case "java.math.BigDecimal" -> "DECIMAL";
-            case "java.math.BigInteger" -> "NUMERIC";
-            case "java.lang.String" -> "VARCHAR";
-            case "java.util.UUID" -> "OTHER";
-            case "java.time.LocalDate", "java.sql.Date" -> "DATE";
-            case "java.time.LocalTime", "java.sql.Time" -> "TIME";
-            case "java.time.LocalDateTime", "java.sql.Timestamp" -> "TIMESTAMP";
-            case "java.time.OffsetTime" -> "TIME_WITH_TIMEZONE";
-            case "java.time.OffsetDateTime", "java.time.Instant" -> "TIMESTAMP_WITH_TIMEZONE";
-            default -> null;
-        };
-    }
-
     private static CodegenException failure(TypedElementInfo method, String message) {
         return new CodegenException(message, method.originatingElementValue());
     }
 
-    record Bind(int position, TypedElementInfo parameter, String jdbcType) {
-        boolean typed() {
-            return jdbcType != null;
-        }
+    record Bind(int position, TypedElementInfo parameter) {
     }
 }

@@ -19,17 +19,17 @@ import java.time.Duration;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.CoreMatchers.sameInstance;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class JdbcStatementOptionsTest {
 
     @Test
     void createsReusableEmptyOptions() {
-        assertSame(JdbcStatementOptions.EMPTY, JdbcStatementOptions.builder().build());
+        assertThat(JdbcStatementOptions.builder().build(), sameInstance(JdbcStatementOptions.EMPTY));
     }
 
     @Test
@@ -48,20 +48,19 @@ class JdbcStatementOptionsTest {
 
         JdbcStatementOptions merged = defaults.overlay(override);
 
-        assertEquals(0, merged.fetchSize());
-        assertEquals(Duration.ofSeconds(5), merged.queryTimeout());
-        assertEquals(10, merged.maxRows());
-        assertFalse(merged.poolableHint());
-        assertNull(JdbcStatementOptions.EMPTY.fetchSize());
-        assertNull(JdbcStatementOptions.EMPTY.poolableHint());
+        assertThat(merged.fetchSize(), is(0));
+        assertThat(merged.queryTimeout(), is(Duration.ofSeconds(5)));
+        assertThat(merged.maxRows(), is(10L));
+        assertThat(merged.poolableHint(), is(false));
+        assertThat(JdbcStatementOptions.EMPTY.fetchSize(), nullValue());
+        assertThat(JdbcStatementOptions.EMPTY.poolableHint(), nullValue());
     }
 
     @Test
     void rejectsInvalidValues() {
-        assertThrows(IllegalArgumentException.class,
-                     () -> JdbcStatementOptions.builder().fetchSize(-1));
-        assertThrows(IllegalArgumentException.class,
-                     () -> JdbcStatementOptions.builder().maxRows(-1));
+        assertThrows(IllegalArgumentException.class, () -> JdbcStatementOptions.builder().fetchSize(-1));
+        assertThrows(IllegalArgumentException.class, () -> JdbcStatementOptions.builder().maxRows(-1));
+        assertThrows(NullPointerException.class, () -> JdbcStatementOptions.builder().queryTimeout(null));
         assertThrows(IllegalArgumentException.class,
                      () -> JdbcStatementOptions.builder().queryTimeout(Duration.ofMillis(1)));
         assertThrows(IllegalArgumentException.class,

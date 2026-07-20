@@ -15,10 +15,14 @@
  */
 package io.helidon.data.jdbc.codegen;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import io.helidon.codegen.CodegenContext;
 import io.helidon.codegen.classmodel.Annotation;
@@ -38,8 +42,6 @@ import io.helidon.data.codegen.common.RepositoryInfo;
  * Emits validated repository methods as direct calls to the public JDBC client.
  */
 final class JdbcMethodGenerator {
-    private static final TypeName JDBC_TYPE = TypeName.create("java.sql.JDBCType");
-
     private JdbcMethodGenerator() {
     }
 
@@ -53,20 +55,100 @@ final class JdbcMethodGenerator {
                 .filter(element -> element.elementModifiers().contains(Modifier.ABSTRACT))
                 .toList();
         Map<String, Integer> generatedNames = new HashMap<>();
+        List<JdbcMethodPlan> plans = new ArrayList<>(methods.size());
         for (TypedElementInfo method : methods) {
             JdbcMethodPlan plan = JdbcMethodPlan.create(method, context);
             String suffix = uniqueSuffix(method.elementName(), generatedNames);
             plan.sqlFieldName("SQL_" + suffix);
             plan.mapperFieldName("MAPPER_" + suffix);
+            plan.callFieldName("CALL_" + suffix);
+            plans.add(plan);
+        }
 
+        List<MapperDependency> mapperDependencies = mapperDependencies(plans, classModel, context);
+        JdbcRepositoryClassGenerator.generateConstructor(classModel, repositoryInfo, mapperDependencies);
+
+        for (JdbcMethodPlan plan : plans) {
+            String suffix = plan.sqlFieldName().substring("SQL_".length());
             classModel.addField(field -> field.name(plan.sqlFieldName())
                     .type(TypeNames.STRING)
                     .isStatic(true)
                     .isFinal(true)
-                    .addContentLiteral(plan.parameterPlan().sql()));
+                    .addContentLiteral(plan.jdbcSql()));
+            if (plan.operation() == JdbcMethodPlan.Operation.CALL) {
+                generateCallLayout(plan, classModel);
+            }
             generateMapping(plan, classModel, context, suffix);
             classModel.addMethod(builder -> generateMethod(plan, builder));
         }
+    }
+
+    private static void generateCallLayout(JdbcMethodPlan plan, ClassModel.Builder classModel) {
+        classModel.addField(field -> {
+            field.name(plan.callFieldName())
+                    .type(JdbcCodegenTypes.JDBC_CALL)
+                    .isStatic(true)
+                    .isFinal(true)
+                    .addContent(JdbcCodegenTypes.JDBC_CALL)
+                    .addContent(".builder()");
+            for (JdbcCallParameterPlan.Parameter parameter : plan.callParameterPlan().parameters()) {
+                field.addContent(".");
+                switch (parameter.direction()) {
+                case IN -> {
+                    field.addContent("in(")
+                            .addContent(String.valueOf(parameter.position()));
+                    if (parameter.jdbcType() != Integer.MIN_VALUE) {
+                        field.addContent(", ").addContent(String.valueOf(parameter.jdbcType()));
+                    }
+                    field.addContent(")");
+                }
+                case OUT, INOUT -> {
+                    field.addContent(parameter.direction() == JdbcCallParameterPlan.Direction.OUT ? "out(" : "inOut(")
+                            .addContent(String.valueOf(parameter.position()))
+                            .addContent(", ")
+                            .addContentLiteral(parameter.name())
+                            .addContent(", ")
+                            .addContent(String.valueOf(parameter.jdbcType()))
+                            .addContent(", ")
+                            .addContent(parameter.javaType())
+                            .addContent(".class");
+                    addTypeName(field, parameter.typeName());
+                }
+                case CURSOR -> {
+                    field.addContent("cursor(")
+                            .addContent(String.valueOf(parameter.position()))
+                            .addContent(", ")
+                            .addContentLiteral(parameter.name());
+                    if (parameter.jdbcType() != 2012 || !parameter.typeName().isEmpty()) {
+                        field.addContent(", ").addContent(String.valueOf(parameter.jdbcType()));
+                    }
+                    if (!parameter.typeName().isEmpty()) {
+                        field.addContent(", ").addContentLiteral(parameter.typeName());
+                    }
+                    field.addContent(")");
+                }
+                case RETURN -> {
+                    field.addContent("returns(")
+                            .addContentLiteral(parameter.name())
+                            .addContent(", ")
+                            .addContent(String.valueOf(parameter.jdbcType()))
+                            .addContent(", ")
+                            .addContent(parameter.javaType())
+                            .addContent(".class");
+                    addTypeName(field, parameter.typeName());
+                }
+                default -> throw new AssertionError("Unknown JDBC call direction: " + parameter.direction());
+                }
+            }
+            field.addContent(".build()");
+        });
+    }
+
+    private static void addTypeName(io.helidon.codegen.classmodel.Field.Builder field, String typeName) {
+        if (!typeName.isEmpty()) {
+            field.addContent(", ").addContentLiteral(typeName);
+        }
+        field.addContent(")");
     }
 
     private static void generateMapping(JdbcMethodPlan plan,
@@ -77,21 +159,24 @@ final class JdbcMethodGenerator {
         case NONE, SCALAR -> {
             // Scalar results use JdbcClient's fixed codec and do not need generated mapper state.
         }
-        case RECORD -> JdbcRecordMapperGenerator.generate(plan, classModel, context);
-        case BEAN -> JdbcBeanMapperGenerator.generate(plan, classModel, context);
-        case EXPLICIT -> generateExplicitMapper(plan, classModel, context);
+        case RECORD -> {
+            if (plan.operation() == JdbcMethodPlan.Operation.GENERATED_KEYS) {
+                JdbcRecordMapperGenerator.generate(plan, plan.mapperFieldName(), classModel, context);
+            }
+        }
+        case SERVICE, EXPLICIT -> {
+            // Repository construction resolves these mappers once from the service registry.
+        }
         case REDUCER -> validateExplicitReducer(plan, context);
-        case GRAPH -> {
+        case IDENTITY_REDUCTION -> {
             plan.mapperFieldName("Reducer_" + mixedCase(suffix));
-            JdbcGraphReducerGenerator.generate(plan, classModel, context);
+            JdbcIdentityReducerGenerator.generate(plan, classModel, context);
         }
         default -> throw new AssertionError("Unknown JDBC mapping kind: " + plan.mappingKind());
         }
     }
 
-    private static void generateExplicitMapper(JdbcMethodPlan plan,
-                                               ClassModel.Builder classModel,
-                                               CodegenContext context) {
+    private static void validateExplicitMapper(JdbcMethodPlan plan, CodegenContext context) {
         TypeName mapperType = plan.explicitMapper();
         TypeInfo mapperInfo = context.typeInfo(mapperType)
                 .orElseThrow(() -> JdbcMethodPlan.failure(plan.method(),
@@ -113,17 +198,6 @@ final class JdbcMethodGenerator {
             throw JdbcMethodPlan.failure(plan.method(), "Mapper is not accessible to generated code: "
                     + mapperType.resolvedName());
         }
-        boolean constructor = mapperInfo.elementInfo()
-                .stream()
-                .filter(element -> element.kind() == ElementKind.CONSTRUCTOR)
-                .filter(element -> element.parameterArguments().isEmpty())
-                .anyMatch(element -> element.accessModifier() == AccessModifier.PUBLIC
-                        || (samePackage && (element.accessModifier() == AccessModifier.PACKAGE_PRIVATE
-                        || element.accessModifier() == AccessModifier.PROTECTED)));
-        if (!constructor) {
-            throw JdbcMethodPlan.failure(plan.method(), "Mapper requires an accessible no-argument constructor: "
-                    + mapperType.resolvedName());
-        }
         TypeName mappedInterface = findImplementedInterface(mapperInfo, JdbcCodegenTypes.ROW_MAPPER);
         if (mappedInterface == null
                 || mappedInterface.typeArguments().size() != 1
@@ -131,13 +205,73 @@ final class JdbcMethodGenerator {
             throw JdbcMethodPlan.failure(plan.method(), "Mapper must implement JdbcClient.RowMapper<"
                     + plan.mappedType().resolvedName() + "> directly or through its type hierarchy");
         }
-        classModel.addField(field -> field.name(plan.mapperFieldName())
-                .type(mapperType)
-                .isStatic(true)
-                .isFinal(true)
-                .addContent("new ")
-                .addContent(mapperType)
-                .addContent("()"));
+    }
+
+    private static List<MapperDependency> mapperDependencies(List<JdbcMethodPlan> plans,
+                                                             ClassModel.Builder classModel,
+                                                             CodegenContext context) {
+        Map<MapperDependencyKey, List<JdbcMethodPlan>> groupedPlans = new LinkedHashMap<>();
+        for (JdbcMethodPlan plan : plans) {
+            if (plan.mappingKind() == JdbcMethodPlan.MappingKind.EXPLICIT) {
+                validateExplicitMapper(plan, context);
+                MapperDependencyKey key = new MapperDependencyKey(plan.explicitMapper(), plan.mappedType(), true, false);
+                groupedPlans.computeIfAbsent(key, ignored -> new ArrayList<>()).add(plan);
+            } else if ((plan.operation() == JdbcMethodPlan.Operation.QUERY
+                    && (plan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD
+                    || plan.mappingKind() == JdbcMethodPlan.MappingKind.SERVICE))
+                    || (plan.operation() == JdbcMethodPlan.Operation.GENERATED_KEYS
+                    && plan.mappingKind() == JdbcMethodPlan.MappingKind.SERVICE)) {
+                boolean optional = plan.operation() == JdbcMethodPlan.Operation.QUERY
+                        && plan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD;
+                MapperDependencyKey key = new MapperDependencyKey(plan.mappedType(),
+                                                                  plan.mappedType(),
+                                                                  false,
+                                                                  optional);
+                groupedPlans.computeIfAbsent(key, ignored -> new ArrayList<>()).add(plan);
+            }
+        }
+
+        Map<String, Integer> fieldNames = new HashMap<>();
+        fieldNames.put("jdbcClient", 1);
+        List<MapperDependency> dependencies = new ArrayList<>(groupedPlans.size());
+        for (Map.Entry<MapperDependencyKey, List<JdbcMethodPlan>> entry : groupedPlans.entrySet()) {
+            MapperDependencyKey key = entry.getKey();
+            List<JdbcMethodPlan> mappedPlans = entry.getValue();
+            TypeName mapperContract = TypeName.builder(JdbcCodegenTypes.ROW_MAPPER)
+                    .addTypeArgument(key.mappedType())
+                    .build();
+            String baseName = lowerCamel(key.explicit() ? key.serviceType().className() : key.mappedType().className())
+                    + (key.explicit() ? "" : "RowMapper");
+            String fieldName = uniqueVariable(baseName, fieldNames);
+            String fallbackFieldName = "";
+            boolean optional = key.optional();
+
+            if (optional) {
+                fallbackFieldName = "DEFAULT_" + constantCase(fieldName);
+                JdbcRecordMapperGenerator.generate(mappedPlans.getFirst(), fallbackFieldName, classModel, context);
+            }
+            classModel.addField(field -> field.name(fieldName)
+                    .type(mapperContract)
+                    .isFinal(true));
+            mappedPlans.forEach(plan -> plan.mapperFieldName(fieldName));
+
+            TypeName parameterType;
+            if (key.explicit()) {
+                parameterType = key.serviceType();
+            } else if (optional) {
+                parameterType = TypeName.builder(JdbcCodegenTypes.OPTIONAL)
+                        .addTypeArgument(mapperContract)
+                        .build();
+            } else {
+                parameterType = mapperContract;
+            }
+            dependencies.add(new MapperDependency(parameterType,
+                                                   fieldName,
+                                                   fieldName,
+                                                   optional,
+                                                   fallbackFieldName));
+        }
+        return dependencies;
     }
 
     private static void validateExplicitReducer(JdbcMethodPlan plan, CodegenContext context) {
@@ -211,47 +345,145 @@ final class JdbcMethodGenerator {
             plan.method().findAnnotation(txAnnotation).ifPresent(method::addAnnotation);
         }
 
+        if (plan.operation() == JdbcMethodPlan.Operation.CALL && plan.callResultPlan().detached()) {
+            generateDetachedCall(plan, method);
+            return;
+        }
+
         boolean returnsValue = !plan.method().typeName().equals(TypeNames.PRIMITIVE_VOID);
+        boolean intUpdate = plan.operation() == JdbcMethodPlan.Operation.UPDATE
+                && plan.method().typeName().equals(TypeNames.PRIMITIVE_INT);
         if (returnsValue) {
             method.addContent("return ");
+            if (intUpdate) {
+                // JDBC reports an update count as long. Keep the narrower repository contract checked instead of truncating.
+                method.addContent(Math.class)
+                        .addContent(".toIntExact(");
+            }
         }
         method.addContent("jdbcClient.create(")
                 .addContent(plan.sqlFieldName())
                 .addContent(")");
-        for (JdbcSqlParameterPlan.Bind bind : plan.parameterPlan().binds()) {
-            method.addContent(".bind(")
-                    .addContent(String.valueOf(bind.position()))
-                    .addContent(", ")
-                    .addContent(bind.parameter().elementName());
-            if (bind.typed()) {
-                method.addContent(", ")
-                        .addContent(JDBC_TYPE)
-                        .addContent(".")
-                        .addContent(bind.jdbcType());
+        if (plan.optionsParameter() != null) {
+            method.addContent(".options(")
+                    .addContent(plan.optionsParameter().elementName())
+                    .addContent(")");
+        }
+        if (plan.operation() == JdbcMethodPlan.Operation.CALL) {
+            for (JdbcCallParameterPlan.Bind bind : plan.callParameterPlan().binds()) {
+                addBind(method, bind.position(), bind.parameter());
             }
-            method.addContent(")");
+        } else {
+            for (JdbcSqlParameterPlan.Bind bind : plan.parameterPlan().binds()) {
+                addBind(method, bind.position(), bind.parameter());
+            }
+        }
+
+        if (plan.operation() == JdbcMethodPlan.Operation.CALL) {
+            method.addContent(".call(")
+                    .addContent(plan.callFieldName());
+            if (plan.requestParameter() != null) {
+                method.addContent(", ").addContent(plan.requestParameter().elementName());
+            }
+            method.addContentLine(");");
+            return;
         }
 
         if (plan.operation() == JdbcMethodPlan.Operation.UPDATE) {
-            method.addContentLine(".execute();");
+            method.addContent(".execute()");
+            if (intUpdate) {
+                method.addContent(")");
+            }
+            method.addContentLine(";");
             return;
         }
         if (plan.mappingKind() == JdbcMethodPlan.MappingKind.REDUCER) {
             method.addContent(".reduce(new ")
                     .addContent(plan.explicitReducer())
                     .addContent("()");
-            addReducerRequest(plan, method);
+            addReducerRequest(method);
             return;
         }
-        if (plan.mappingKind() == JdbcMethodPlan.MappingKind.GRAPH) {
+        if (plan.mappingKind() == JdbcMethodPlan.MappingKind.IDENTITY_REDUCTION) {
             method.addContent(".reduce(new ")
                     .addContent(plan.mapperFieldName())
                     .addContent("()");
-            addReducerRequest(plan, method);
+            addReducerRequest(method);
             return;
         }
         addMappingStage(plan, method);
         addTerminal(plan, method);
+    }
+
+    private static void generateDetachedCall(JdbcMethodPlan plan, Method.Builder method) {
+        String outputVariable = localName(plan, "callOutputValues");
+        method.addContent(JdbcCodegenTypes.JDBC_CALL_OUTPUT_VALUES)
+                .addContent(" ")
+                .addContent(outputVariable)
+                .addContent(" = jdbcClient.create(")
+                .addContent(plan.sqlFieldName())
+                .addContent(")");
+        if (plan.optionsParameter() != null) {
+            method.addContent(".options(")
+                    .addContent(plan.optionsParameter().elementName())
+                    .addContent(")");
+        }
+        for (JdbcCallParameterPlan.Bind bind : plan.callParameterPlan().binds()) {
+            addBind(method, bind.position(), bind.parameter());
+        }
+        method.addContent(".callForOutputs(")
+                .addContent(plan.callFieldName())
+                .addContentLine(");");
+
+        JdbcCallResultPlan result = plan.callResultPlan();
+        method.addContent("return ");
+        if (result.kind() == JdbcCallResultPlan.Kind.RECORD) {
+            method.addContent("new ")
+                    .addContent(result.resultType())
+                    .addContent("(");
+            for (int i = 0; i < result.components().size(); i++) {
+                if (i > 0) {
+                    method.addContent(", ");
+                }
+                addOutputRead(method, outputVariable, result.components().get(i));
+            }
+            method.addContentLine(");");
+            return;
+        }
+        addOutputRead(method, outputVariable, result.components().getFirst());
+        method.addContentLine(";");
+    }
+
+    private static void addOutputRead(Method.Builder method,
+                                      String outputVariable,
+                                      JdbcCallResultPlan.Component component) {
+        method.addContent(outputVariable)
+                .addContent(component.optional() ? ".optional(" : ".required(")
+                .addContentLiteral(component.name())
+                .addContent(", ")
+                .addContent(component.valueType().boxed())
+                .addContent(".class)");
+    }
+
+    private static String localName(JdbcMethodPlan plan, String base) {
+        Set<String> parameterNames = plan.method().parameterArguments()
+                .stream()
+                .map(TypedElementInfo::elementName)
+                .collect(Collectors.toSet());
+        String candidate = base;
+        int suffix = 2;
+        while (parameterNames.contains(candidate)) {
+            candidate = base + suffix++;
+        }
+        return candidate;
+    }
+
+    private static void addBind(Method.Builder method, int position, TypedElementInfo parameter) {
+        method.addContent(".bind(")
+                .addContent(String.valueOf(position))
+                .addContent(", ")
+                .addContent(parameter.elementName())
+                .addContent(")");
     }
 
     private static void addMappingStage(JdbcMethodPlan plan, Method.Builder method) {
@@ -276,13 +508,10 @@ final class JdbcMethodGenerator {
     }
 
     private static void addTerminal(JdbcMethodPlan plan, Method.Builder method) {
-        String requestArgument = plan.requestKind() == JdbcMethodPlan.RequestKind.REGULAR
-                ? plan.requestParameter().elementName()
-                : null;
         switch (plan.returnShape()) {
-        case ITEM -> addTerminal(method, "one", requestArgument);
-        case OPTIONAL -> addTerminal(method, "optional", requestArgument);
-        case LIST -> addTerminal(method, "list", requestArgument);
+        case ITEM -> addTerminal(method, "one");
+        case OPTIONAL -> addTerminal(method, "optional");
+        case LIST -> addTerminal(method, "list");
         case VISIT_ALL -> method.addContent(".visitAll(")
                 .addContent(plan.requestParameter().elementName())
                 .addContentLine(");");
@@ -293,21 +522,13 @@ final class JdbcMethodGenerator {
         }
     }
 
-    private static void addTerminal(Method.Builder method, String terminal, String requestArgument) {
+    private static void addTerminal(Method.Builder method, String terminal) {
         method.addContent(".")
                 .addContent(terminal)
-                .addContent("(");
-        if (requestArgument != null) {
-            method.addContent(requestArgument);
-        }
-        method.addContentLine(");");
+                .addContentLine("();");
     }
 
-    private static void addReducerRequest(JdbcMethodPlan plan, Method.Builder method) {
-        if (plan.requestKind() == JdbcMethodPlan.RequestKind.REGULAR) {
-            method.addContent(", ")
-                    .addContent(plan.requestParameter().elementName());
-        }
+    private static void addReducerRequest(Method.Builder method) {
         method.addContentLine(");");
     }
 
@@ -315,6 +536,18 @@ final class JdbcMethodGenerator {
         String base = constantCase(methodName);
         int count = names.merge(base, 1, Integer::sum);
         return count == 1 ? base : base + "_" + count;
+    }
+
+    private static String uniqueVariable(String baseName, Map<String, Integer> names) {
+        int count = names.merge(baseName, 1, Integer::sum);
+        return count == 1 ? baseName : baseName + count;
+    }
+
+    private static String lowerCamel(String value) {
+        if (value.isEmpty()) {
+            return value;
+        }
+        return Character.toLowerCase(value.charAt(0)) + value.substring(1);
     }
 
     private static String constantCase(String value) {
@@ -344,5 +577,32 @@ final class JdbcMethodGenerator {
                 .map(TypeName::packageName)
                 .filter(type.packageName()::equals)
                 .isPresent();
+    }
+
+    /**
+     * One statically typed mapper injection point and its repository field.
+     *
+     * @param parameterType injected service type, optionally wrapped in {@code Optional}
+     * @param parameterName generated constructor parameter name
+     * @param fieldName generated effective mapper field name
+     * @param optional whether a missing service uses the generated record mapper
+     * @param fallbackFieldName generated record-mapper field, or an empty string when the service is required
+     */
+    record MapperDependency(TypeName parameterType,
+                            String parameterName,
+                            String fieldName,
+                            boolean optional,
+                            String fallbackFieldName) {
+    }
+
+    /**
+     * Groups repository methods that share one exact mapper-service resolution.
+     *
+     * @param serviceType explicit mapper implementation type, or mapped type for automatic selection
+     * @param mappedType mapper result type
+     * @param explicit whether {@code Jdbc.RowMapper} selected the service type
+     * @param optional whether record mapping supplies a generated fallback
+     */
+    private record MapperDependencyKey(TypeName serviceType, TypeName mappedType, boolean explicit, boolean optional) {
     }
 }

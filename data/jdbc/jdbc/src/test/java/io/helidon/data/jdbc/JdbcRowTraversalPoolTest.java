@@ -47,17 +47,17 @@ class JdbcRowTraversalPoolTest {
                 List<String> visited = new ArrayList<>();
                 client.create("SELECT NAME FROM USERS ORDER BY ID")
                         .map(String.class)
-                        .visitAll(JdbcQueryRequest.visitAll(visited::add));
+                        .visitAll(JdbcResultRequest.visitAll(visited::add));
                 assertEquals(List.of("Ada", "Grace", "Linus"), visited);
 
                 assertFalse(client.create("SELECT NAME FROM USERS ORDER BY ID")
                                     .map(String.class)
-                                    .visitWhile(JdbcQueryRequest.visitWhile(ignored -> false)));
+                                    .visitWhile(JdbcResultRequest.visitWhile(ignored -> false)));
 
                 assertEquals(List.of("Ada", "Grace", "Linus"),
                              client.create("SELECT NAME FROM USERS ORDER BY ID")
                                      .map(String.class)
-                                     .list(JdbcQueryRequest.defaults()));
+                                     .list());
             }
 
             assertEquals(0, dataSource.getHikariPoolMXBean().getActiveConnections());

@@ -42,20 +42,24 @@ final class JdbcPreparationPlan {
         /** A DML operation must produce an update count. */
         UPDATE,
         /** An update must produce a generated-key result set. */
-        GENERATED_KEYS
+        GENERATED_KEYS,
+        /** A stored procedure or function uses a callable statement and callback-scoped results. */
+        CALL
     }
 
     /** Shared empty generated-column array for query and update plans. */
     private static final String[] NO_COLUMNS = new String[0];
     /** Shared immutable query plan. */
-    private static final JdbcPreparationPlan QUERY = new JdbcPreparationPlan(ResultKind.QUERY, NO_COLUMNS);
+    private static final JdbcPreparationPlan QUERY = new JdbcPreparationPlan(ResultKind.QUERY, NO_COLUMNS, null);
     /** Shared immutable update plan. */
-    private static final JdbcPreparationPlan UPDATE = new JdbcPreparationPlan(ResultKind.UPDATE, NO_COLUMNS);
+    private static final JdbcPreparationPlan UPDATE = new JdbcPreparationPlan(ResultKind.UPDATE, NO_COLUMNS, null);
 
     /** Primary result kind. */
     private final ResultKind resultKind;
     /** Requested generated-key columns, copied at construction. */
     private final String[] generatedColumns;
+    /** Callable parameter layout, or {@code null} for non-call operations. */
+    private final JdbcCall call;
 
     /**
      * Creates a validated plan.
@@ -63,9 +67,10 @@ final class JdbcPreparationPlan {
      * @param resultKind primary result kind
      * @param generatedColumns generated-key column names
      */
-    private JdbcPreparationPlan(ResultKind resultKind, String[] generatedColumns) {
+    private JdbcPreparationPlan(ResultKind resultKind, String[] generatedColumns, JdbcCall call) {
         this.resultKind = resultKind;
         this.generatedColumns = generatedColumns;
+        this.call = call;
     }
 
     /**
@@ -111,7 +116,19 @@ final class JdbcPreparationPlan {
                 throw new IllegalArgumentException("Duplicate generated column name: " + name);
             }
         }
-        return new JdbcPreparationPlan(ResultKind.GENERATED_KEYS, copy);
+        return new JdbcPreparationPlan(ResultKind.GENERATED_KEYS, copy, null);
+    }
+
+    /**
+     * Creates a callable-statement plan.
+     *
+     * @param call immutable callable parameter layout
+     * @return callable preparation plan
+     */
+    static JdbcPreparationPlan call(JdbcCall call) {
+        return new JdbcPreparationPlan(ResultKind.CALL,
+                                       NO_COLUMNS,
+                                       Objects.requireNonNull(call, "JDBC call layout must not be null"));
     }
 
     /**
@@ -133,5 +150,18 @@ final class JdbcPreparationPlan {
      */
     String[] generatedColumns() {
         return generatedColumns;
+    }
+
+    /**
+     * Returns the callable layout.
+     *
+     * @return callable layout
+     * @throws IllegalStateException if this is not a callable plan
+     */
+    JdbcCall call() {
+        if (call == null) {
+            throw new IllegalStateException("JDBC preparation plan is not callable");
+        }
+        return call;
     }
 }

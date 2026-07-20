@@ -89,6 +89,15 @@ public final class JdbcStatementOptions {
     }
 
     /**
+     * Tests whether this value configures no statement setting.
+     *
+     * @return {@code true} when every setting is absent
+     */
+    boolean empty() {
+        return fetchSize == null && queryTimeout == null && maxRows == null && poolableHint == null;
+    }
+
+    /**
      * Overlays explicitly configured values on this options value.
      *
      * @param override invocation-level overrides
@@ -112,7 +121,11 @@ public final class JdbcStatementOptions {
      * Mutable builder for immutable {@link JdbcStatementOptions} instances.
      * <p>
      * A builder is not thread-safe. It may be reused; each call to {@link #build()} creates an independent immutable
-     * snapshot. Callback-based row traversal instead uses the single-use {@link JdbcQueryRequest.Builder}.
+     * snapshot. Callback-based row traversal composes a snapshot through
+     * {@link JdbcResultRequest.VisitAll#withOptions(JdbcStatementOptions)} or
+     * {@link JdbcResultRequest.VisitWhile#withOptions(JdbcStatementOptions)}. Callable callbacks use
+     * {@link JdbcResultRequest.Call#withOptions(JdbcStatementOptions)} or
+     * {@link JdbcResultRequest.CallWith#withOptions(JdbcStatementOptions)}.
      */
     public static final class Builder {
         private Integer fetchSize;

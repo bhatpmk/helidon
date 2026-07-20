@@ -15,6 +15,7 @@
  */
 package io.helidon.data.jdbc;
 
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -25,7 +26,6 @@ import java.sql.SQLWarning;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -33,44 +33,45 @@ import java.util.function.Predicate;
 import javax.sql.DataSource;
 
 import io.helidon.data.DataException;
-import io.helidon.data.NoResultException;
-import io.helidon.data.NonUniqueResultException;
 
 /**
- * Single package-private execution engine for prepared JDBC operations.
+ * Package-private lifecycle orchestrator for prepared JDBC operations.
  *
  * <p>Generated declarative repositories reach this class only through the
  * public {@link JdbcClient} stages. Keeping lease acquisition, preparation,
- * binding, execution, row mapping, warning handling, exception translation,
- * and cleanup here prevents the materializing, reducer, and callback-based traversal terminals
- * from developing different JDBC semantics.</p>
+ * option application, binding, warning handling, exception translation, and
+ * cleanup here prevents execution-specific handlers from developing different
+ * JDBC ownership semantics.</p>
  *
- * <p>Query terminals share {@link JdbcResultCursor}; update-only execution
- * uses the direct update path and does not create a cursor. JDBC resources are
- * always provider-owned. A transaction lease can therefore release the
- * operation without closing the transaction's physical connection.</p>
+ * <p>{@link JdbcQueryHandler} owns QUERY result semantics, {@link JdbcUpdateHandler} owns UPDATE and generated-key
+ * semantics, and {@link JdbcCallHandler} owns callable result semantics. JDBC resources remain runner-owned, so a
+ * transaction lease can release an operation without closing the transaction's physical connection.</p>
  */
 final class JdbcRunner {
     /** Datasource used when an operation acquires a connection lease. */
     private final DataSource dataSource;
-    /** Client-level options overlaid by operation-level options. */
-    private final JdbcStatementOptions defaults;
     /** Policy that supplies owned or transaction-bound operation leases. */
     private final JdbcConnectionLease.Provider leaseProvider;
+    /** QUERY semantics, including mapping, cardinality, reduction, and traversal. */
+    private final JdbcQueryHandler queryHandler;
+    /** UPDATE and generated-key semantics. */
+    private final JdbcUpdateHandler updateHandler;
+    /** Stored-procedure and function semantics. */
+    private final JdbcCallHandler callHandler;
 
     /**
      * Creates an execution engine with fixed datasource and lease policy.
      *
      * @param dataSource datasource used for JDBC operations
-     * @param defaults default execution options
      * @param leaseProvider operation-lease provider
      */
     JdbcRunner(DataSource dataSource,
-               JdbcStatementOptions defaults,
                JdbcConnectionLease.Provider leaseProvider) {
         this.dataSource = dataSource;
-        this.defaults = defaults;
         this.leaseProvider = leaseProvider;
+        this.queryHandler = new JdbcQueryHandler();
+        this.updateHandler = new JdbcUpdateHandler(queryHandler);
+        this.callHandler = new JdbcCallHandler(queryHandler);
     }
 
     /**
@@ -80,12 +81,54 @@ final class JdbcRunner {
      * @return update count
      */
     long execute(JdbcOperation operation) {
-        // The lease scope is the connection ownership boundary for an update.
-        try (JdbcConnectionLease lease = leaseProvider.acquire(dataSource)) {
-            return executeOn(lease.connection(), operation);
-        } catch (SQLException e) {
-            throw JdbcExceptionTranslator.translate(operation, e);
-        }
+        return run(operation, updateHandler::execute);
+    }
+
+    /**
+     * Executes an input-only stored procedure with no result channels.
+     *
+     * @param operation immutable callable snapshot
+     */
+    void call(JdbcOperation operation) {
+        run(operation, scope -> {
+            callHandler.invoke(scope);
+            return null;
+        });
+    }
+
+    /**
+     * Executes a callable operation and snapshots all scalar outputs.
+     *
+     * @param operation immutable callable snapshot
+     * @return detached scalar output values
+     */
+    JdbcClient.CallOutputValues callForOutputs(JdbcOperation operation) {
+        return run(operation, callHandler::invokeForOutputs);
+    }
+
+    /**
+     * Executes a callable operation with a void callback.
+     *
+     * @param operation immutable callable snapshot
+     * @param request callback request
+     */
+    void call(JdbcOperation operation, JdbcResultRequest.Call request) {
+        run(operation, scope -> {
+            callHandler.invoke(scope, request);
+            return null;
+        });
+    }
+
+    /**
+     * Executes a callable operation whose callback creates a detached result.
+     *
+     * @param operation immutable callable snapshot
+     * @param request callback request
+     * @param <R> detached result type
+     * @return callback result
+     */
+    <R> R call(JdbcOperation operation, JdbcResultRequest.CallWith<R> request) {
+        return run(operation, scope -> callHandler.invoke(scope, request));
     }
 
     /**
@@ -166,25 +209,17 @@ final class JdbcRunner {
         connection.clearWarnings();
         try (PreparedStatement statement = prepare(connection, operation)) {
             try {
-                configure(statement, operation);
-                bind(statement, operation.binds());
+                configure(statement, operation.options());
+                bind(statement, operation.binds(), operation.preparationPlan());
                 statement.clearWarnings();
-
-                boolean resultSet = statement.execute();
-                if (resultSet) {
-                    // DML terminals cannot return a primary ResultSet; drain it before reporting the contract violation.
-                    boolean unexpected = drainFromCurrent(statement, true);
-                    DataException failure = unexpectedResult(operation, unexpected);
-                    preserveWarnings(failure, connection, statement, null);
-                    throw failure;
-                }
-
-                long updateCount = largeUpdateCount(statement);
-                // Check the JDBC end marker so an update cannot silently discard a second result.
-                rejectFollowingResults(statement, operation);
+                ExecutionScope scope = new ExecutionScope(operation, statement);
+                long updateCount = updateHandler.execute(scope);
                 preserveWarnings(null, connection, statement, null);
-                return updateCount < 0 ? 0 : updateCount;
+                return updateCount;
             } catch (SQLException e) {
+                preserveWarnings(e, connection, statement, null);
+                throw e;
+            } catch (RuntimeException | Error e) {
                 preserveWarnings(e, connection, statement, null);
                 throw e;
             }
@@ -224,10 +259,10 @@ final class JdbcRunner {
     }
 
     /**
-     * Rethrows a script failure while preserving its original exception category.
+     * Rethrows an operation failure while preserving its original exception category.
      *
-     * @param operation last script operation
-     * @param failure failure captured during script execution or cleanup
+     * @param operation operation used for SQL diagnostics
+     * @param failure failure captured during execution or cleanup
      */
     private static void rethrow(JdbcOperation operation, Throwable failure) {
         if (failure instanceof SQLException sqlException) {
@@ -239,7 +274,7 @@ final class JdbcRunner {
         if (failure instanceof Error error) {
             throw error;
         }
-        throw new DataException("JDBC initialization script failed", failure);
+        throw new DataException("JDBC operation failed", failure);
     }
 
     /**
@@ -251,17 +286,11 @@ final class JdbcRunner {
      * @return the only mapped value
      */
     <T> T one(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
-        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
-            if (!cursor.hasNextValue()) {
-                throw new NoResultException("JDBC query returned no rows");
-            }
-            T result = cursor.nextValue();
-            // A second advance distinguishes exactly-one semantics from optional or list semantics.
-            if (cursor.hasNextValue()) {
-                throw new NonUniqueResultException("JDBC query returned more than one row");
-            }
-            return result;
-        }
+        return switch (operation.preparationPlan().resultKind()) {
+            case QUERY -> run(operation, scope -> queryHandler.one(scope, mapper));
+            case GENERATED_KEYS -> run(operation, scope -> updateHandler.oneGeneratedKey(scope, mapper));
+            case UPDATE, CALL -> throw incompatibleTerminal(operation, "one");
+        };
     }
 
     /**
@@ -273,17 +302,11 @@ final class JdbcRunner {
      * @return empty for no row, otherwise the mapped value
      */
     <T> Optional<T> optional(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
-        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
-            if (!cursor.hasNextValue()) {
-                return Optional.empty();
-            }
-            T result = cursor.nextValue();
-            // Optional still rejects a second row; it represents zero-or-one, not first-row selection.
-            if (cursor.hasNextValue()) {
-                throw new NonUniqueResultException("JDBC query returned more than one row");
-            }
-            return Optional.ofNullable(result);
-        }
+        return switch (operation.preparationPlan().resultKind()) {
+            case QUERY -> run(operation, scope -> queryHandler.optional(scope, mapper));
+            case GENERATED_KEYS -> run(operation, scope -> updateHandler.optionalGeneratedKey(scope, mapper));
+            case UPDATE, CALL -> throw incompatibleTerminal(operation, "optional");
+        };
     }
 
     /**
@@ -295,22 +318,19 @@ final class JdbcRunner {
      * @return materialized mapped values
      */
     <T> List<T> list(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
-        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
-            List<T> result = new ArrayList<>();
-            // The cursor remains incremental, while this terminal deliberately materializes the returned list.
-            while (cursor.hasNextValue()) {
-                result.add(cursor.nextValue());
-            }
-            return result;
-        }
+        return switch (operation.preparationPlan().resultKind()) {
+            case QUERY -> run(operation, scope -> queryHandler.list(scope, mapper));
+            case GENERATED_KEYS -> run(operation, scope -> updateHandler.generatedKeys(scope, mapper));
+            case UPDATE, CALL -> throw incompatibleTerminal(operation, "list");
+        };
     }
 
     /**
      * Executes a query and reduces all physical rows into one logical result.
      *
-     * <p>The adapter converts the reducer callback into the same cursor mapper
-     * path used by ordinary row terminals. The reducer owns only logical state;
-     * the runner continues to own the row view and JDBC resources.</p>
+     * <p>The query handler delivers callback-scoped rows to the reducer. The
+     * reducer owns only logical state; the runner continues to own the row view
+     * and JDBC resources.</p>
      *
      * @param operation immutable query operation
      * @param reducer result-set-scoped reducer
@@ -318,17 +338,10 @@ final class JdbcRunner {
      * @return reducer result after successful exhaustion
      */
     <R> R reduce(JdbcOperation operation, JdbcClient.RowReducer<R> reducer) {
-        // Adapt reduction to the shared mapper loop without exposing the JDBC row or cursor to the reducer.
-        JdbcClient.RowMapper<Boolean> acceptingMapper = row -> {
-            reducer.accept(row);
-            return Boolean.TRUE;
-        };
-        try (JdbcResultCursor<Boolean> cursor = openResultCursor(operation, acceptingMapper)) {
-            while (cursor.hasNextValue()) {
-                cursor.nextValue();
-            }
-            return reducer.finish();
+        if (operation.preparationPlan().resultKind() != JdbcPreparationPlan.ResultKind.QUERY) {
+            throw incompatibleTerminal(operation, "reduce");
         }
+        return run(operation, scope -> queryHandler.reduce(scope, reducer));
     }
 
     /**
@@ -342,10 +355,17 @@ final class JdbcRunner {
     <T> void visitAll(JdbcOperation operation,
                       JdbcClient.RowMapper<T> mapper,
                       Consumer<? super T> action) {
-        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
-            while (cursor.hasNextValue()) {
-                action.accept(cursor.nextValue());
-            }
+        switch (operation.preparationPlan().resultKind()) {
+            case QUERY -> run(operation, scope -> {
+                queryHandler.visitAll(scope, mapper, action);
+                return null;
+            });
+            case GENERATED_KEYS -> run(operation, scope -> {
+                updateHandler.visitGeneratedKeys(scope, mapper, action);
+                return null;
+            });
+            case UPDATE -> throw incompatibleTerminal(operation, "visitAll");
+            default -> throw incompatibleTerminal(operation, "visitAll");
         }
     }
 
@@ -361,86 +381,71 @@ final class JdbcRunner {
     <T> boolean visitWhile(JdbcOperation operation,
                            JdbcClient.RowMapper<T> mapper,
                            Predicate<? super T> action) {
-        try (JdbcResultCursor<T> cursor = openResultCursor(operation, mapper)) {
-            while (cursor.hasNextValue()) {
-                if (!action.test(cursor.nextValue())) {
-                    // Leaving this scope closes the current result immediately; no lifecycle handle escapes to the caller.
-                    return false;
-                }
-            }
-            return true;
-        }
+        return switch (operation.preparationPlan().resultKind()) {
+            case QUERY -> run(operation, scope -> queryHandler.visitWhile(scope, mapper, action));
+            case GENERATED_KEYS -> run(operation, scope -> updateHandler.visitGeneratedKeysWhile(scope, mapper, action));
+            case UPDATE, CALL -> throw incompatibleTerminal(operation, "visitWhile");
+        };
     }
 
     /**
-     * Opens the provider-owned result path at terminal execution time.
+     * Executes one handler inside the runner-owned resource boundary.
      *
-     * <p>The method acquires the lease, prepares and configures the statement,
-     * binds values, executes the query or generated-key operation, and builds
-     * one metadata layout. Any failure before the cursor is returned closes
-     * every resource acquired so far.</p>
+     * <p>The operation scope is created only after the statement has been
+     * prepared, configured, and bound. The runner snapshots warnings and closes
+     * the current result set, statement, and logical lease before returning the
+     * handler result.</p>
      *
-     * @param operation immutable query or generated-key operation
-     * @param mapper mapper used by the returned cursor
-     * @param <T> mapped type
-     * @return open provider-owned cursor
+     * @param operation immutable operation
+     * @param action execution-specific handler action
+     * @param <T> terminal result type
+     * @return terminal result
      */
-    private <T> JdbcResultCursor<T> openResultCursor(JdbcOperation operation, JdbcClient.RowMapper<T> mapper) {
+    private <T> T run(JdbcOperation operation, HandlerAction<T> action) {
         JdbcConnectionLease lease = null;
         PreparedStatement statement = null;
-        ResultSet resultSet = null;
+        ExecutionScope scope = null;
+        T result = null;
+        Throwable failure = null;
         try {
             // The lease provider selects an owned connection or the active transaction-bound connection.
             lease = leaseProvider.acquire(dataSource);
             Connection connection = lease.connection();
             connection.clearWarnings();
-            // Preparation is deferred until this terminal path so stage construction remains I/O-free.
             statement = prepare(connection, operation);
-            configure(statement, operation);
-            bind(statement, operation.binds());
+            configure(statement, operation.options());
+            bind(statement, operation.binds(), operation.preparationPlan());
+            if (statement instanceof CallableStatement callableStatement) {
+                callHandler.registerOutputs(callableStatement, operation.preparationPlan().call());
+            }
             statement.clearWarnings();
-
-            if (operation.preparationPlan().resultKind() == JdbcPreparationPlan.ResultKind.GENERATED_KEYS) {
-                boolean hasResultSet = statement.execute();
-                if (hasResultSet) {
-                    // Generated-key execution expects an update first; drain an unexpected primary result before failing.
-                    boolean unexpected = drainFromCurrent(statement, true);
-                    DataException failure = unexpectedResult(operation, unexpected);
-                    preserveWarnings(failure, connection, statement, null);
-                    throw failure;
-                }
-                largeUpdateCount(statement);
-                resultSet = statement.getGeneratedKeys();
-            } else {
-                boolean hasResultSet = statement.execute();
-                if (!hasResultSet) {
-                    // Query terminals must receive a ResultSet, not an update count.
-                    drainFromCurrent(statement, false);
-                    DataException failure = unexpectedResult(operation, true);
-                    preserveWarnings(failure, connection, statement, null);
-                    throw failure;
-                }
-                resultSet = statement.getResultSet();
-            }
-
-            if (resultSet == null) {
-                DataException failure = new DataException("JDBC " + operation.preparationPlan().resultKind()
-                                                                  + " did not provide an expected result set");
-                preserveWarnings(failure, connection, statement, null);
-                throw failure;
-            }
-            // Metadata is resolved once so every row mapper can use label lookup without per-row metadata work.
-            JdbcColumnLayout columns = JdbcColumnLayout.create(resultSet.getMetaData(), operation);
-            return new JdbcResultCursor<>(operation, lease, statement, resultSet, columns, mapper);
-        } catch (SQLException e) {
-            // Partial-open failures have the same ownership rules as failures after the cursor is returned.
-            preserveWarnings(e, lease == null ? null : lease.connection(), statement, resultSet);
-            closeOnFailure(e, resultSet, statement, lease);
-            throw JdbcExceptionTranslator.translate(operation, e);
-        } catch (RuntimeException | Error e) {
-            closeOnFailure(e, resultSet, statement, lease);
-            throw e;
+            scope = new ExecutionScope(operation, statement);
+            result = action.execute(scope);
+        } catch (Throwable t) {
+            failure = t;
         }
+
+        Connection connection = lease == null ? null : lease.connection();
+        ResultSet resultSet = scope == null ? null : scope.resultSet();
+        preserveWarnings(failure, connection, statement, resultSet);
+        Throwable cleanupFailure = closeAll(resultSet, statement, lease);
+        if (cleanupFailure != null) {
+            if (failure == null) {
+                failure = cleanupFailure;
+            } else if (failure instanceof SQLException) {
+                // Preserve raw JDBC cleanup details on a primary JDBC failure before translating it.
+                failure.addSuppressed(cleanupFailure);
+            } else {
+                failure.addSuppressed(cleanupException(operation, cleanupFailure));
+            }
+        }
+        if (scope != null) {
+            scope.addCapturedResultWarnings(failure);
+        }
+        if (failure != null) {
+            rethrow(operation, failure);
+        }
+        return result;
     }
 
     /**
@@ -453,6 +458,9 @@ final class JdbcRunner {
      */
     private PreparedStatement prepare(Connection connection, JdbcOperation operation) throws SQLException {
         JdbcPreparationPlan plan = operation.preparationPlan();
+        if (plan.resultKind() == JdbcPreparationPlan.ResultKind.CALL) {
+            return connection.prepareCall(operation.sql());
+        }
         if (plan.resultKind() != JdbcPreparationPlan.ResultKind.GENERATED_KEYS) {
             // Ordinary query and update operations use the portable prepared-statement overload.
             return connection.prepareStatement(operation.sql());
@@ -465,26 +473,36 @@ final class JdbcRunner {
     }
 
     /**
-     * Applies effective statement options before execution.
+     * Applies configured statement options in one portable, deterministic order.
      *
-     * @param statement prepared statement to configure
-     * @param operation operation whose options override client defaults
-     * @throws SQLException if a driver rejects an option
+     * @param statement prepared statement
+     * @param options immutable operation options
+     * @throws SQLException if the driver rejects an explicitly requested option
      */
-    private void configure(PreparedStatement statement, JdbcOperation operation) throws SQLException {
-        JdbcStatementOptions options = defaults.overlay(operation.options());
+    private static void configure(PreparedStatement statement, JdbcStatementOptions options) throws SQLException {
         Integer fetchSize = options.fetchSize();
         if (fetchSize != null) {
             statement.setFetchSize(fetchSize);
         }
-        Duration timeout = options.queryTimeout();
-        if (timeout != null) {
-            statement.setQueryTimeout(Math.toIntExact(timeout.getSeconds()));
-        }
+
         Long maxRows = options.maxRows();
         if (maxRows != null) {
-            statement.setLargeMaxRows(maxRows);
+            try {
+                statement.setLargeMaxRows(maxRows);
+            } catch (SQLFeatureNotSupportedException e) {
+                if (maxRows > Integer.MAX_VALUE) {
+                    // The legacy setter cannot represent this request without narrowing.
+                    throw e;
+                }
+                statement.setMaxRows(maxRows.intValue());
+            }
         }
+
+        Duration queryTimeout = options.queryTimeout();
+        if (queryTimeout != null) {
+            statement.setQueryTimeout(Math.toIntExact(queryTimeout.getSeconds()));
+        }
+
         Boolean poolableHint = options.poolableHint();
         if (poolableHint != null) {
             statement.setPoolable(poolableHint);
@@ -498,11 +516,24 @@ final class JdbcRunner {
      * @param binds ordered bind values
      * @throws SQLException if a JDBC setter fails
      */
-    private static void bind(PreparedStatement statement, JdbcOperation.Bind[] binds) throws SQLException {
+    private static void bind(PreparedStatement statement,
+                             JdbcOperation.Bind[] binds,
+                             JdbcPreparationPlan plan) throws SQLException {
         for (int i = 0; i < binds.length; i++) {
             int position = i + 1;
             JdbcOperation.Bind bind = binds[i];
+            if (bind == null) {
+                // CALL output-only and function-return positions deliberately have no input bind.
+                continue;
+            }
             if (!bind.typed()) {
+                if (plan.resultKind() == JdbcPreparationPlan.ResultKind.CALL) {
+                    JdbcCall.Parameter parameter = plan.call().parameters().get(i);
+                    if (parameter.jdbcType() != Jdbc.INFERRED_TYPE) {
+                        statement.setObject(position, bind.value(), parameter.jdbcType());
+                        continue;
+                    }
+                }
                 // A byte array has a dedicated JDBC setter; other supported values use driver conversion.
                 if (bind.value() instanceof byte[] bytes) {
                     statement.setBytes(position, bytes);
@@ -660,25 +691,6 @@ final class JdbcRunner {
     }
 
     /**
-     * Attempts cleanup of every partially acquired resource and suppresses secondary failures.
-     *
-     * @param primary primary failure to which cleanup failures are attached
-     * @param resources resources in deterministic close order
-     */
-    private static void closeOnFailure(Throwable primary, AutoCloseable... resources) {
-        for (AutoCloseable resource : resources) {
-            if (resource == null) {
-                continue;
-            }
-            try {
-                resource.close();
-            } catch (Throwable closeFailure) {
-                primary.addSuppressed(closeFailure);
-            }
-        }
-    }
-
-    /**
      * Closes every resource and returns the first cleanup failure.
      *
      * @param resources resources in deterministic close order
@@ -704,135 +716,211 @@ final class JdbcRunner {
     }
 
     /**
-     * Owns one open JDBC result path for all row-oriented terminals.
+     * Converts a cleanup failure before attaching it to a non-JDBC primary failure.
      *
-     * <p>The cursor is used by materializing, cardinality, reduction, and push
-     * terminals so row advancement, mapping, result-channel checks, and
-     * cleanup remain identical. It is not used by update-only
-     * {@code execute()}, and it never reaches application code.</p>
+     * @param operation operation used for SQL diagnostics
+     * @param failure cleanup failure
+     * @return translated cleanup failure
      */
-    private static final class JdbcResultCursor<T> implements AutoCloseable {
-        /** Operation metadata used for diagnostics and row conversion errors. */
+    private static Throwable cleanupException(JdbcOperation operation, Throwable failure) {
+        if (failure instanceof SQLException sqlException) {
+            return JdbcExceptionTranslator.translate(operation, sqlException);
+        }
+        if (failure instanceof RuntimeException || failure instanceof Error) {
+            return failure;
+        }
+        return new DataException("JDBC resource cleanup failed", failure);
+    }
+
+    /**
+     * Creates an internal diagnostic when a terminal and operation plan disagree.
+     *
+     * @param operation immutable operation
+     * @param terminal terminal name
+     * @return internal state exception
+     */
+    private static IllegalStateException incompatibleTerminal(JdbcOperation operation, String terminal) {
+        return new IllegalStateException("JDBC " + operation.preparationPlan().resultKind()
+                                                 + " operation cannot use the " + terminal + " terminal");
+    }
+
+    /**
+     * Handler callback invoked inside one prepared-operation scope.
+     *
+     * @param <T> terminal result type
+     */
+    @FunctionalInterface
+    private interface HandlerAction<T> {
+
+        /**
+         * Executes operation-specific semantics.
+         *
+         * @param scope runner-owned scope
+         * @return terminal result
+         * @throws SQLException if JDBC execution fails
+         */
+        T execute(ExecutionScope scope) throws SQLException;
+    }
+
+    /**
+     * Runner-owned view of one prepared and bound JDBC operation.
+     *
+     * <p>Handlers may execute and inspect the statement through this scope, but
+     * they cannot acquire or release a connection lease. The runner tracks the
+     * current result set and closes it with the statement and lease after the
+     * handler completes.</p>
+     */
+    static final class ExecutionScope {
         private final JdbcOperation operation;
-        /** Logical lease that owns or borrows the physical connection. */
-        private final JdbcConnectionLease lease;
-        /** Provider-owned prepared statement. */
         private final PreparedStatement statement;
-        /** Provider-owned current result set. */
-        private final ResultSet resultSet;
-        /** Mapper invoked for each physical row. */
-        private final JdbcClient.RowMapper<T> mapper;
-        /** Reusable callback-scoped row view backed by the current result set. */
-        private final JdbcRow row;
-        /** Whether ResultSet.next() has already prepared the current row. */
-        private boolean nextReady;
-        /** Whether the result set reached its end marker. */
-        private boolean exhausted;
-        /** Whether resource cleanup has already been attempted. */
-        private boolean closed;
+        private final List<Throwable> capturedResultWarnings = new ArrayList<>();
+        private ResultSet resultSet;
 
-        /**
-         * Creates a cursor after all resources and metadata have been acquired.
-         *
-         * @param operation operation metadata
-         * @param lease connection lease
-         * @param statement prepared statement
-         * @param resultSet current result set
-         * @param columns cached result-column layout
-         * @param mapper row mapper
-         */
-        private JdbcResultCursor(JdbcOperation operation,
-                                    JdbcConnectionLease lease,
-                                    PreparedStatement statement,
-                                    ResultSet resultSet,
-                                    JdbcColumnLayout columns,
-                                    JdbcClient.RowMapper<T> mapper) {
+        private ExecutionScope(JdbcOperation operation,
+                               PreparedStatement statement) {
             this.operation = operation;
-            this.lease = lease;
             this.statement = statement;
+        }
+
+        /**
+         * Returns the immutable operation metadata.
+         *
+         * @return operation metadata
+         */
+        JdbcOperation operation() {
+            return operation;
+        }
+
+        /**
+         * Returns the prepared and bound statement.
+         *
+         * @return prepared statement
+         */
+        PreparedStatement statement() {
+            return statement;
+        }
+
+        /**
+         * Returns the callable statement for a CALL operation.
+         *
+         * @return callable statement
+         */
+        CallableStatement callableStatement() {
+            require(JdbcPreparationPlan.ResultKind.CALL);
+            return (CallableStatement) statement;
+        }
+
+        /**
+         * Verifies that a handler is processing its expected operation kind.
+         *
+         * @param expected expected result kind
+         */
+        void require(JdbcPreparationPlan.ResultKind expected) {
+            JdbcPreparationPlan.ResultKind actual = operation.preparationPlan().resultKind();
+            if (actual != expected) {
+                throw new IllegalStateException("JDBC handler expected " + expected + " but received " + actual);
+            }
+        }
+
+        /**
+         * Registers the one provider-owned result set associated with this operation.
+         *
+         * @param resultSet current result set
+         */
+        void resultSet(ResultSet resultSet) {
+            if (this.resultSet != null && this.resultSet != resultSet) {
+                throw new IllegalStateException("A simple JDBC operation cannot own multiple live result sets");
+            }
             this.resultSet = resultSet;
-            this.mapper = mapper;
-            this.row = new JdbcRow(resultSet, columns, operation);
         }
 
         /**
-         * Advances the result set lazily and closes it at exhaustion.
+         * Clears a result set after an execution handler has closed it.
          *
-         * <p>All row terminals use this method. Once the JDBC end marker is
-         * reached, trailing results are checked before cleanup so a current
-         * single-result terminal cannot silently discard another channel.</p>
-         *
-         * @return true when a row is ready
+         * @param expected result set that was closed
          */
-        boolean hasNextValue() {
-            if (nextReady) {
-                return true;
+        void clearResultSet(ResultSet expected) {
+            if (resultSet != expected) {
+                throw new IllegalStateException("JDBC execution scope does not own the supplied result set");
             }
-            if (exhausted) {
-                return false;
-            }
+            resultSet = null;
+        }
+
+        /**
+         * Captures and clears warnings before a handler closes an intermediate result set.
+         *
+         * @param resultSet result set whose warning chain is still accessible
+         */
+        void captureResultWarnings(ResultSet resultSet) {
             try {
-                nextReady = resultSet.next();
-                if (!nextReady) {
-                    exhausted = true;
-                    // Advance through the JDBC end marker before releasing resources and accepting the result.
-                    if (operation.preparationPlan().resultKind() != JdbcPreparationPlan.ResultKind.UPDATE) {
-                        rejectFollowingResults(statement, operation);
-                    }
-                    close();
+                for (SQLWarning warning = resultSet.getWarnings(); warning != null; warning = warning.getNextWarning()) {
+                    capturedResultWarnings.add(warning);
                 }
-                return nextReady;
-            } catch (SQLException e) {
-                preserveWarnings(e, lease.connection(), statement, resultSet);
-                throw JdbcExceptionTranslator.translate(operation, e);
+                resultSet.clearWarnings();
+            } catch (Throwable warningFailure) {
+                // Warning inspection must not replace the operation outcome; retain the failure for later diagnostics.
+                capturedResultWarnings.add(warningFailure);
             }
         }
 
-        /**
-         * Maps the currently prepared row and limits row-view validity to the mapper call.
-         *
-         * @return mapped row value
-         */
-        T nextValue() {
-            if (!hasNextValue()) {
-                throw new NoSuchElementException("No more JDBC rows");
-            }
-            nextReady = false;
-            // A reducer or mapper may read the row only during this synchronous callback.
-            row.activate();
-            try {
-                return mapper.map(row);
-            } finally {
-                row.deactivate();
-            }
-        }
-
-        /**
-         * Closes result set, statement, and lease in that order.
-         *
-         * <p>The lease close releases an owned connection or ends only the
-         * logical operation lease for a transaction-bound connection.</p>
-         */
-        @Override
-        public void close() {
-            if (closed) {
+        private void addCapturedResultWarnings(Throwable failure) {
+            if (failure == null) {
                 return;
             }
-            closed = true;
-            // Keep the order explicit: dependent JDBC objects close before their owner.
-            Throwable failure = closeAll(resultSet, statement, lease);
-            if (failure instanceof SQLException sqlException) {
-                throw JdbcExceptionTranslator.translate(operation, sqlException);
+            for (Throwable detail : capturedResultWarnings) {
+                if (detail != failure) {
+                    failure.addSuppressed(detail);
+                }
             }
-            if (failure instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            if (failure instanceof Error error) {
-                throw error;
-            }
-            if (failure != null) {
-                throw new DataException("JDBC resource cleanup failed", failure);
-            }
+        }
+
+        /**
+         * Returns the current provider-owned result set for warning capture and cleanup.
+         *
+         * @return current result set, or {@code null}
+         */
+        ResultSet resultSet() {
+            return resultSet;
+        }
+
+        /**
+         * Reads the current update count with the shared compatibility fallback.
+         *
+         * @return large update count
+         * @throws SQLException if the driver rejects both accessors
+         */
+        long largeUpdateCount() throws SQLException {
+            return JdbcRunner.largeUpdateCount(statement);
+        }
+
+        /**
+         * Drains incompatible result channels through the shared advancement path.
+         *
+         * @param currentIsResultSet whether the current result is a result set
+         * @return {@code true} when at least one result channel was encountered
+         * @throws SQLException if result closure or advancement fails
+         */
+        boolean drainFromCurrent(boolean currentIsResultSet) throws SQLException {
+            return JdbcRunner.drainFromCurrent(statement, currentIsResultSet);
+        }
+
+        /**
+         * Rejects any result channel following the accepted primary result.
+         *
+         * @throws SQLException if result advancement fails
+         */
+        void rejectFollowingResults() throws SQLException {
+            JdbcRunner.rejectFollowingResults(statement, operation);
+        }
+
+        /**
+         * Creates a diagnostic for an incompatible or missing primary result.
+         *
+         * @param resultPresent whether an incompatible channel was present
+         * @return data exception
+         */
+        DataException unexpectedResult(boolean resultPresent) {
+            return JdbcRunner.unexpectedResult(operation, resultPresent);
         }
 
     }

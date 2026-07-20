@@ -35,46 +35,40 @@ final class JdbcRecordMapperGenerator {
     private JdbcRecordMapperGenerator() {
     }
 
-    static void generate(JdbcMethodPlan plan, ClassModel.Builder classModel, CodegenContext context) {
+    static boolean canGenerate(TypedElementInfo method,
+                               TypeName mappedType,
+                               List<String> projectionAliases,
+                               CodegenContext context) {
+        TypeInfo recordInfo = context.typeInfo(mappedType.genericTypeName())
+                .orElse(null);
+        if (recordInfo == null || recordInfo.kind() != ElementKind.RECORD) {
+            return false;
+        }
+        validateAccessibility(method, recordInfo);
+        Set<String> aliases = normalizedAliases(projectionAliases);
+        return components(recordInfo).stream()
+                .allMatch(component -> supportedComponent(component.typeName())
+                        && aliases.contains(component.elementName().toLowerCase(Locale.ROOT)));
+    }
+
+    static void generate(JdbcMethodPlan plan,
+                         String fieldName,
+                         ClassModel.Builder classModel,
+                         CodegenContext context) {
         TypeInfo recordInfo = context.typeInfo(plan.mappedType().genericTypeName())
                 .orElseThrow(() -> JdbcMethodPlan.failure(plan.method(),
                                                           "Record type information is unavailable: "
                                                                   + plan.mappedType().resolvedName()));
-        boolean samePackage = plan.method().enclosingType()
-                .map(TypeName::packageName)
-                .filter(recordInfo.typeName().packageName()::equals)
-                .isPresent();
-        if (recordInfo.accessModifier() != AccessModifier.PUBLIC
-                && !(samePackage && (recordInfo.accessModifier() == AccessModifier.PACKAGE_PRIVATE
-                || recordInfo.accessModifier() == AccessModifier.PROTECTED))) {
-            throw JdbcMethodPlan.failure(plan.method(),
-                                         "Record type is not accessible to generated code: "
-                                                 + recordInfo.typeName().resolvedName());
-        }
-        List<TypedElementInfo> components = recordInfo.elementInfo()
-                .stream()
-                .filter(element -> element.kind() == ElementKind.RECORD_COMPONENT)
-                .toList();
-        Set<String> aliases = new HashSet<>();
-        plan.aliases().stream().map(alias -> alias.toLowerCase(Locale.ROOT)).forEach(aliases::add);
-        for (TypedElementInfo component : components) {
-            if (!JdbcMethodPlan.isScalar(component.typeName())) {
-                throw JdbcMethodPlan.failure(plan.method(),
-                                             "Unsupported record component type " + component.typeName().resolvedName()
-                                                     + " for " + component.elementName());
-            }
-            if (!aliases.contains(component.elementName().toLowerCase(Locale.ROOT))) {
-                throw JdbcMethodPlan.failure(plan.method(),
-                                             "SQL projection is missing record component alias: "
-                                                     + component.elementName());
-            }
-        }
+        validateAccessibility(plan.method(), recordInfo);
+        List<TypedElementInfo> components = components(recordInfo);
+        Set<String> aliases = normalizedAliases(plan.aliases());
+        validateComponents(plan, components, aliases);
 
         TypeName mapperType = TypeName.builder(JdbcCodegenTypes.ROW_MAPPER)
                 .addTypeArgument(plan.mappedType())
                 .build();
         classModel.addField(field -> {
-            field.name(plan.mapperFieldName())
+            field.name(fieldName)
                     .type(mapperType)
                     .isStatic(true)
                     .isFinal(true)
@@ -86,14 +80,63 @@ final class JdbcRecordMapperGenerator {
                     field.addContent(", ");
                 }
                 TypedElementInfo component = components.get(i);
+                TypeName optionalType = JdbcMethodPlan.optionalScalarType(component.typeName());
                 field.addContent("row.")
-                        .addContent(component.typeName().primitive() ? "required(" : "get(")
+                        .addContent(optionalType == null ? "required(" : "optional(")
                         .addContentLiteral(component.elementName())
                         .addContent(", ")
-                        .addContent(component.typeName().boxed())
+                        .addContent((optionalType == null ? component.typeName() : optionalType).boxed())
                         .addContent(".class)");
             }
             field.addContent(")");
         });
+    }
+
+    private static void validateAccessibility(TypedElementInfo method, TypeInfo recordInfo) {
+        boolean samePackage = method.enclosingType()
+                .map(TypeName::packageName)
+                .filter(recordInfo.typeName().packageName()::equals)
+                .isPresent();
+        if (recordInfo.accessModifier() != AccessModifier.PUBLIC
+                && !(samePackage && (recordInfo.accessModifier() == AccessModifier.PACKAGE_PRIVATE
+                || recordInfo.accessModifier() == AccessModifier.PROTECTED))) {
+            throw JdbcMethodPlan.failure(method,
+                                         "Record type is not accessible to generated code: "
+                                                 + recordInfo.typeName().resolvedName());
+        }
+    }
+
+    private static List<TypedElementInfo> components(TypeInfo recordInfo) {
+        return recordInfo.elementInfo()
+                .stream()
+                .filter(element -> element.kind() == ElementKind.RECORD_COMPONENT)
+                .toList();
+    }
+
+    private static Set<String> normalizedAliases(List<String> projectionAliases) {
+        Set<String> aliases = new HashSet<>();
+        projectionAliases.stream().map(alias -> alias.toLowerCase(Locale.ROOT)).forEach(aliases::add);
+        return aliases;
+    }
+
+    private static void validateComponents(JdbcMethodPlan plan,
+                                           List<TypedElementInfo> components,
+                                           Set<String> aliases) {
+        for (TypedElementInfo component : components) {
+            if (!supportedComponent(component.typeName())) {
+                throw JdbcMethodPlan.failure(plan.method(),
+                                             "Unsupported record component type " + component.typeName().resolvedName()
+                                                     + " for " + component.elementName());
+            }
+            if (!aliases.contains(component.elementName().toLowerCase(Locale.ROOT))) {
+                throw JdbcMethodPlan.failure(plan.method(),
+                                             "SQL projection is missing record component alias: "
+                                                     + component.elementName());
+            }
+        }
+    }
+
+    private static boolean supportedComponent(TypeName type) {
+        return JdbcMethodPlan.isScalar(type) || JdbcMethodPlan.optionalScalarType(type) != null;
     }
 }
