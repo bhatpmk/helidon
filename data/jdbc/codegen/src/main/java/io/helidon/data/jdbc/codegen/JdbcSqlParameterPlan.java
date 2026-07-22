@@ -49,9 +49,9 @@ final class JdbcSqlParameterPlan {
             throw failure(method, e.getMessage());
         }
 
-        Map<String, TypedElementInfo> byName = new HashMap<>(bindableParameters.size());
+        Map<String, Parameter> byName = new HashMap<>(bindableParameters.size());
         for (TypedElementInfo parameter : bindableParameters) {
-            if (byName.put(parameter.elementName(), parameter) != null) {
+            if (byName.containsKey(parameter.elementName())) {
                 throw failure(method, "Duplicate repository parameter name: " + parameter.elementName());
             }
             if (parameter.typeName().isList()
@@ -64,18 +64,19 @@ final class JdbcSqlParameterPlan {
                 throw failure(method, "Unsupported declarative SQL parameter type: "
                         + parameter.typeName().resolvedName());
             }
+            byName.put(parameter.elementName(), new Parameter(parameter, JdbcBindTypePlan.create(parameter, method)));
         }
 
         List<Bind> binds = new ArrayList<>(parsed.markers().size());
         Set<String> used = new HashSet<>();
         int position = 1;
         for (String marker : parsed.markers()) {
-            TypedElementInfo parameter = byName.get(marker);
+            Parameter parameter = byName.get(marker);
             if (parameter == null) {
                 throw failure(method, "SQL marker ':" + marker + "' has no matching repository parameter");
             }
             used.add(marker);
-            binds.add(new Bind(position++, parameter));
+            binds.add(new Bind(position++, parameter.element(), parameter.bindType()));
         }
         for (TypedElementInfo parameter : bindableParameters) {
             if (!used.contains(parameter.elementName())) {
@@ -97,6 +98,9 @@ final class JdbcSqlParameterPlan {
         return new CodegenException(message, method.originatingElementValue());
     }
 
-    record Bind(int position, TypedElementInfo parameter) {
+    private record Parameter(TypedElementInfo element, JdbcBindTypePlan bindType) {
+    }
+
+    record Bind(int position, TypedElementInfo parameter, JdbcBindTypePlan bindType) {
     }
 }

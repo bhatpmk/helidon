@@ -30,6 +30,8 @@ import java.util.Set;
  * same reusable layout to a {@code call} terminal. The provider validates the layout before acquiring a connection.
  */
 public final class JdbcCall {
+    static final int NO_SCALE = -1;
+
     private final List<Parameter> parameters;
 
     private JdbcCall(List<Parameter> parameters) {
@@ -107,7 +109,8 @@ public final class JdbcCall {
                                      "",
                                      Jdbc.INFERRED_TYPE,
                                      Void.class,
-                                     ""));
+                                     "",
+                                     NO_SCALE));
         }
 
         /**
@@ -119,7 +122,7 @@ public final class JdbcCall {
          */
         public Builder in(int index, int jdbcType) {
             inferredTypeNotAllowed(jdbcType, "Explicit JDBC input type");
-            return add(new Parameter(index, Direction.IN, "", jdbcType, Void.class, ""));
+            return add(new Parameter(index, Direction.IN, "", jdbcType, Void.class, "", NO_SCALE));
         }
 
         /**
@@ -132,7 +135,7 @@ public final class JdbcCall {
          * @return this builder
          */
         public Builder inOut(int index, String name, int jdbcType, Class<?> javaType) {
-            return add(output(index, Direction.INOUT, name, jdbcType, javaType, ""));
+            return add(output(index, Direction.INOUT, name, jdbcType, javaType, "", NO_SCALE));
         }
 
         /**
@@ -155,7 +158,28 @@ public final class JdbcCall {
                               name,
                               jdbcType,
                               javaType,
-                              validateTypeName(typeName)));
+                              validateTypeName(typeName),
+                              NO_SCALE));
+        }
+
+        /**
+         * Declares a scaled numeric input/output parameter.
+         *
+         * @param index one-based JDBC position
+         * @param name non-blank logical output name
+         * @param jdbcType {@link Types} or vendor JDBC type code
+         * @param javaType supported scalar output type
+         * @param scale non-negative numeric scale used for binding and output registration
+         * @return this builder
+         */
+        public Builder inOut(int index, String name, int jdbcType, Class<?> javaType, int scale) {
+            return add(output(index,
+                              Direction.INOUT,
+                              name,
+                              jdbcType,
+                              javaType,
+                              "",
+                              validateScale(scale)));
         }
 
         /**
@@ -168,7 +192,7 @@ public final class JdbcCall {
          * @return this builder
          */
         public Builder out(int index, String name, int jdbcType, Class<?> javaType) {
-            return add(output(index, Direction.OUT, name, jdbcType, javaType, ""));
+            return add(output(index, Direction.OUT, name, jdbcType, javaType, "", NO_SCALE));
         }
 
         /**
@@ -191,7 +215,28 @@ public final class JdbcCall {
                               name,
                               jdbcType,
                               javaType,
-                              validateTypeName(typeName)));
+                              validateTypeName(typeName),
+                              NO_SCALE));
+        }
+
+        /**
+         * Declares a scaled numeric output parameter.
+         *
+         * @param index one-based JDBC position
+         * @param name non-blank logical output name
+         * @param jdbcType {@link Types} or vendor JDBC type code
+         * @param javaType supported scalar output type
+         * @param scale non-negative numeric scale used for output registration
+         * @return this builder
+         */
+        public Builder out(int index, String name, int jdbcType, Class<?> javaType, int scale) {
+            return add(output(index,
+                              Direction.OUT,
+                              name,
+                              jdbcType,
+                              javaType,
+                              "",
+                              validateScale(scale)));
         }
 
         /**
@@ -237,7 +282,8 @@ public final class JdbcCall {
                                      validateName(name),
                                      jdbcType,
                                      Void.class,
-                                     typeName));
+                                     typeName,
+                                     NO_SCALE));
         }
 
         /**
@@ -249,7 +295,7 @@ public final class JdbcCall {
          * @return this builder
          */
         public Builder returns(String name, int jdbcType, Class<?> javaType) {
-            return returnsParameter(name, jdbcType, javaType, "");
+            return returnsParameter(name, jdbcType, javaType, "", NO_SCALE);
         }
 
         /**
@@ -262,15 +308,83 @@ public final class JdbcCall {
          * @return this builder
          */
         public Builder returns(String name, int jdbcType, Class<?> javaType, String typeName) {
-            return returnsParameter(name, jdbcType, javaType, validateTypeName(typeName));
+            return returnsParameter(name, jdbcType, javaType, validateTypeName(typeName), NO_SCALE);
         }
 
-        private Builder returnsParameter(String name, int jdbcType, Class<?> javaType, String typeName) {
+        /**
+         * Declares a scaled numeric function return at JDBC position {@code 1}.
+         *
+         * @param name non-blank logical return name
+         * @param jdbcType {@link Types} or vendor JDBC type code
+         * @param javaType supported scalar return type
+         * @param scale non-negative numeric scale used for output registration
+         * @return this builder
+         */
+        public Builder returns(String name, int jdbcType, Class<?> javaType, int scale) {
+            return returnsParameter(name, jdbcType, javaType, "", validateScale(scale));
+        }
+
+        /**
+         * Declares a standard {@link Types#REF_CURSOR} function return at JDBC position {@code 1}.
+         *
+         * @param name non-blank logical return name
+         * @return this builder
+         */
+        public Builder returnsCursor(String name) {
+            return returnsCursorParameter(name, Types.REF_CURSOR, "");
+        }
+
+        /**
+         * Declares a cursor function return using a standard or vendor JDBC type code.
+         *
+         * @param name non-blank logical return name
+         * @param jdbcType {@link Types#REF_CURSOR} or a vendor cursor type code
+         * @return this builder
+         */
+        public Builder returnsCursor(String name, int jdbcType) {
+            return returnsCursorParameter(name, jdbcType, "");
+        }
+
+        /**
+         * Declares a cursor function return using a JDBC type code and database type name.
+         *
+         * @param name non-blank logical return name
+         * @param jdbcType {@link Types#REF_CURSOR} or a vendor cursor type code
+         * @param typeName non-blank database type name used for output registration
+         * @return this builder
+         */
+        public Builder returnsCursor(String name, int jdbcType, String typeName) {
+            return returnsCursorParameter(name, jdbcType, validateTypeName(typeName));
+        }
+
+        private Builder returnsParameter(String name,
+                                         int jdbcType,
+                                         Class<?> javaType,
+                                         String typeName,
+                                         int scale) {
             if (functionReturn) {
                 throw new IllegalArgumentException("A JDBC call permits only one function return");
             }
-            Parameter parameter = output(1, Direction.RETURN, name, jdbcType, javaType, typeName);
+            Parameter parameter = output(1, Direction.RETURN, name, jdbcType, javaType, typeName, scale);
             add(parameter);
+            functionReturn = true;
+            return this;
+        }
+
+        private Builder returnsCursorParameter(String name, int jdbcType, String typeName) {
+            if (functionReturn) {
+                throw new IllegalArgumentException("A JDBC call permits only one function return");
+            }
+            inferredTypeNotAllowed(jdbcType, "Cursor JDBC type");
+            // A cursor return is registered at JDBC position one but otherwise follows the same scoped lifecycle as
+            // an OUT cursor.
+            add(new Parameter(1,
+                              Direction.CURSOR,
+                              validateName(name),
+                              jdbcType,
+                              Void.class,
+                              typeName,
+                              NO_SCALE));
             functionReturn = true;
             return this;
         }
@@ -306,8 +420,12 @@ public final class JdbcCall {
                                         String name,
                                         int jdbcType,
                                         Class<?> javaType,
-                                        String typeName) {
+                                        String typeName,
+                                        int scale) {
             inferredTypeNotAllowed(jdbcType, "Output JDBC type");
+            if (jdbcType == Types.REF_CURSOR) {
+                throw new IllegalArgumentException("Types.REF_CURSOR must be declared with cursor or returnsCursor");
+            }
             Class<?> outputType = Objects.requireNonNull(javaType, "JDBC call output Java type must not be null");
             if (outputType == Void.class || outputType == void.class || !JdbcRow.supportedScalar(outputType)) {
                 throw new IllegalArgumentException("Unsupported JDBC call output Java type: "
@@ -318,7 +436,8 @@ public final class JdbcCall {
                                  validateName(name),
                                  jdbcType,
                                  outputType,
-                                 validateOptionalTypeName(typeName));
+                                 validateOptionalTypeName(typeName),
+                                 validateOptionalScale(scale));
         }
 
         private static int validateIndex(int index) {
@@ -352,6 +471,20 @@ public final class JdbcCall {
             return typeName;
         }
 
+        private static int validateScale(int scale) {
+            if (scale < 0) {
+                throw new IllegalArgumentException("JDBC call output scale must not be negative: " + scale);
+            }
+            return scale;
+        }
+
+        private static int validateOptionalScale(int scale) {
+            if (scale < NO_SCALE) {
+                throw new IllegalArgumentException("JDBC call output scale must be -1 or non-negative: " + scale);
+            }
+            return scale;
+        }
+
         private static void inferredTypeNotAllowed(int jdbcType, String description) {
             if (jdbcType == Jdbc.INFERRED_TYPE) {
                 throw new IllegalArgumentException(description + " must be explicit");
@@ -372,13 +505,18 @@ public final class JdbcCall {
                      String name,
                      int jdbcType,
                      Class<?> javaType,
-                     String typeName) {
+                     String typeName,
+                     int scale) {
         Parameter {
             Builder.validateIndex(index);
             Objects.requireNonNull(direction);
             Objects.requireNonNull(name);
             Objects.requireNonNull(javaType);
-            Objects.requireNonNull(typeName);
+            Builder.validateOptionalTypeName(typeName);
+            Builder.validateOptionalScale(scale);
+            if (!typeName.isEmpty() && scale != NO_SCALE) {
+                throw new IllegalArgumentException("JDBC call output cannot declare both a database type name and scale");
+            }
         }
 
         boolean input() {

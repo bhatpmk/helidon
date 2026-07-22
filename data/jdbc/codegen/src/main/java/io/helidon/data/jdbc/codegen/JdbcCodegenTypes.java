@@ -42,6 +42,7 @@ final class JdbcCodegenTypes {
     static final TypeName JDBC_IDENTITY_REDUCER = TypeName.create("io.helidon.data.jdbc.Jdbc.IdentityReducer");
     static final TypeName JDBC_ROW_MAPPER = TypeName.create("io.helidon.data.jdbc.Jdbc.RowMapper");
     static final TypeName JDBC_ROW_REDUCER = TypeName.create("io.helidon.data.jdbc.Jdbc.RowReducer");
+    static final TypeName JDBC_BIND_TYPE = TypeName.create("io.helidon.data.jdbc.Jdbc.BindType");
     static final TypeName JDBC_IN_PARAMETER = TypeName.create("io.helidon.data.jdbc.Jdbc.InParameter");
     static final TypeName JDBC_IN_OUT_PARAMETER = TypeName.create("io.helidon.data.jdbc.Jdbc.InOutParameter");
     static final TypeName JDBC_OUT_PARAMETER = TypeName.create("io.helidon.data.jdbc.Jdbc.OutParameter");
@@ -52,6 +53,7 @@ final class JdbcCodegenTypes {
     static final TypeName SERVICE_SINGLETON = TypeName.create("io.helidon.service.registry.Service.Singleton");
     static final TypeName SERVICE_NAMED = TypeName.create("io.helidon.service.registry.Service.Named");
     static final TypeName OPTIONAL = TypeName.create("java.util.Optional");
+    static final TypeName JDBC_TYPE = TypeName.create("java.sql.JDBCType");
     static final TypeName SUPPLIER = TypeName.create("java.util.function.Supplier");
     static final TypeName CONSUMER = TypeName.create("java.util.function.Consumer");
     static final TypeName PREDICATE = TypeName.create("java.util.function.Predicate");

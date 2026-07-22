@@ -22,6 +22,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.EnumSet;
 
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.arrayContaining;
 import static org.hamcrest.Matchers.emptyArray;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class JdbcAnnotationsTest {
 
@@ -48,14 +50,25 @@ class JdbcAnnotationsTest {
     }
 
     @Jdbc.RowReducer(Reducer.class)
-    private void rowReducerCompiles() {
+    private String rowReducerCompiles() {
+        return "";
+    }
+
+    @Jdbc.Statement("UPDATE EXAMPLE SET NAME = :name, STATUS = :status")
+    @Jdbc.Execution(Jdbc.ExecutionType.UPDATE)
+    private long bindingAnnotationsCompile(@Jdbc.BindType(java.sql.JDBCType.VARCHAR) String name,
+                                           String status) {
+        return 0;
     }
 
     @Jdbc.Statement("{call PROCESS(:input, :state, :rows, :status)}")
     @Jdbc.Execution(Jdbc.ExecutionType.CALL)
-    @Jdbc.OutParameter(name = "rows", jdbcType = java.sql.Types.REF_CURSOR)
+    @Jdbc.OutParameter(name = "rows",
+                       jdbcType = java.sql.Types.REF_CURSOR,
+                       kind = Jdbc.OutputKind.CURSOR)
     @Jdbc.OutParameter(name = "status", jdbcType = java.sql.Types.VARCHAR, javaType = String.class)
-    private void callAnnotationsCompile(@Jdbc.InParameter(name = "input") String input,
+    private void callAnnotationsCompile(@Jdbc.InParameter(name = "input")
+                                        @Jdbc.BindType(java.sql.JDBCType.VARCHAR) String input,
                                         @Jdbc.InOutParameter(name = "state", jdbcType = java.sql.Types.INTEGER)
                                         int state) {
     }
@@ -63,6 +76,11 @@ class JdbcAnnotationsTest {
     @Jdbc.Statement("{? = call TOTAL(?)}")
     @Jdbc.ReturnParameter(name = "result", jdbcType = java.sql.Types.BIGINT, javaType = Long.class)
     private void functionAnnotationsCompile(@Jdbc.InParameter(index = 2) String group) {
+    }
+
+    @Test
+    void keepsDriverInferenceSentinelOutOfPublicApi() throws NoSuchFieldException {
+        assertFalse(Modifier.isPublic(Jdbc.class.getDeclaredField("INFERRED_TYPE").getModifiers()));
     }
 
     @Test
@@ -82,6 +100,8 @@ class JdbcAnnotationsTest {
                    is(EnumSet.of(Jdbc.ExecutionType.QUERY,
                                  Jdbc.ExecutionType.UPDATE,
                                  Jdbc.ExecutionType.CALL)));
+        assertThat(EnumSet.allOf(Jdbc.OutputKind.class),
+                   is(EnumSet.of(Jdbc.OutputKind.SCALAR, Jdbc.OutputKind.CURSOR)));
     }
 
     @Test
@@ -118,19 +138,28 @@ class JdbcAnnotationsTest {
     }
 
     @Test
+    void definesBindingTypeMetadata() throws NoSuchMethodException {
+        assertAnnotationMetadata(Jdbc.BindType.class, RetentionPolicy.SOURCE, ElementType.PARAMETER);
+        Method standard = Jdbc.BindType.class.getDeclaredMethod("value");
+        assertThat(standard.getReturnType(), is((Object) java.sql.JDBCType.class));
+        assertThat(standard.getDefaultValue(), nullValue());
+    }
+
+    @Test
     void definesCallableParameterMetadata() throws NoSuchMethodException {
         assertAnnotationMetadata(Jdbc.InParameter.class, RetentionPolicy.SOURCE, ElementType.PARAMETER);
         assertThat(Jdbc.InParameter.class.getDeclaredMethod("name").getDefaultValue(), is((Object) ""));
         assertThat(Jdbc.InParameter.class.getDeclaredMethod("index").getDefaultValue(),
                    is((Object) Integer.valueOf(-1)));
-        assertThat(Jdbc.InParameter.class.getDeclaredMethod("jdbcType").getDefaultValue(),
-                   is((Object) Jdbc.INFERRED_TYPE));
 
         assertAnnotationMetadata(Jdbc.InOutParameter.class, RetentionPolicy.SOURCE, ElementType.PARAMETER);
         assertThat(Jdbc.InOutParameter.class.getDeclaredMethod("name").getDefaultValue(), is((Object) ""));
         assertThat(Jdbc.InOutParameter.class.getDeclaredMethod("index").getDefaultValue(),
                    is((Object) Integer.valueOf(-1)));
         assertThat(Jdbc.InOutParameter.class.getDeclaredMethod("jdbcType").getDefaultValue(), nullValue());
+        assertThat(Jdbc.InOutParameter.class.getDeclaredMethod("typeName").getDefaultValue(), is((Object) ""));
+        assertThat(Jdbc.InOutParameter.class.getDeclaredMethod("scale").getDefaultValue(),
+                   is((Object) Integer.valueOf(-1)));
 
         assertAnnotationMetadata(Jdbc.OutParameter.class, RetentionPolicy.SOURCE, ElementType.METHOD);
         assertThat(Jdbc.OutParameter.class.getAnnotation(Repeatable.class).value(),
@@ -140,6 +169,10 @@ class JdbcAnnotationsTest {
                    is((Object) Integer.valueOf(-1)));
         assertThat(Jdbc.OutParameter.class.getDeclaredMethod("javaType").getDefaultValue(), is((Object) Void.class));
         assertThat(Jdbc.OutParameter.class.getDeclaredMethod("typeName").getDefaultValue(), is((Object) ""));
+        assertThat(Jdbc.OutParameter.class.getDeclaredMethod("scale").getDefaultValue(),
+                   is((Object) Integer.valueOf(-1)));
+        assertThat(Jdbc.OutParameter.class.getDeclaredMethod("kind").getDefaultValue(),
+                   is((Object) Jdbc.OutputKind.SCALAR));
 
         assertAnnotationMetadata(Jdbc.OutParameters.class, RetentionPolicy.SOURCE, ElementType.METHOD);
         assertThat(Jdbc.OutParameters.class.getDeclaredMethod("value").getReturnType(),
@@ -150,6 +183,10 @@ class JdbcAnnotationsTest {
         assertThat(Jdbc.ReturnParameter.class.getDeclaredMethod("jdbcType").getDefaultValue(), nullValue());
         assertThat(Jdbc.ReturnParameter.class.getDeclaredMethod("javaType").getDefaultValue(), nullValue());
         assertThat(Jdbc.ReturnParameter.class.getDeclaredMethod("typeName").getDefaultValue(), is((Object) ""));
+        assertThat(Jdbc.ReturnParameter.class.getDeclaredMethod("scale").getDefaultValue(),
+                   is((Object) Integer.valueOf(-1)));
+        assertThat(Jdbc.ReturnParameter.class.getDeclaredMethod("kind").getDefaultValue(),
+                   is((Object) Jdbc.OutputKind.SCALAR));
     }
 
     private static void assertAnnotationMetadata(Class<? extends Annotation> annotationType,
@@ -159,6 +196,14 @@ class JdbcAnnotationsTest {
         assertThat(annotationType.getAnnotation(Target.class).value(), arrayContaining(expectedTargets));
     }
 
-    private static final class Reducer {
+    private static final class Reducer implements JdbcClient.RowReducer<String> {
+        @Override
+        public void accept(JdbcClient.Row row) {
+        }
+
+        @Override
+        public String finish() {
+            return "";
+        }
     }
 }

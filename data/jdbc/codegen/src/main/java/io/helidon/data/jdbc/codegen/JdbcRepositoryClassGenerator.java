@@ -141,13 +141,8 @@ final class JdbcRepositoryClassGenerator {
                     .addContent("this.")
                     .addContent(dependency.fieldName())
                     .addContent(" = ")
-                    .addContent(dependency.parameterName());
-            if (dependency.optional()) {
-                constructor.addContent(".orElse(")
-                        .addContent(dependency.fallbackFieldName())
-                        .addContent(")");
-            }
-            constructor.addContentLine(";");
+                    .addContent(dependency.parameterName())
+                    .addContentLine(";");
         }
         classModel.addConstructor(constructor);
     }

@@ -112,7 +112,7 @@ final class JdbcMethodGenerator {
                             .addContent(", ")
                             .addContent(parameter.javaType())
                             .addContent(".class");
-                    addTypeName(field, parameter.typeName());
+                    addRegistrationArgument(field, parameter);
                 }
                 case CURSOR -> {
                     field.addContent("cursor(")
@@ -135,7 +135,18 @@ final class JdbcMethodGenerator {
                             .addContent(", ")
                             .addContent(parameter.javaType())
                             .addContent(".class");
-                    addTypeName(field, parameter.typeName());
+                    addRegistrationArgument(field, parameter);
+                }
+                case RETURN_CURSOR -> {
+                    field.addContent("returnsCursor(")
+                            .addContentLiteral(parameter.name());
+                    if (parameter.jdbcType() != 2012 || !parameter.typeName().isEmpty()) {
+                        field.addContent(", ").addContent(String.valueOf(parameter.jdbcType()));
+                    }
+                    if (!parameter.typeName().isEmpty()) {
+                        field.addContent(", ").addContentLiteral(parameter.typeName());
+                    }
+                    field.addContent(")");
                 }
                 default -> throw new AssertionError("Unknown JDBC call direction: " + parameter.direction());
                 }
@@ -144,9 +155,12 @@ final class JdbcMethodGenerator {
         });
     }
 
-    private static void addTypeName(io.helidon.codegen.classmodel.Field.Builder field, String typeName) {
-        if (!typeName.isEmpty()) {
-            field.addContent(", ").addContentLiteral(typeName);
+    private static void addRegistrationArgument(io.helidon.codegen.classmodel.Field.Builder field,
+                                                JdbcCallParameterPlan.Parameter parameter) {
+        if (!parameter.typeName().isEmpty()) {
+            field.addContent(", ").addContentLiteral(parameter.typeName());
+        } else if (parameter.scale() != -1) {
+            field.addContent(", ").addContent(String.valueOf(parameter.scale()));
         }
         field.addContent(")");
     }
@@ -160,9 +174,9 @@ final class JdbcMethodGenerator {
             // Scalar results use JdbcClient's fixed codec and do not need generated mapper state.
         }
         case RECORD -> {
-            if (plan.operation() == JdbcMethodPlan.Operation.GENERATED_KEYS) {
-                JdbcRecordMapperGenerator.generate(plan, plan.mapperFieldName(), classModel, context);
-            }
+            // Absence of @Jdbc.RowMapper deterministically selects generated record mapping; service registration must
+            // not silently change an existing repository method.
+            JdbcRecordMapperGenerator.generate(plan, plan.mapperFieldName(), classModel, context);
         }
         case SERVICE, EXPLICIT -> {
             // Repository construction resolves these mappers once from the service registry.
@@ -214,19 +228,12 @@ final class JdbcMethodGenerator {
         for (JdbcMethodPlan plan : plans) {
             if (plan.mappingKind() == JdbcMethodPlan.MappingKind.EXPLICIT) {
                 validateExplicitMapper(plan, context);
-                MapperDependencyKey key = new MapperDependencyKey(plan.explicitMapper(), plan.mappedType(), true, false);
+                MapperDependencyKey key = new MapperDependencyKey(plan.explicitMapper(), plan.mappedType(), true);
                 groupedPlans.computeIfAbsent(key, ignored -> new ArrayList<>()).add(plan);
-            } else if ((plan.operation() == JdbcMethodPlan.Operation.QUERY
-                    && (plan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD
-                    || plan.mappingKind() == JdbcMethodPlan.MappingKind.SERVICE))
-                    || (plan.operation() == JdbcMethodPlan.Operation.GENERATED_KEYS
-                    && plan.mappingKind() == JdbcMethodPlan.MappingKind.SERVICE)) {
-                boolean optional = plan.operation() == JdbcMethodPlan.Operation.QUERY
-                        && plan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD;
+            } else if (plan.mappingKind() == JdbcMethodPlan.MappingKind.SERVICE) {
                 MapperDependencyKey key = new MapperDependencyKey(plan.mappedType(),
                                                                   plan.mappedType(),
-                                                                  false,
-                                                                  optional);
+                                                                  false);
                 groupedPlans.computeIfAbsent(key, ignored -> new ArrayList<>()).add(plan);
             }
         }
@@ -243,33 +250,15 @@ final class JdbcMethodGenerator {
             String baseName = lowerCamel(key.explicit() ? key.serviceType().className() : key.mappedType().className())
                     + (key.explicit() ? "" : "RowMapper");
             String fieldName = uniqueVariable(baseName, fieldNames);
-            String fallbackFieldName = "";
-            boolean optional = key.optional();
-
-            if (optional) {
-                fallbackFieldName = "DEFAULT_" + constantCase(fieldName);
-                JdbcRecordMapperGenerator.generate(mappedPlans.getFirst(), fallbackFieldName, classModel, context);
-            }
             classModel.addField(field -> field.name(fieldName)
                     .type(mapperContract)
                     .isFinal(true));
             mappedPlans.forEach(plan -> plan.mapperFieldName(fieldName));
 
-            TypeName parameterType;
-            if (key.explicit()) {
-                parameterType = key.serviceType();
-            } else if (optional) {
-                parameterType = TypeName.builder(JdbcCodegenTypes.OPTIONAL)
-                        .addTypeArgument(mapperContract)
-                        .build();
-            } else {
-                parameterType = mapperContract;
-            }
+            TypeName parameterType = key.explicit() ? key.serviceType() : mapperContract;
             dependencies.add(new MapperDependency(parameterType,
                                                    fieldName,
-                                                   fieldName,
-                                                   optional,
-                                                   fallbackFieldName));
+                                                   fieldName));
         }
         return dependencies;
     }
@@ -371,11 +360,11 @@ final class JdbcMethodGenerator {
         }
         if (plan.operation() == JdbcMethodPlan.Operation.CALL) {
             for (JdbcCallParameterPlan.Bind bind : plan.callParameterPlan().binds()) {
-                addBind(method, bind.position(), bind.parameter());
+                addBind(method, bind.position(), bind.parameter(), bind.bindType());
             }
         } else {
             for (JdbcSqlParameterPlan.Bind bind : plan.parameterPlan().binds()) {
-                addBind(method, bind.position(), bind.parameter());
+                addBind(method, bind.position(), bind.parameter(), bind.bindType());
             }
         }
 
@@ -429,7 +418,7 @@ final class JdbcMethodGenerator {
                     .addContent(")");
         }
         for (JdbcCallParameterPlan.Bind bind : plan.callParameterPlan().binds()) {
-            addBind(method, bind.position(), bind.parameter());
+            addBind(method, bind.position(), bind.parameter(), bind.bindType());
         }
         method.addContent(".callForOutputs(")
                 .addContent(plan.callFieldName())
@@ -478,12 +467,21 @@ final class JdbcMethodGenerator {
         return candidate;
     }
 
-    private static void addBind(Method.Builder method, int position, TypedElementInfo parameter) {
+    private static void addBind(Method.Builder method,
+                                int position,
+                                TypedElementInfo parameter,
+                                JdbcBindTypePlan bindType) {
         method.addContent(".bind(")
                 .addContent(String.valueOf(position))
                 .addContent(", ")
-                .addContent(parameter.elementName())
-                .addContent(")");
+                .addContent(parameter.elementName());
+        if (bindType.kind() == JdbcBindTypePlan.Kind.STANDARD) {
+            method.addContent(", ")
+                    .addContent(JdbcCodegenTypes.JDBC_TYPE)
+                    .addContent(".")
+                    .addContent(bindType.standardType());
+        }
+        method.addContent(")");
     }
 
     private static void addMappingStage(JdbcMethodPlan plan, Method.Builder method) {
@@ -585,14 +583,10 @@ final class JdbcMethodGenerator {
      * @param parameterType injected service type, optionally wrapped in {@code Optional}
      * @param parameterName generated constructor parameter name
      * @param fieldName generated effective mapper field name
-     * @param optional whether a missing service uses the generated record mapper
-     * @param fallbackFieldName generated record-mapper field, or an empty string when the service is required
      */
     record MapperDependency(TypeName parameterType,
                             String parameterName,
-                            String fieldName,
-                            boolean optional,
-                            String fallbackFieldName) {
+                            String fieldName) {
     }
 
     /**
@@ -601,8 +595,7 @@ final class JdbcMethodGenerator {
      * @param serviceType explicit mapper implementation type, or mapped type for automatic selection
      * @param mappedType mapper result type
      * @param explicit whether {@code Jdbc.RowMapper} selected the service type
-     * @param optional whether record mapping supplies a generated fallback
      */
-    private record MapperDependencyKey(TypeName serviceType, TypeName mappedType, boolean explicit, boolean optional) {
+    private record MapperDependencyKey(TypeName serviceType, TypeName mappedType, boolean explicit) {
     }
 }

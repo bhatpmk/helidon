@@ -33,6 +33,7 @@ import io.helidon.common.types.TypedElementInfo;
 final class JdbcCallParameterPlan {
     private static final int REF_CURSOR = 2012;
     private static final int INFERRED_TYPE = Integer.MIN_VALUE;
+    private static final int NO_SCALE = -1;
     private static final Pattern PROCEDURE = Pattern.compile("(?is)^\\s*\\{\\s*call\\b.*}\\s*$");
     private static final Pattern FUNCTION = Pattern.compile(
             "(?is)^\\s*\\{\\s*(?:\\?|:[\\p{javaJavaIdentifierStart}][\\p{javaJavaIdentifierPart}]*)"
@@ -109,27 +110,76 @@ final class JdbcCallParameterPlan {
 
             Annotation annotation = in == null ? inOut : in;
             String declaredName = annotation.stringValue("name").orElse("");
-            String locator = declaredName.isBlank() ? input.elementName() : declaredName;
+            validateOptionalName(declaredName, input, method);
+            if (!named && in != null && !declaredName.isEmpty()) {
+                throw JdbcMethodPlan.failure(method,
+                                             "Positional @Jdbc.InParameter must omit name and use index: "
+                                                     + input.elementName());
+            }
+            String locator = declaredName.isEmpty() ? input.elementName() : declaredName;
             int declaredIndex = annotation.intValue("index").orElse(-1);
             int position = resolve(locator, declaredIndex, parsed.markers(), named, method);
             Direction direction = in == null ? Direction.INOUT : Direction.IN;
-            int jdbcType = annotation.intValue("jdbcType").orElse(INFERRED_TYPE);
+            JdbcBindTypePlan bindType = JdbcBindTypePlan.create(input, method);
+            if (direction == Direction.INOUT && bindType.kind() != JdbcBindTypePlan.Kind.INFERRED) {
+                throw JdbcMethodPlan.failure(method,
+                                             "@Jdbc.BindType applies only to IN values; "
+                                                     + "@Jdbc.InOutParameter.jdbcType controls both directions: "
+                                                     + input.elementName());
+            }
+            int jdbcType = direction == Direction.INOUT
+                    ? annotation.intValue("jdbcType").orElse(INFERRED_TYPE)
+                    : INFERRED_TYPE;
             if (direction == Direction.INOUT && jdbcType == INFERRED_TYPE) {
                 throw JdbcMethodPlan.failure(method,
                                              "JDBC INOUT parameter requires an explicit jdbcType: "
                                                      + input.elementName());
             }
+            if (direction == Direction.INOUT && jdbcType == REF_CURSOR) {
+                throw JdbcMethodPlan.failure(method,
+                                             "@Jdbc.InOutParameter does not support cursor values: "
+                                                     + input.elementName());
+            }
+            String typeName = direction == Direction.INOUT
+                    ? typeName(annotation, method, "@Jdbc.InOutParameter")
+                    : "";
+            int scale = direction == Direction.INOUT
+                    ? scale(annotation, method, "@Jdbc.InOutParameter")
+                    : NO_SCALE;
+            validateRegistration(typeName, scale, method, "@Jdbc.InOutParameter");
             String outputName = direction == Direction.INOUT ? locator : "";
             Parameter parameter = new Parameter(position,
                                                 direction,
                                                 outputName,
                                                 jdbcType,
                                                 direction == Direction.INOUT ? input.typeName() : TypeNames.BOXED_VOID,
-                                                "");
+                                                typeName,
+                                                scale);
             add(parameter, parameters, positions, outputNames, method);
-            binds.add(new Bind(position, input));
+            binds.add(new Bind(position, input, bindType));
         }
 
+        addOutParameters(parsed, named, method, parameters, positions, outputNames);
+        addReturnParameter(function, parsed, named, method, parameters, positions, outputNames);
+
+        for (int position = 1; position <= parsed.markers().size(); position++) {
+            if (!positions.contains(position)) {
+                String marker = parsed.markers().get(position - 1);
+                String locator = marker.isEmpty() ? String.valueOf(position) : ":" + marker;
+                throw JdbcMethodPlan.failure(method, "JDBC call marker " + locator + " has no parameter declaration");
+            }
+        }
+        parameters.sort(Comparator.comparingInt(Parameter::position));
+        binds.sort(Comparator.comparingInt(Bind::position));
+        return new JdbcCallParameterPlan(parsed.sql(), List.copyOf(parameters), List.copyOf(binds));
+    }
+
+    private static void addOutParameters(JdbcSqlMarkerLexer.Result parsed,
+                                         boolean named,
+                                         TypedElementInfo method,
+                                         List<Parameter> parameters,
+                                         Set<Integer> positions,
+                                         Set<String> outputNames) {
         for (Annotation annotation : outAnnotations(method)) {
             String name = annotation.stringValue("name").orElse("");
             if (name.isBlank()) {
@@ -143,71 +193,106 @@ final class JdbcCallParameterPlan {
             int jdbcType = requiredInt(annotation, "jdbcType", method, "@Jdbc.OutParameter");
             TypeName javaType = annotation.typeValue("javaType").orElse(TypeNames.BOXED_VOID);
             String typeName = typeName(annotation, method, "@Jdbc.OutParameter");
+            int scale = scale(annotation, method, "@Jdbc.OutParameter");
+            validateRegistration(typeName, scale, method, "@Jdbc.OutParameter");
+            // Cursor lifecycle cannot be inferred from one standard JDBC type code because drivers may require a
+            // vendor-specific registration code. The explicit kind controls scoped resource handling.
+            String kind = annotation.stringValue("kind").orElse("SCALAR");
             Direction direction;
-            if (jdbcType == REF_CURSOR) {
+            if ("CURSOR".equals(kind)) {
                 if (!javaType.equals(TypeNames.BOXED_VOID)) {
                     throw JdbcMethodPlan.failure(method,
-                                                 "A REF_CURSOR output must leave javaType as Void.class: " + name);
+                                                 "A cursor output must leave javaType as Void.class: " + name);
+                }
+                if (scale != NO_SCALE) {
+                    throw JdbcMethodPlan.failure(method,
+                                                 "A cursor output cannot declare a scale: " + name);
                 }
                 direction = Direction.CURSOR;
-            } else {
+            } else if ("SCALAR".equals(kind)) {
+                if (jdbcType == REF_CURSOR) {
+                    throw JdbcMethodPlan.failure(method,
+                                                 "Types.REF_CURSOR requires kind = Jdbc.OutputKind.CURSOR: " + name);
+                }
                 if (javaType.equals(TypeNames.BOXED_VOID) || !JdbcMethodPlan.isScalar(javaType)) {
                     throw JdbcMethodPlan.failure(method,
                                                  "JDBC scalar OUT parameter requires a supported javaType: " + name);
                 }
                 direction = Direction.OUT;
+            } else {
+                throw JdbcMethodPlan.failure(method, "Unsupported @Jdbc.OutParameter kind: " + kind);
             }
-            add(new Parameter(position, direction, name, jdbcType, javaType, typeName),
+            add(new Parameter(position, direction, name, jdbcType, javaType, typeName, scale),
                 parameters,
                 positions,
                 outputNames,
                 method);
         }
+    }
 
-        Annotation returnAnnotation = method.findAnnotation(JdbcCodegenTypes.JDBC_RETURN_PARAMETER).orElse(null);
-        if (function != (returnAnnotation != null)) {
+    private static void addReturnParameter(boolean function,
+                                           JdbcSqlMarkerLexer.Result parsed,
+                                           boolean named,
+                                           TypedElementInfo method,
+                                           List<Parameter> parameters,
+                                           Set<Integer> positions,
+                                           Set<String> outputNames) {
+        Annotation annotation = method.findAnnotation(JdbcCodegenTypes.JDBC_RETURN_PARAMETER).orElse(null);
+        if (function != (annotation != null)) {
             throw JdbcMethodPlan.failure(method,
                                          function
                                                  ? "JDBC function syntax requires @Jdbc.ReturnParameter"
                                                  : "@Jdbc.ReturnParameter requires JDBC function escape syntax");
         }
-        if (returnAnnotation != null) {
-            String name = returnAnnotation.stringValue("name").orElse("");
-            if (name.isBlank()) {
-                throw JdbcMethodPlan.failure(method, "@Jdbc.ReturnParameter requires a non-blank name");
+        if (annotation == null) {
+            return;
+        }
+
+        String name = annotation.stringValue("name").orElse("");
+        if (name.isBlank()) {
+            throw JdbcMethodPlan.failure(method, "@Jdbc.ReturnParameter requires a non-blank name");
+        }
+        int position = resolve(name, 1, parsed.markers(), named, method);
+        TypeName javaType = annotation.typeValue("javaType")
+                .orElseThrow(() -> JdbcMethodPlan.failure(method,
+                                                          "@Jdbc.ReturnParameter javaType is missing"));
+        int jdbcType = requiredInt(annotation, "jdbcType", method, "@Jdbc.ReturnParameter");
+        String typeName = typeName(annotation, method, "@Jdbc.ReturnParameter");
+        int scale = scale(annotation, method, "@Jdbc.ReturnParameter");
+        validateRegistration(typeName, scale, method, "@Jdbc.ReturnParameter");
+        // A cursor-valued function return is still fixed at position one, but it follows cursor rather than scalar
+        // consumption rules after registration.
+        String kind = annotation.stringValue("kind").orElse("SCALAR");
+        Direction direction;
+        if ("CURSOR".equals(kind)) {
+            if (!javaType.equals(TypeNames.BOXED_VOID)) {
+                throw JdbcMethodPlan.failure(method,
+                                             "A cursor function return must declare javaType = Void.class: " + name);
             }
-            int position = resolve(name, 1, parsed.markers(), named, method);
-            TypeName javaType = returnAnnotation.typeValue("javaType")
-                    .orElseThrow(() -> JdbcMethodPlan.failure(method,
-                                                              "@Jdbc.ReturnParameter javaType is missing"));
+            if (scale != NO_SCALE) {
+                throw JdbcMethodPlan.failure(method,
+                                             "A cursor function return cannot declare a scale: " + name);
+            }
+            direction = Direction.RETURN_CURSOR;
+        } else if ("SCALAR".equals(kind)) {
+            if (jdbcType == REF_CURSOR) {
+                throw JdbcMethodPlan.failure(method,
+                                             "Types.REF_CURSOR requires kind = Jdbc.OutputKind.CURSOR: " + name);
+            }
             if (!JdbcMethodPlan.isScalar(javaType)) {
                 throw JdbcMethodPlan.failure(method,
                                              "JDBC function return requires a supported scalar javaType: "
                                                      + javaType.resolvedName());
             }
-            int jdbcType = requiredInt(returnAnnotation, "jdbcType", method, "@Jdbc.ReturnParameter");
-            add(new Parameter(position,
-                              Direction.RETURN,
-                              name,
-                              jdbcType,
-                              javaType,
-                              typeName(returnAnnotation, method, "@Jdbc.ReturnParameter")),
-                parameters,
-                positions,
-                outputNames,
-                method);
+            direction = Direction.RETURN;
+        } else {
+            throw JdbcMethodPlan.failure(method, "Unsupported @Jdbc.ReturnParameter kind: " + kind);
         }
-
-        for (int position = 1; position <= parsed.markers().size(); position++) {
-            if (!positions.contains(position)) {
-                String marker = parsed.markers().get(position - 1);
-                String locator = marker.isEmpty() ? String.valueOf(position) : ":" + marker;
-                throw JdbcMethodPlan.failure(method, "JDBC call marker " + locator + " has no parameter declaration");
-            }
-        }
-        parameters.sort(Comparator.comparingInt(Parameter::position));
-        binds.sort(Comparator.comparingInt(Bind::position));
-        return new JdbcCallParameterPlan(parsed.sql(), List.copyOf(parameters), List.copyOf(binds));
+        add(new Parameter(position, direction, name, jdbcType, javaType, typeName, scale),
+            parameters,
+            positions,
+            outputNames,
+            method);
     }
 
     private static void validateUniqueNamedMarkers(List<String> markers,
@@ -301,6 +386,32 @@ final class JdbcCallParameterPlan {
         return typeName;
     }
 
+    private static int scale(Annotation annotation, TypedElementInfo method, String declaration) {
+        int scale = annotation.intValue("scale").orElse(NO_SCALE);
+        if (scale < NO_SCALE) {
+            throw JdbcMethodPlan.failure(method, declaration + " scale must be -1 or non-negative");
+        }
+        return scale;
+    }
+
+    private static void validateRegistration(String typeName,
+                                             int scale,
+                                             TypedElementInfo method,
+                                             String declaration) {
+        if (!typeName.isEmpty() && scale != NO_SCALE) {
+            throw JdbcMethodPlan.failure(method, declaration + " cannot declare both typeName and scale");
+        }
+    }
+
+    private static void validateOptionalName(String name,
+                                             TypedElementInfo parameter,
+                                             TypedElementInfo method) {
+        if (!name.isEmpty() && name.isBlank()) {
+            throw JdbcMethodPlan.failure(method,
+                                         "JDBC call parameter name must not be blank: " + parameter.elementName());
+        }
+    }
+
     String sql() {
         return sql;
     }
@@ -318,7 +429,8 @@ final class JdbcCallParameterPlan {
         OUT,
         INOUT,
         CURSOR,
-        RETURN
+        RETURN,
+        RETURN_CURSOR
     }
 
     record Parameter(int position,
@@ -326,12 +438,13 @@ final class JdbcCallParameterPlan {
                      String name,
                      int jdbcType,
                      TypeName javaType,
-                     String typeName) {
+                     String typeName,
+                     int scale) {
         boolean output() {
             return direction != Direction.IN;
         }
     }
 
-    record Bind(int position, TypedElementInfo parameter) {
+    record Bind(int position, TypedElementInfo parameter, JdbcBindTypePlan bindType) {
     }
 }

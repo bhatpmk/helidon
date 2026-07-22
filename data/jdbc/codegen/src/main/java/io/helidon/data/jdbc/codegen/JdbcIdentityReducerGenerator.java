@@ -453,7 +453,7 @@ final class JdbcIdentityReducerGenerator {
                 .addContent("throw new ")
                 .addContent(DATA_EXCEPTION)
                 .addContent("(")
-                .addContentLiteral("Identity for graph scope '" + location(scope) + "' must not be null")
+                .addContentLiteral("Identity for record scope '" + location(scope) + "' must not be null")
                 .addContentLine(");")
                 .addContentLine("}");
     }
@@ -471,7 +471,7 @@ final class JdbcIdentityReducerGenerator {
                 .addContent("throw new ")
                 .addContent(DATA_EXCEPTION)
                 .addContent("(")
-                .addContentLiteral("Identity for graph scope '" + location(scope) + "' is partially null")
+                .addContentLiteral("Identity for record scope '" + location(scope) + "' is partially null")
                 .addContentLine(");")
                 .addContentLine("}");
     }
@@ -569,7 +569,7 @@ final class JdbcIdentityReducerGenerator {
                     .addContent("throw new ")
                     .addContent(DATA_EXCEPTION)
                     .addContent("(")
-                    .addContentLiteral("Conflicting projected value for graph scope '" + location(scope)
+                    .addContentLiteral("Conflicting projected value for record scope '" + location(scope)
                                                + "' property '" + property.name + "'")
                     .addContentLine(");")
                     .addContentLine("}");
@@ -600,7 +600,7 @@ final class JdbcIdentityReducerGenerator {
                     .addContent("throw new ")
                     .addContent(DATA_EXCEPTION)
                     .addContent("(")
-                    .addContentLiteral("Graph scope '" + descendant.path
+                    .addContentLiteral("Record scope '" + descendant.path
                                                + "' has an identity while ancestor scope '"
                                                + location(ancestor) + "' is absent")
                     .addContentLine(");")
@@ -779,7 +779,7 @@ final class JdbcIdentityReducerGenerator {
     /**
      * Returns composite-key components in the order used by the class model for record components.
      *
-     * @param scope record graph scope
+     * @param scope record scope
      * @return consistently ordered identity components
      */
     private static List<Property> keyProperties(Scope scope) {

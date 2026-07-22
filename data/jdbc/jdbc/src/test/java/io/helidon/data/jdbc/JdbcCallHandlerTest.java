@@ -45,6 +45,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JdbcCallHandlerTest {
 
     @Test
+    void bindsStandardInputTypesThroughTheSharedStatementStage() {
+        RecordingJdbc updateRecording = new RecordingJdbc().updateCount(1);
+        long count = new JdbcClientImpl(updateRecording.dataSource())
+                .create("UPDATE JOB SET STATE = ?")
+                .bind(1, "READY", JDBCType.VARCHAR)
+                .execute();
+
+        assertEquals(1, count);
+        assertThat(updateRecording.events(),
+                   hasItems("statement.bind:1:READY", "statement.bindType:1:" + JDBCType.VARCHAR));
+
+        RecordingJdbc callRecording = new RecordingJdbc();
+        JdbcCall layout = JdbcCall.builder().in(1).in(2).build();
+        new JdbcClientImpl(callRecording.dataSource())
+                .create("{call PROCESS(?, ?)}")
+                .bind(1, "job-17", JDBCType.VARCHAR)
+                .bind(2, "READY")
+                .call(layout);
+
+        assertThat(callRecording.events(),
+                   hasItems("call.bind:1:job-17",
+                            "call.bindType:1:" + JDBCType.VARCHAR,
+                            "call.bind:2:READY"));
+    }
+
+    @Test
     void consumesAFunctionReturnedAsADirectResultByARealDriver() {
         JdbcDataSource dataSource = new JdbcDataSource();
         dataSource.setURL("jdbc:h2:mem:call_function;DB_CLOSE_DELAY=-1");
@@ -169,6 +195,56 @@ class JdbcCallHandlerTest {
                    hasItems("call.register:1:" + Types.BIGINT,
                             "call.bind:2:group-a",
                             "call.register:3:" + Types.VARCHAR));
+    }
+
+    @Test
+    void registersScaledOutputsAndBindsScaledInOutValues() {
+        RecordingJdbc recording = new RecordingJdbc()
+                .callOutput(1, new BigDecimal("12.35"))
+                .callOutput(2, new BigDecimal("99.125"));
+        JdbcClient client = new JdbcClientImpl(recording.dataSource());
+        JdbcCall layout = JdbcCall.builder()
+                .inOut(1, "balance", Types.DECIMAL, BigDecimal.class, 2)
+                .out(2, "average", Types.NUMERIC, BigDecimal.class, 3)
+                .build();
+
+        client.create("{call ADJUST(?, ?)}")
+                .bind(1, new BigDecimal("12.345"))
+                .call(layout, JdbcResultRequest.call(call -> {
+                    call.results().discard();
+                    assertEquals(new BigDecimal("12.35"),
+                                 call.outputs().required("balance", BigDecimal.class));
+                    assertEquals(new BigDecimal("99.125"),
+                                 call.outputs().required("average", BigDecimal.class));
+                }));
+
+        assertThat(recording.events(),
+                   hasItems("call.bind:1:12.345:" + Types.DECIMAL + ":2",
+                            "call.register:1:" + Types.DECIMAL + ":2",
+                            "call.register:2:" + Types.NUMERIC + ":3"));
+    }
+
+    @Test
+    void consumesFunctionCursorRegisteredWithVendorType() {
+        int vendorCursorType = -10;
+        RecordingJdbc recording = new RecordingJdbc().callCursor(1, "first", "second");
+        JdbcClient client = new JdbcClientImpl(recording.dataSource());
+        JdbcCall layout = JdbcCall.builder()
+                .returnsCursor("rows", vendorCursorType, "SYS_REFCURSOR")
+                .in(2, Types.BIGINT)
+                .build();
+
+        List<String> values = client.create("{? = call FIND_ROWS(?)}")
+                .bind(2, 19L)
+                .call(layout, JdbcResultRequest.call(call -> {
+                    call.results().discard();
+                    return call.outputs().cursor("rows").map(String.class).list();
+                }));
+
+        assertEquals(List.of("first", "second"), values);
+        assertThat(recording.events(),
+                   hasItems("call.register:1:" + vendorCursorType + ":SYS_REFCURSOR",
+                            "call.bind:2:19"));
     }
 
     @Test
@@ -454,9 +530,16 @@ class JdbcCallHandlerTest {
         assertThrows(IllegalArgumentException.class,
                      () -> JdbcCall.builder().out(1, "value", Types.BLOB, java.sql.Blob.class));
         assertThrows(IllegalArgumentException.class,
+                     () -> JdbcCall.builder().out(1, "rows", Types.REF_CURSOR, String.class));
+        assertThrows(IllegalArgumentException.class,
                      () -> JdbcCall.builder().out(1, "value", Types.VARCHAR, String.class, " "));
         assertThrows(IllegalArgumentException.class,
+                     () -> JdbcCall.builder().out(1, "value", Types.DECIMAL, BigDecimal.class, -1));
+        assertThrows(IllegalArgumentException.class,
                      () -> JdbcCall.builder().returns("value", Types.INTEGER, Integer.class)
+                             .returns("other", Types.INTEGER, Integer.class));
+        assertThrows(IllegalArgumentException.class,
+                     () -> JdbcCall.builder().returnsCursor("value")
                              .returns("other", Types.INTEGER, Integer.class));
 
         JdbcCall.Builder recoverable = JdbcCall.builder()

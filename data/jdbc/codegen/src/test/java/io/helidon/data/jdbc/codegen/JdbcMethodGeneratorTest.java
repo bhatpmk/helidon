@@ -45,6 +45,113 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JdbcMethodGeneratorTest {
 
     @Test
+    void generatesSharedStandardInputBindings() throws IOException {
+        TestCompiler.Result result = compiler()
+                .addSource("TypedBindingRepository.java", """
+                        package example;
+
+                        import java.sql.JDBCType;
+
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+
+                        @Data.Repository
+                        @Data.Provider("jdbc")
+                        interface TypedBindingRepository {
+                            @Jdbc.Statement("select ID from JOB where STATE = :state")
+                            java.util.List<Long> find(@Jdbc.BindType(JDBCType.VARCHAR) String state);
+
+                            @Jdbc.Statement("update JOB set STATE = :state where CURRENT_STATE = :state "
+                                    + "and TENANT_KIND = :tenantKind")
+                            @Jdbc.Execution(Jdbc.ExecutionType.UPDATE)
+                            long update(@Jdbc.BindType(JDBCType.VARCHAR) String state,
+                                        int tenantKind);
+
+                            @Jdbc.Statement("insert into JOB(STATE) values (:state)")
+                            @Jdbc.GeneratedKeys("ID")
+                            long insert(@Jdbc.BindType(JDBCType.VARCHAR) String state);
+
+                            @Jdbc.Statement("{call PROCESS(:jobId, :state)}")
+                            @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                            void process(@Jdbc.InParameter @Jdbc.BindType(JDBCType.BIGINT) long jobId,
+                                         @Jdbc.InParameter String state);
+                        }
+                        """)
+                .build()
+                .compile();
+
+        assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+        String source = Files.readString(result.sourceOutput().resolve("example/TypedBindingRepository__Jdbc.java"));
+        assertThat(source, containsString(".bind(1, state, JDBCType.VARCHAR).map(Long.class).list()"));
+        assertThat(source,
+                   containsString(".bind(1, state, JDBCType.VARCHAR).bind(2, state, JDBCType.VARCHAR)"
+                                          + ".bind(3, tenantKind).execute()"));
+        assertThat(source,
+                   containsString(".bind(1, state, JDBCType.VARCHAR)"
+                                          + ".generatedKeys(row -> row.required(1, Long.class), \"ID\").one()"));
+        assertThat(source, containsString(".in(1).in(2).build()"));
+        assertThat(source,
+                   containsString(".bind(1, jobId, JDBCType.BIGINT).bind(2, state)"
+                                          + ".call(CALL_PROCESS)"));
+    }
+
+    @Test
+    void rejectsInvalidExplicitInputBindingTypes() {
+        assertCompilationFailure("NullBindTypeRepository.java", """
+                        package example;
+                        import java.sql.JDBCType;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface NullBindTypeRepository {
+                            @Jdbc.Statement("update JOB set STATE = :state")
+                            @Jdbc.Execution(Jdbc.ExecutionType.UPDATE)
+                            long invalid(@Jdbc.BindType(JDBCType.NULL) String state);
+                        }
+                        """,
+                                 "@Jdbc.BindType does not support JDBCType.NULL");
+        assertCompilationFailure("CursorBindTypeRepository.java", """
+                        package example;
+                        import java.sql.JDBCType;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface CursorBindTypeRepository {
+                            @Jdbc.Statement("{call PROCESS(:state)}")
+                            void invalid(@Jdbc.InParameter @Jdbc.BindType(JDBCType.REF_CURSOR) String state);
+                        }
+                        """,
+                                 "@Jdbc.BindType does not support JDBCType.REF_CURSOR");
+        assertCompilationFailure("InOutBindTypeRepository.java", """
+                        package example;
+                        import java.sql.JDBCType;
+                        import java.sql.Types;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface InOutBindTypeRepository {
+                            @Jdbc.Statement("{call PROCESS(:state)}")
+                            String invalid(@Jdbc.InOutParameter(jdbcType = Types.VARCHAR)
+                                           @Jdbc.BindType(JDBCType.VARCHAR) String state);
+                        }
+                        """,
+                                 "@Jdbc.InOutParameter.jdbcType controls both directions");
+        assertCompilationFailure("ControlBindTypeRepository.java", """
+                        package example;
+                        import java.sql.JDBCType;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        import io.helidon.data.jdbc.JdbcStatementOptions;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface ControlBindTypeRepository {
+                            @Jdbc.Statement("select STATE from JOB")
+                            String invalid(@Jdbc.BindType(JDBCType.VARCHAR) JdbcStatementOptions options);
+                        }
+                        """,
+                                 "invocation-control parameters cannot declare an input binding type");
+    }
+
+    @Test
     void generatesCallableLayoutsBindingsAndTerminals() throws IOException {
         TestCompiler.Result result = compiler()
                 .addSource("ProcedureRepository.java", """
@@ -62,7 +169,10 @@ class JdbcMethodGeneratorTest {
                         interface ProcedureRepository {
                             @Jdbc.Statement("{call TRANSFER(:accountId, :balance, :orders, :status)}")
                             @Jdbc.Execution(Jdbc.ExecutionType.CALL)
-                            @Jdbc.OutParameter(name = "orders", jdbcType = Types.REF_CURSOR)
+                            @Jdbc.OutParameter(
+                                    name = "orders",
+                                    jdbcType = Types.REF_CURSOR,
+                                    kind = Jdbc.OutputKind.CURSOR)
                             @Jdbc.OutParameter(
                                     name = "status",
                                     jdbcType = Types.VARCHAR,
@@ -71,7 +181,7 @@ class JdbcMethodGeneratorTest {
                             TransferResult transfer(
                                     JdbcResultRequest.CallWith<TransferResult> request,
                                     @Jdbc.InParameter(name = "accountId") long accountId,
-                                    @Jdbc.InOutParameter(name = "balance", jdbcType = Types.DECIMAL)
+                                    @Jdbc.InOutParameter(name = "balance", jdbcType = Types.DECIMAL, scale = 2)
                                     BigDecimal balance);
 
                             @Jdbc.Statement("{:result = call CALCULATE_FEE(:accountId)}")
@@ -100,6 +210,25 @@ class JdbcMethodGeneratorTest {
                             @Jdbc.Execution(Jdbc.ExecutionType.CALL)
                             void directResults(JdbcResultRequest.Call request);
 
+                            @Jdbc.Statement("{:rows = call FIND_ROWS(:accountId)}")
+                            @Jdbc.ReturnParameter(
+                                    name = "rows",
+                                    jdbcType = -10,
+                                    javaType = Void.class,
+                                    typeName = "SYS_REFCURSOR",
+                                    kind = Jdbc.OutputKind.CURSOR)
+                            void findRows(
+                                    JdbcResultRequest.Call request,
+                                    @Jdbc.InParameter(name = "accountId") long accountId);
+
+                            @Jdbc.Statement("{call NORMALIZE(:state)}")
+                            String normalize(
+                                    @Jdbc.InOutParameter(
+                                            name = "state",
+                                            jdbcType = Types.STRUCT,
+                                            typeName = "ORDER_STATE")
+                                    String state);
+
                         }
 
                         record TransferResult(BigDecimal balance, String status) {
@@ -111,7 +240,7 @@ class JdbcMethodGeneratorTest {
         assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
         String source = Files.readString(result.sourceOutput().resolve("example/ProcedureRepository__Jdbc.java"));
         assertThat(source, containsString("JdbcCall CALL_TRANSFER = JdbcCall.builder()"));
-        assertThat(source, containsString(".in(1).inOut(2, \"balance\", 3, BigDecimal.class)"
+        assertThat(source, containsString(".in(1).inOut(2, \"balance\", 3, BigDecimal.class, 2)"
                                                   + ".cursor(3, \"orders\").out(4, \"status\", 12, String.class, "
                                                   + "\"STATUS_TYPE\")"
                                                   + ".build()"));
@@ -122,6 +251,10 @@ class JdbcMethodGeneratorTest {
         assertThat(source, containsString(".in(1).out(2, \"status\", 12, String.class).build()"));
         assertThat(source, containsString(".bind(1, accountId).call(CALL_POSITIONAL, request)"));
         assertThat(source, containsString("jdbcClient.create(SQL_DIRECT_RESULTS).call(CALL_DIRECT_RESULTS, request)"));
+        assertThat(source, containsString(".returnsCursor(\"rows\", -10, \"SYS_REFCURSOR\").in(2).build()"));
+        assertThat(source, containsString(".bind(2, accountId).call(CALL_FIND_ROWS, request)"));
+        assertThat(source,
+                   containsString(".inOut(1, \"state\", 2002, String.class, \"ORDER_STATE\").build()"));
     }
 
     @Test
@@ -251,11 +384,15 @@ class JdbcMethodGeneratorTest {
                         @Data.Repository @Data.Provider("jdbc")
                         interface DetachedCursorRepository {
                             @Jdbc.Statement("{call READ(?)}")
-                            @Jdbc.OutParameter(name = "rows", index = 1, jdbcType = Types.REF_CURSOR)
+                            @Jdbc.OutParameter(
+                                    name = "rows",
+                                    index = 1,
+                                    jdbcType = Types.REF_CURSOR,
+                                    kind = Jdbc.OutputKind.CURSOR)
                             String invalid();
                         }
                         """,
-                                 "cursor outputs requires JdbcResultRequest.Call or CallWith");
+                                 "cursor outputs requires a JdbcResultRequest.Call or CallWith");
         assertCompilationFailure("DetachedTypeMismatchRepository.java", """
                         package example;
                         import java.sql.Types;
@@ -340,11 +477,12 @@ class JdbcMethodGeneratorTest {
                         interface InvalidCursorRepository {
                             @Jdbc.Statement("{call READ(?)}")
                             @Jdbc.OutParameter(name = "rows", index = 1,
-                                               jdbcType = Types.REF_CURSOR, javaType = String.class)
+                                               jdbcType = Types.REF_CURSOR, javaType = String.class,
+                                               kind = Jdbc.OutputKind.CURSOR)
                             void invalid(JdbcResultRequest.Call request);
                         }
                         """,
-                                 "REF_CURSOR output must leave javaType as Void.class");
+                                 "cursor output must leave javaType as Void.class");
         assertCompilationFailure("InvalidScalarOutputRepository.java", """
                         package example;
                         import java.sql.Types;
@@ -359,6 +497,87 @@ class JdbcMethodGeneratorTest {
                         }
                         """,
                                  "scalar OUT parameter requires a supported javaType");
+        assertCompilationFailure("ImplicitCursorKindRepository.java", """
+                        package example;
+                        import java.sql.Types;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        import io.helidon.data.jdbc.JdbcResultRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface ImplicitCursorKindRepository {
+                            @Jdbc.Statement("{call READ(?)}")
+                            @Jdbc.OutParameter(name = "rows", index = 1, jdbcType = Types.REF_CURSOR)
+                            void invalid(JdbcResultRequest.Call request);
+                        }
+                        """,
+                                 "Types.REF_CURSOR requires kind = Jdbc.OutputKind.CURSOR");
+        assertCompilationFailure("ConflictingRegistrationRepository.java", """
+                        package example;
+                        import java.sql.Types;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface ConflictingRegistrationRepository {
+                            @Jdbc.Statement("{call TOTAL(?)}")
+                            @Jdbc.OutParameter(name = "total", index = 1,
+                                               jdbcType = Types.DECIMAL, javaType = java.math.BigDecimal.class,
+                                               typeName = "MONEY", scale = 2)
+                            java.math.BigDecimal invalid();
+                        }
+                        """,
+                                 "cannot declare both typeName and scale");
+        assertCompilationFailure("CursorScaleRepository.java", """
+                        package example;
+                        import java.sql.Types;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        import io.helidon.data.jdbc.JdbcResultRequest;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface CursorScaleRepository {
+                            @Jdbc.Statement("{call READ(?)}")
+                            @Jdbc.OutParameter(name = "rows", index = 1, jdbcType = Types.REF_CURSOR,
+                                               scale = 2, kind = Jdbc.OutputKind.CURSOR)
+                            void invalid(JdbcResultRequest.Call request);
+                        }
+                        """,
+                                 "cursor output cannot declare a scale");
+        assertCompilationFailure("DetachedCursorReturnRepository.java", """
+                        package example;
+                        import java.sql.Types;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface DetachedCursorReturnRepository {
+                            @Jdbc.Statement("{? = call READ()}")
+                            @Jdbc.ReturnParameter(name = "rows", jdbcType = Types.REF_CURSOR,
+                                                  javaType = Void.class,
+                                                  kind = Jdbc.OutputKind.CURSOR)
+                            String invalid();
+                        }
+                        """,
+                                 "cursor outputs requires a JdbcResultRequest.Call or CallWith");
+        assertCompilationFailure("NamedPositionalInputRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface NamedPositionalInputRepository {
+                            @Jdbc.Statement("{call PROCESS(?)}")
+                            void invalid(@Jdbc.InParameter(name = "value", index = 1) String value);
+                        }
+                        """,
+                                 "Positional @Jdbc.InParameter must omit name and use index");
+        assertCompilationFailure("BlankCallInputNameRepository.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import io.helidon.data.jdbc.Jdbc;
+                        @Data.Repository @Data.Provider("jdbc")
+                        interface BlankCallInputNameRepository {
+                            @Jdbc.Statement("{call PROCESS(:value)}")
+                            void invalid(@Jdbc.InParameter(name = " ") String value);
+                        }
+                        """,
+                                 "JDBC call parameter name must not be blank");
         assertCompilationFailure("CallResultMismatchRepository.java", """
                         package example;
                         import io.helidon.data.Data;
@@ -521,13 +740,14 @@ class JdbcMethodGeneratorTest {
         assertTrue(source.contains("jdbcClient.create(SQL_FIND)"), source);
         assertTrue(source.contains("@Service.Named(\"@default\") @Data.ProviderType(\"jdbc\") JdbcClient jdbcClient"),
                    source);
-        assertThat(source, containsString("Optional<JdbcClient.RowMapper<Pokemon>> pokemonRowMapper"));
-        assertThat(source, containsString("JdbcClient.RowMapper<Pokemon> pokemonRowMapper2"));
+        assertThat(source, not(containsString("Optional<JdbcClient.RowMapper<Pokemon>>")));
+        assertThat(source, containsString("JdbcClient.RowMapper<Pokemon> pokemonRowMapper"));
         assertThat(source, containsString("PokemonMapper pokemonMapper"));
-        assertThat(source, containsString("DEFAULT_POKEMON_ROW_MAPPER = row -> new Pokemon"));
+        assertThat(source, containsString("MAPPER_FIND = row -> new Pokemon"));
+        assertThat(source, containsString("MAPPER_VISIT_RECORDS = row -> new Pokemon"));
         assertThat(source, containsString("row.optional(\"name\", String.class)"));
         assertThat(source, not(containsString("new PokemonMapper()")));
-        assertTrue(source.contains(".bind(1, minimum).map(pokemonRowMapper).list()"), source);
+        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_FIND).list()"), source);
         assertTrue(source.contains(".bind(1, id).map(String.class).optional()"), source);
         assertTrue(source.contains("jdbcClient.create(SQL_COUNT).map(long.class).one()"), source);
         assertTrue(source.contains(".bind(1, name).bind(2, id).execute()"), source);
@@ -536,9 +756,9 @@ class JdbcMethodGeneratorTest {
                                            + ".generatedKeys(row -> row.required(1, Long.class), \"ID\").one()"), source);
         assertTrue(source.contains(".generatedKeys(row -> row.required(1, Long.class)).one()"), source);
         assertTrue(source.contains(".map(pokemonMapper).one()"), source);
-        assertTrue(source.contains(".bind(1, id).map(pokemonRowMapper2).one()"), source);
+        assertTrue(source.contains(".bind(1, id).map(pokemonRowMapper).one()"), source);
         assertTrue(source.contains(".generatedKeys(MAPPER_INSERT_RECORD, \"ID\").one()"), source);
-        assertTrue(source.contains(".bind(1, minimum).map(pokemonRowMapper).visitAll(request)"), source);
+        assertTrue(source.contains(".bind(1, minimum).map(MAPPER_VISIT_RECORDS).visitAll(request)"), source);
         assertTrue(source.contains(".bind(1, id).map(pokemonMapper).visitAll(request)"), source);
         assertTrue(source.contains("@Tx.Required"), source);
 
@@ -1135,9 +1355,9 @@ class JdbcMethodGeneratorTest {
         assertThat(source, containsString("row.optional(\"name\", String.class)"));
         assertThat(source, containsString("new Contact(contactId, name, List.copyOf(phonesValues))"));
         assertThat(source,
-                   containsString("Conflicting projected value for graph scope 'phones' property 'number'"));
+                   containsString("Conflicting projected value for record scope 'phones' property 'number'"));
         assertThat(source,
-                   containsString("Graph scope 'phones.tags' has an identity while ancestor scope 'phones' is absent"));
+                   containsString("Record scope 'phones.tags' has an identity while ancestor scope 'phones' is absent"));
         assertThat(source, containsString("private static record RootIdentity"));
         assertThat(source, containsString("private static record PhonesIdentity"));
         assertThat(source, containsString("primaryPhonesByIdentity"));
@@ -1145,9 +1365,9 @@ class JdbcMethodGeneratorTest {
         assertThat(source, containsString(".reduce(new ContactIdsReducer())"));
         assertThat(source, containsString(".reduce(new Reducer_FindOne())"));
         assertThat(source, containsString(".reduce(new Reducer_FindOptional())"));
-        assertThat(source, containsString("Optional<JdbcClient.RowMapper<ContactSummary>> contactSummaryRowMapper"));
-        assertThat(source, containsString("DEFAULT_CONTACT_SUMMARY_ROW_MAPPER = row ->"));
-        assertThat(source, containsString(".map(contactSummaryRowMapper).list()"));
+        assertThat(source, not(containsString("Optional<JdbcClient.RowMapper<ContactSummary>>")));
+        assertThat(source, containsString("MAPPER_LIST_CONTACTS = row ->"));
+        assertThat(source, containsString(".map(MAPPER_LIST_CONTACTS).list()"));
         assertThat(source, not(containsString("java.lang.reflect")));
         assertThat(source, not(containsString("JdbcRunner")));
         assertGeneratedIdentityBehavior(result);
@@ -1581,7 +1801,7 @@ class JdbcMethodGeneratorTest {
             Class<?> repositoryType = Class.forName("example.ContactRepository__Jdbc", true, loader);
             Class<?> jdbcClientType = Class.forName("io.helidon.data.jdbc.JdbcClient");
             Class<?> rowType = Class.forName("io.helidon.data.jdbc.JdbcClient$Row");
-            var constructor = repositoryType.getDeclaredConstructor(jdbcClientType, Optional.class);
+            var constructor = repositoryType.getDeclaredConstructor(jdbcClientType);
             constructor.setAccessible(true);
             var findContacts = repositoryType.getMethod("findContacts");
             findContacts.setAccessible(true);
@@ -1605,7 +1825,7 @@ class JdbcMethodGeneratorTest {
                     row("contactId", 2L, "name", "Grace", "phones.phoneId", 10L, "phones.number", "333",
                         "phones.tags.tagId", 100L, "phones.tags.name", "work"),
                     row("contactId", 3L, "name", "Lin", "phones.phoneId", null, "phones.number", null,
-                        "phones.tags.tagId", null, "phones.tags.name", null))), Optional.empty());
+                        "phones.tags.tagId", null, "phones.tags.name", null))));
 
             List<?> contacts = (List<?>) findContacts.invoke(repository);
             assertThat(contacts.size(), is(3));
@@ -1629,8 +1849,7 @@ class JdbcMethodGeneratorTest {
                     row("tenantId", 1L, "contactId", 10L, "phones.type", "mobile", "phones.number", "111"),
                     row("tenantId", 1L, "contactId", 10L, "phones.type", "mobile", "phones.number", "111"),
                     row("tenantId", 1L, "contactId", 10L, "phones.type", "work", "phones.number", "222"),
-                    row("tenantId", 2L, "contactId", 10L, "phones.type", null, "phones.number", null))),
-                                                                   Optional.empty());
+                    row("tenantId", 2L, "contactId", 10L, "phones.type", null, "phones.number", null))));
             List<?> compositeContacts = (List<?>) findCompositeContacts.invoke(compositeRepository);
             assertThat(compositeContacts.size(), is(2));
             assertThat(property(compositeContacts.getFirst(), "tenantId"), is(1L));
@@ -1641,26 +1860,25 @@ class JdbcMethodGeneratorTest {
             assertThat(property(compositePhones.get(1), "type"), is("work"));
 
             Object oneRepository = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of(
-                    row("contactId", 1L, "name", "Ada"))), Optional.empty());
+                    row("contactId", 1L, "name", "Ada"))));
             assertThat(property(findOne.invoke(oneRepository), "contactId"), is(1L));
             Optional<?> optional = (Optional<?>) findOptional.invoke(oneRepository);
             assertThat(optional.isPresent(), is(true));
             assertThat(property(optional.orElseThrow(), "name"), is("Ada"));
 
-            Object emptyRepository = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of()),
-                                                              Optional.empty());
+            Object emptyRepository = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of()));
             assertThat(findOptional.invoke(emptyRepository), is(Optional.empty()));
             assertInvocationCause(findOne, emptyRepository, "io.helidon.data.NoResultException");
 
             Object multipleRepository = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of(
                     row("contactId", 1L, "name", "Ada"),
-                    row("contactId", 2L, "name", "Grace"))), Optional.empty());
+                    row("contactId", 2L, "name", "Grace"))));
             assertInvocationCause(findOne, multipleRepository, "io.helidon.data.NonUniqueResultException");
             assertInvocationCause(findOptional, multipleRepository, "io.helidon.data.NonUniqueResultException");
 
             Object conflicting = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of(
                     row("contactId", 1L, "name", "Ada"),
-                    row("contactId", 1L, "name", "Grace"))), Optional.empty());
+                    row("contactId", 1L, "name", "Grace"))));
             InvocationTargetException failure = assertThrows(InvocationTargetException.class,
                                                               () -> findContacts.invoke(conflicting));
             Throwable cause = failure.getCause();
@@ -1671,12 +1889,11 @@ class JdbcMethodGeneratorTest {
 
             Object orphanedDescendant = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of(
                     row("contactId", 1L, "name", "Ada", "phones.phoneId", null, "phones.number", null,
-                        "phones.tags.tagId", 100L, "phones.tags.name", "family"))), Optional.empty());
+                        "phones.tags.tagId", 100L, "phones.tags.name", "family"))));
             assertInvocationCause(findContacts, orphanedDescendant, "io.helidon.data.DataException");
 
             Object partialComposite = constructor.newInstance(reducingClient(jdbcClientType, rowType, List.of(
-                    row("tenantId", 1L, "contactId", 10L, "phones.type", "mobile", "phones.number", null))),
-                                                                 Optional.empty());
+                    row("tenantId", 1L, "contactId", 10L, "phones.type", "mobile", "phones.number", null))));
             assertInvocationCause(findCompositeContacts, partialComposite, "io.helidon.data.DataException");
         }
     }

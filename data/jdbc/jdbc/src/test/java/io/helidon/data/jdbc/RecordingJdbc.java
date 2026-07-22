@@ -204,7 +204,7 @@ final class RecordingJdbc {
             case "setLargeMaxRows" -> largeMaxRows((Long) arguments[0]);
             case "setMaxRows" -> record("statement.legacyMaxRows:" + arguments[0], null);
             case "setPoolable" -> record("statement.poolable:" + arguments[0], null);
-            case "setObject" -> record("statement.bind:" + arguments[0] + ":" + arguments[1], null);
+            case "setObject" -> recordBind("statement", arguments);
             case "setNull" -> record("statement.bindNull:" + arguments[0] + ":" + arguments[1], null);
             case "execute" -> {
                 advanced[0] = false;
@@ -237,7 +237,7 @@ final class RecordingJdbc {
             case "setLargeMaxRows" -> callLargeMaxRows((Long) arguments[0]);
             case "setMaxRows" -> record("call.legacyMaxRows:" + arguments[0], null);
             case "setPoolable" -> record("call.poolable:" + arguments[0], null);
-            case "setObject" -> record("call.bind:" + arguments[0] + ":" + arguments[1], null);
+            case "setObject" -> recordBind("call", arguments);
             case "setNull" -> record("call.bindNull:" + arguments[0] + ":" + arguments[1], null);
             case "registerOutParameter" -> record("call.register:" + arguments[0] + ":" + arguments[1]
                                                            + (arguments.length == 3 ? ":" + arguments[2] : ""),
@@ -353,6 +353,20 @@ final class RecordingJdbc {
     private Object record(String event, Object result) {
         events.add(event);
         return result;
+    }
+
+    private Object recordBind(String statementKind, Object[] arguments) {
+        String event = statementKind + ".bind:" + arguments[0] + ":" + arguments[1];
+        if (arguments.length == 4) {
+            // Preserve the existing scale-sensitive event used by callable INOUT tests.
+            event += ":" + arguments[2] + ":" + arguments[3];
+        }
+        events.add(event);
+        if (arguments.length == 3) {
+            // Record the overload's type argument independently while keeping value-binding lifecycle assertions stable.
+            events.add(statementKind + ".bindType:" + arguments[0] + ":" + arguments[2]);
+        }
+        return null;
     }
 
     private Object recordOrThrow(String event, SQLException failure) throws SQLException {

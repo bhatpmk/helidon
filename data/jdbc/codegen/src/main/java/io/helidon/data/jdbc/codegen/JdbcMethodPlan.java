@@ -297,11 +297,15 @@ final class JdbcMethodPlan {
             boolean visitWhile = raw.equals(JdbcCodegenTypes.JDBC_RESULT_VISIT_WHILE);
             boolean call = raw.equals(JdbcCodegenTypes.JDBC_RESULT_CALL);
             boolean callWith = raw.equals(JdbcCodegenTypes.JDBC_RESULT_CALL_WITH);
+            boolean invocationControl = regular || visitAll || visitWhile || call || callWith
+                    || raw.equals(JdbcCodegenTypes.JDBC_STATEMENT_OPTIONS);
             boolean callableInput = parameter.hasAnnotation(JdbcCodegenTypes.JDBC_IN_PARAMETER)
                     || parameter.hasAnnotation(JdbcCodegenTypes.JDBC_IN_OUT_PARAMETER);
-            if (callableInput && (regular || visitAll || visitWhile || call || callWith
-                    || raw.equals(JdbcCodegenTypes.JDBC_STATEMENT_OPTIONS))) {
+            if (callableInput && invocationControl) {
                 throw failure(method, "JDBC invocation-control parameters cannot be IN or INOUT call parameters");
+            }
+            if (JdbcBindTypePlan.declared(parameter) && invocationControl) {
+                throw failure(method, "JDBC invocation-control parameters cannot declare an input binding type");
             }
             if (regular) {
                 throw failure(method, "JdbcResultRequest supports only typed traversal and call requests");

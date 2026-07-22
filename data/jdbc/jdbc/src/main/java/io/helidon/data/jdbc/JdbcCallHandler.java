@@ -66,10 +66,14 @@ final class JdbcCallHandler {
             if (!parameter.output()) {
                 continue;
             }
-            if (parameter.typeName().isEmpty()) {
-                statement.registerOutParameter(parameter.index(), parameter.jdbcType());
-            } else {
+            if (!parameter.typeName().isEmpty()) {
                 statement.registerOutParameter(parameter.index(), parameter.jdbcType(), parameter.typeName());
+            } else if (parameter.scale() != JdbcCall.NO_SCALE) {
+                // Scale and database type name select different JDBC registration overloads and are validated as
+                // mutually exclusive when the immutable call layout is built.
+                statement.registerOutParameter(parameter.index(), parameter.jdbcType(), parameter.scale());
+            } else {
+                statement.registerOutParameter(parameter.index(), parameter.jdbcType());
             }
         }
     }

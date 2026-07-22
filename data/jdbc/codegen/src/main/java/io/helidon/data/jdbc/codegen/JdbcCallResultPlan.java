@@ -68,9 +68,10 @@ final class JdbcCallResultPlan {
         if (outputs.isEmpty()) {
             throw JdbcMethodPlan.failure(method, "A detached JDBC call return requires at least one scalar output");
         }
-        if (outputs.stream().anyMatch(parameter -> parameter.direction() == JdbcCallParameterPlan.Direction.CURSOR)) {
+        if (outputs.stream().anyMatch(parameter -> parameter.direction() == JdbcCallParameterPlan.Direction.CURSOR
+                || parameter.direction() == JdbcCallParameterPlan.Direction.RETURN_CURSOR)) {
             throw JdbcMethodPlan.failure(method,
-                                         "A JDBC call with cursor outputs requires JdbcResultRequest.Call or CallWith");
+                                         "A JDBC call with cursor outputs requires a JdbcResultRequest.Call or CallWith");
         }
 
         if (returnType.isOptional()) {

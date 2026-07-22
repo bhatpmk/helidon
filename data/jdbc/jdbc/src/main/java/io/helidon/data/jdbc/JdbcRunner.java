@@ -530,7 +530,12 @@ final class JdbcRunner {
                 if (plan.resultKind() == JdbcPreparationPlan.ResultKind.CALL) {
                     JdbcCall.Parameter parameter = plan.call().parameters().get(i);
                     if (parameter.jdbcType() != Jdbc.INFERRED_TYPE) {
-                        statement.setObject(position, bind.value(), parameter.jdbcType());
+                        if (parameter.scale() == JdbcCall.NO_SCALE) {
+                            statement.setObject(position, bind.value(), parameter.jdbcType());
+                        } else {
+                            // Callable INOUT scale affects both the input conversion and output registration.
+                            statement.setObject(position, bind.value(), parameter.jdbcType(), parameter.scale());
+                        }
                         continue;
                     }
                 }
