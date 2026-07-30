@@ -260,8 +260,8 @@ import io.helidon.webclient.tracing.WebClientTracing;
  * </tr>
  * <tr>
  *     <td>{@code cookie-encryption-enabled}</td>
- *     <td>Depends on other configuration</td>
- *     <td>Whether cookies should be encrypted. Will be enabled if logout is enabled.</td>
+ *     <td>{@code true}</td>
+ *     <td>Whether the access token cookie should be encrypted.</td>
  * </tr>
  * <tr>
  *     <td>{@code cookie-encryption-password}</td>
@@ -276,6 +276,18 @@ import io.helidon.webclient.tracing.WebClientTracing;
  *     <td>&nbsp;</td>
  *     <td>Name of encryption configuration in {@link io.helidon.security.Security}. If used, security must be registered
  *     in curent context or in global context (this is done automatically in Helidon MP).</td>
+ * </tr>
+ * <tr>
+ *     <td>{@code legacy-cookie-encryption}</td>
+ *     <td>{@code false}</td>
+ *     <td>Temporary rolling-upgrade option to write unversioned password-based encrypted OIDC cookies with the legacy
+ *     PBKDF2 iteration count. Leave disabled for steady-state deployments.</td>
+ * </tr>
+ * <tr>
+ *     <td>{@code legacy-cookie-fallback}</td>
+ *     <td>{@code false}</td>
+ *     <td>Temporary rolling-upgrade option to retry password-based encrypted OIDC cookie decryption with the alternate
+ *     cookie format after primary decryption fails. Disable after legacy cookies expire.</td>
  * </tr>
  * <tr>
  *     <td>{@code logout-endpoint-uri}</td>
@@ -350,6 +362,7 @@ public final class OidcConfig extends TenantConfigImpl {
     static final int DEFAULT_MAX_REDIRECTS = 5;
     static final boolean DEFAULT_FORCE_HTTPS_REDIRECTS = false;
     static final Duration DEFAULT_TOKEN_REFRESH_SKEW = Duration.ofSeconds(5);
+    static final boolean DEFAULT_FALLBACK_TO_DEFAULT_TENANT_ENABLED = false;
     static final String DEFAULT_PARAM_NAME = "accessToken";
     static final String DEFAULT_ID_TOKEN_PARAM_NAME = "id_token";
     static final boolean DEFAULT_PARAM_USE = false;
@@ -371,6 +384,7 @@ public final class OidcConfig extends TenantConfigImpl {
     private final URI postLogoutUri;
     private final boolean forceHttpsRedirects;
     private final Duration tokenRefreshSkew;
+    private final boolean fallbackToDefaultTenantEnabled;
     private final WebClient webClient;
     private final Supplier<WebClientConfig.Builder> webClientBuilderSupplier;
     private final LazyValue<Tenant> defaultTenant;
@@ -407,6 +421,7 @@ public final class OidcConfig extends TenantConfigImpl {
         this.maxRedirects = builder.maxRedirects;
         this.forceHttpsRedirects = builder.forceHttpsRedirects;
         this.tokenRefreshSkew = builder.tokenRefreshSkew;
+        this.fallbackToDefaultTenantEnabled = builder.fallbackToDefaultTenantEnabled;
         this.tenantConfigurations = Map.copyOf(builder.tenantConfigurations);
         this.webClient = builder.webClient;
         this.useParam = builder.useParam;
@@ -706,6 +721,15 @@ public final class OidcConfig extends TenantConfigImpl {
     }
 
     /**
+     * Whether unknown tenant ids fall back to the default tenant.
+     *
+     * @return whether unknown tenant ids use default tenant configuration
+     */
+    public boolean fallbackToDefaultTenantEnabled() {
+        return fallbackToDefaultTenantEnabled;
+    }
+
+    /**
      * Return {@link TenantConfig} bound to the provided tenant id.
      * If no {@link TenantConfig} found, default OIDC configuration should be returned.
      *
@@ -946,6 +970,7 @@ public final class OidcConfig extends TenantConfigImpl {
         private URI postLogoutUri;
         private boolean forceHttpsRedirects = DEFAULT_FORCE_HTTPS_REDIRECTS;
         private Duration tokenRefreshSkew = DEFAULT_TOKEN_REFRESH_SKEW;
+        private boolean fallbackToDefaultTenantEnabled = DEFAULT_FALLBACK_TO_DEFAULT_TENANT_ENABLED;
         private WebClient webClient;
         private Supplier<WebClientConfig.Builder> webClientBuilderSupplier;
         private String paramName = DEFAULT_PARAM_NAME;
@@ -962,6 +987,7 @@ public final class OidcConfig extends TenantConfigImpl {
                 .encryptionEnabled(true)
                 .cookieName(DEFAULT_TENANT_COOKIE_NAME);
         private final OidcCookieHandler.Builder tokenCookieBuilder = OidcCookieHandler.builder()
+                .encryptionEnabled(true)
                 .cookieName(DEFAULT_COOKIE_NAME);
         private final OidcCookieHandler.Builder idTokenCookieBuilder = OidcCookieHandler.builder()
                 .encryptionEnabled(true)
@@ -1102,6 +1128,8 @@ public final class OidcConfig extends TenantConfigImpl {
                     .map(String::toCharArray)
                     .ifPresent(this::cookieEncryptionPassword);
             config.get("cookie-encryption-name").asString().ifPresent(this::cookieEncryptionName);
+            config.get("legacy-cookie-encryption").asBoolean().ifPresent(this::legacyCookieEncryption);
+            config.get("legacy-cookie-fallback").asBoolean().ifPresent(this::legacyCookieFallback);
 
             // our application
             config.get("redirect-uri").asString().ifPresent(this::redirectUri);
@@ -1116,6 +1144,7 @@ public final class OidcConfig extends TenantConfigImpl {
                     .ifPresent(this::redirectAttemptCounterStrategy);
             config.get("max-redirects").asInt().ifPresent(this::maxRedirects);
             config.get("force-https-redirects").asBoolean().ifPresent(this::forceHttpsRedirects);
+            config.get("fallback-to-default-tenant-enabled").asBoolean().ifPresent(this::fallbackToDefaultTenantEnabled);
 
             config.get("token-refresh-before-expiration").as(Duration.class).ifPresent(this::tokenRefreshSkew);
 
@@ -1205,6 +1234,18 @@ public final class OidcConfig extends TenantConfigImpl {
         @ConfiguredOption("false")
         public Builder forceHttpsRedirects(boolean forceHttpsRedirects) {
             this.forceHttpsRedirects = forceHttpsRedirects;
+            return this;
+        }
+
+        /**
+         * Whether unknown tenant ids should use default tenant configuration.
+         *
+         * @param enabled whether unknown tenant ids fall back to default tenant
+         * @return updated builder instance
+         */
+        @ConfiguredOption("false")
+        public Builder fallbackToDefaultTenantEnabled(boolean enabled) {
+            this.fallbackToDefaultTenantEnabled = enabled;
             return this;
         }
 
@@ -1410,14 +1451,58 @@ public final class OidcConfig extends TenantConfigImpl {
         }
 
         /**
-         * Whether to encrypt token cookie created by this microservice.
+         * Whether password-based encrypted OIDC cookies should be written without a version byte and with the legacy
+         * PBKDF2 iteration count.
+         * This can be enabled during rolling upgrades so upgraded nodes continue creating cookies that older nodes can
+         * decrypt. Leave disabled for steady-state deployments and reset to {@code false} after all nodes run the new
+         * version. This setting does not affect named Security encryption configured with
+         * {@link #cookieEncryptionName(String)}.
          * Defaults to {@code false}.
          *
-         * @param cookieEncryptionEnabled whether cookie should be encrypted {@code true}, or as obtained from
-         *                                OIDC server {@code false}
+         * @param legacyCookieEncryption whether cookies should be written with legacy password-based encryption
          * @return updated builder instance
          */
-        @ConfiguredOption(value = "false")
+        @ConfiguredOption("false")
+        public Builder legacyCookieEncryption(boolean legacyCookieEncryption) {
+            this.tokenCookieBuilder.legacyCookieEncryption(legacyCookieEncryption);
+            this.idTokenCookieBuilder.legacyCookieEncryption(legacyCookieEncryption);
+            this.tenantCookieBuilder.legacyCookieEncryption(legacyCookieEncryption);
+            this.refreshTokenCookieBuilder.legacyCookieEncryption(legacyCookieEncryption);
+            this.stateCookieBuilder.legacyCookieEncryption(legacyCookieEncryption);
+            return this;
+        }
+
+        /**
+         * Whether password-based encrypted OIDC cookies should retry decryption with the alternate cookie format after
+         * primary decryption fails. This can be enabled after a rolling upgrade to accept older unversioned legacy
+         * cookies until they expire, or while legacy writes must read versioned current cookies. Leave disabled for
+         * steady-state deployments and reset to {@code false} after legacy cookies expire. This setting does not affect
+         * named Security encryption configured with
+         * {@link #cookieEncryptionName(String)}.
+         * Defaults to {@code false}.
+         *
+         * @param legacyCookieFallback whether legacy cookie decryption fallback should be enabled
+         * @return updated builder instance
+         */
+        @ConfiguredOption("false")
+        public Builder legacyCookieFallback(boolean legacyCookieFallback) {
+            this.tokenCookieBuilder.legacyCookieFallback(legacyCookieFallback);
+            this.idTokenCookieBuilder.legacyCookieFallback(legacyCookieFallback);
+            this.tenantCookieBuilder.legacyCookieFallback(legacyCookieFallback);
+            this.refreshTokenCookieBuilder.legacyCookieFallback(legacyCookieFallback);
+            this.stateCookieBuilder.legacyCookieFallback(legacyCookieFallback);
+            return this;
+        }
+
+        /**
+         * Whether to encrypt token cookie created by this microservice.
+         * Defaults to {@code true}.
+         *
+         * @param cookieEncryptionEnabled whether cookie should be encrypted {@code true}, or left unencrypted
+         *                                {@code false}
+         * @return updated builder instance
+         */
+        @ConfiguredOption(value = "true")
         public Builder cookieEncryptionEnabled(boolean cookieEncryptionEnabled) {
             this.tokenCookieBuilder.encryptionEnabled(cookieEncryptionEnabled);
             return this;

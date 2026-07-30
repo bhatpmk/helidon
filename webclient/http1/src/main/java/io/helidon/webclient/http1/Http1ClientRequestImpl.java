@@ -32,6 +32,7 @@ import io.helidon.http.Status;
 import io.helidon.http.media.EntityWriter;
 import io.helidon.http.media.InstanceWriter;
 import io.helidon.http.media.MediaContext;
+import io.helidon.webclient.api.ClientConnection;
 import io.helidon.webclient.api.ClientRequestBase;
 import io.helidon.webclient.api.ClientUri;
 import io.helidon.webclient.api.FullClientRequest;
@@ -48,6 +49,7 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
     private final FullClientRequest<?> delegate;
 
     private boolean outputStreamRedirect;
+    private int outputStreamRedirects;
 
     Http1ClientRequestImpl(Http1ClientImpl http1Client,
                            Method method,
@@ -62,7 +64,7 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
                            ClientUri clientUri,
                            Boolean sendExpectContinue,
                            Map<String, String> properties) {
-        this(http1Client, delegate, method, clientUri, sendExpectContinue, properties, null);
+        this(http1Client, delegate, method, clientUri, sendExpectContinue, properties, null, false);
     }
 
     private Http1ClientRequestImpl(Http1ClientImpl http1Client,
@@ -71,7 +73,8 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
                                    ClientUri clientUri,
                                    Boolean sendExpectContinue,
                                    Map<String, String> properties,
-                                   ClientUri redirectSourceUri) {
+                                   ClientUri redirectSourceUri,
+                                   boolean crossOriginRedirect) {
         super(http1Client.clientConfig(),
               http1Client.webClient().cookieManager(),
               Http1Client.PROTOCOL_ID,
@@ -79,7 +82,8 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
               clientUri,
               sendExpectContinue,
               properties,
-              redirectSourceUri);
+              redirectSourceUri,
+              crossOriginRedirect);
         this.http1Client = http1Client;
         this.delegate = delegate;
     }
@@ -95,7 +99,8 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
              clientUri,
              null,
              properties,
-             request.resolvedUri());
+             request.resolvedUri(),
+             request.crossesRedirectOriginBoundary(clientUri));
 
         followRedirects(request.followRedirects());
         maxRedirects(request.maxRedirects());
@@ -104,7 +109,11 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
         if (sameOrigin(request.resolvedUri(), clientUri)) {
             request.address().ifPresent(this::address);
         }
+        readTimeout(request.readTimeout());
+        readContinueTimeout(request.readContinueTimeout());
+        request.sendExpectContinue().ifPresent(this::sendExpectContinue);
         outputStreamRedirect(request.outputStreamRedirect());
+        outputStreamRedirects(request.outputStreamRedirects());
     }
 
     @Override
@@ -247,6 +256,10 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
         super.sanitizeRedirectSensitiveHeaders(requestUri, requestHeaders);
     }
 
+    boolean canReplayEntityTo(ClientUri requestUri) {
+        return clientConfig().followCrossOriginEntityRedirects() || !crossesRedirectOriginBoundary(requestUri);
+    }
+
     /**
      * Check upgrade protocols. Protocol names are case insensitive.
      *
@@ -296,13 +309,16 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
             ClientRequestHeaders delegateHeaders = delegate.headers();
             this.headers().forEach(delegateHeaders::set);
         }
+        ClientConnection responseConnection = serviceResponse.connection() instanceof ClientConnection clientConnection
+                ? clientConnection
+                : callChain.connection();
         return new Http1ClientResponseImpl(clientConfig(),
                                            http1Client().protocolConfig(),
                                            serviceResponse.status(),
                                            serviceResponse.serviceRequest().method(),
                                            serviceResponse.serviceRequest().headers(),
                                            serviceResponse.headers(),
-                                           callChain.connection(),
+                                           responseConnection,
                                            serviceResponse.inputStream().orElse(null),
                                            mediaContext(),
                                            resolvedUri,
@@ -323,6 +339,15 @@ class Http1ClientRequestImpl extends ClientRequestBase<Http1ClientRequest, Http1
 
     boolean outputStreamRedirect() {
         return outputStreamRedirect;
+    }
+
+    Http1ClientRequestImpl outputStreamRedirects(int outputStreamRedirects) {
+        this.outputStreamRedirects = outputStreamRedirects;
+        return this;
+    }
+
+    int outputStreamRedirects() {
+        return outputStreamRedirects;
     }
 
 }

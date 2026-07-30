@@ -119,13 +119,31 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
                 redirectUri.host(resolvedUri.host());
                 redirectUri.port(resolvedUri.port());
             }
+            boolean sendEntity = RedirectionProcessor.keepsMethodAndEntity(responseStatus);
+            ClientRequest.OutputStreamHandler handler = osHandler;
+            if (sendEntity && !cos.lastRequest.canReplayEntityTo(redirectUri)) {
+                // Replaying a 307/308 output-stream body to a new origin can leak credentials or form data.
+                if (cos.hasEntity()) {
+                    connection.closeResource();
+                    throw new IllegalStateException("Cross-origin redirect with request entity is disabled.");
+                }
+                handler = OutputStream::close;
+            }
+            int numberOfRedirects = cos.numberOfRedirects() + 1;
+            connection.closeResource();
+            if (numberOfRedirects > cos.lastRequest.maxRedirects()) {
+                throw RedirectionProcessor.maxRedirectsReached(cos.lastRequest.maxRedirects());
+            }
             Http1ClientRequestImpl request = new Http1ClientRequestImpl(cos.lastRequest,
-                                                                        Method.GET,
+                                                                        sendEntity ? cos.lastRequest.method() : Method.GET,
                                                                         redirectUri,
                                                                         cos.lastRequest.properties());
-            Http1ClientResponseImpl clientResponse = RedirectionProcessor.invokeWithFollowRedirects(request,
-                                                                                                    1,
-                                                                                                    BufferData.EMPTY_BYTES);
+            if (sendEntity) {
+                request.outputStreamRedirects(numberOfRedirects);
+            }
+            Http1ClientResponseImpl clientResponse = sendEntity
+                    ? (Http1ClientResponseImpl) request.outputStream(handler)
+                    : RedirectionProcessor.invokeWithFollowRedirects(request, numberOfRedirects, BufferData.EMPTY_BYTES);
             return createServiceResponse(http1Client,
                                          serviceRequest,
                                          clientResponse.connection(),
@@ -171,6 +189,8 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
         private BufferData firstPacket;
         private long bytesWritten;
         private long contentLength;
+        private boolean hasEntity;
+        private int numberOfRedirects;
         private boolean noData = true;
         private boolean closed;
         private boolean interrupted;
@@ -207,6 +227,7 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
             this.chunked = contentLength == -1 || headers.containsToken(HeaderValues.TRANSFER_ENCODING_CHUNKED);
             this.request = request;
             this.originalRequest = originalRequest;
+            this.numberOfRedirects = originalRequest.outputStreamRedirects();
             this.lastRequest = originalRequest;
             this.whenSent = whenSent;
             this.whenComplete = whenComplete;
@@ -227,6 +248,12 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
                 return;
             } else if (closed) {
                 throw new IOException("Output stream already closed");
+            }
+            if (len == 0) {
+                return;
+            }
+            if (len > 0) {
+                hasEntity = true;
             }
 
             // if not chunked and length known, write directly checking length at close
@@ -320,6 +347,14 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
 
         boolean interrupted() {
             return interrupted;
+        }
+
+        boolean hasEntity() {
+            return hasEntity;
+        }
+
+        int numberOfRedirects() {
+            return numberOfRedirects;
         }
 
         Http1ClientResponseImpl response() {
@@ -480,7 +515,8 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
                 method = Method.GET;
                 sendEntity = false;
             }
-            for (int i = 0; i < clientConfig.maxRedirects(); i++) {
+            while (numberOfRedirects < originalRequest.maxRedirects()) {
+                numberOfRedirects++;
                 URI newUri = URI.create(redirectedUri);
                 ClientUri redirectUri = ClientUri.create(newUri);
                 if (newUri.getHost() == null) {
@@ -489,13 +525,22 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
                     redirectUri.port(lastUri.port());
                 }
                 lastUri = redirectUri;
-                connection.releaseResource();
+                connection.closeResource();
+                boolean sendEmptyEntity = false;
+                if (sendEntity && !lastRequest.canReplayEntityTo(redirectUri)) {
+                    // User code already provided bytes for the original origin; do not replay them across origins.
+                    if (hasEntity) {
+                        throw new IllegalStateException("Cross-origin redirect with request entity is disabled.");
+                    }
+                    sendEmptyEntity = true;
+                }
                 Http1ClientRequestImpl clientRequest = new Http1ClientRequestImpl(lastRequest,
                                                                                   method,
                                                                                   redirectUri,
                                                                                   lastRequest.properties());
+                clientRequest.followRedirects(false);
                 Http1ClientResponseImpl response;
-                if (sendEntity) {
+                if (sendEntity && !sendEmptyEntity) {
                     response = (Http1ClientResponseImpl) clientRequest
                             .outputStreamRedirect(true)
                             .header(HeaderValues.EXPECT_100)
@@ -514,7 +559,8 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
                 writer = connection.writer();
 
                 if (RedirectionProcessor.redirectionStatusCode(response.status())) {
-                    try (response) {
+                    boolean closeRedirectProbeConnection = sendEntity && !sendEmptyEntity;
+                    try {
                         checkRedirectHeaders(response.headers());
                         if (response.status() != Status.TEMPORARY_REDIRECT_307
                                 && response.status() != Status.PERMANENT_REDIRECT_308) {
@@ -522,23 +568,35 @@ class Http1CallOutputStreamChain extends Http1CallChainBase {
                             sendEntity = false;
                         }
                         redirectedUri = response.headers().get(HeaderNames.LOCATION).get();
+                    } finally {
+                        if (closeRedirectProbeConnection) {
+                            // The probe sent chunked upload headers but intentionally did not complete the request body.
+                            // Do not cache the connection, and let response close complete its normal cleanup.
+                            response.closeConnectionOnClose();
+                        }
+                        response.close();
                     }
                 } else {
-                    if (!sendEntity) {
+                    if (sendEntity && !sendEmptyEntity && response.status() == Status.CONTINUE_100) {
+                        reader.skip(reader.available());
+                        return;
+                    }
+                    if (!sendEntity || sendEmptyEntity) {
                         //OS changed its state to interrupted, that means other usage of this OS will result in NOOP actions.
                         this.interrupted = true;
                         this.response = response;
                         //we are not sending anything by this OS, we need to interrupt it.
                         throw new OutputStreamInterruptedException();
                     } else {
-                        reader.skip(reader.available());
+                        response.closeConnectionOnClose();
+                        this.interrupted = true;
+                        this.response = response;
+                        throw new OutputStreamInterruptedException();
                     }
-                    return;
                 }
 
             }
-            throw new IllegalStateException("Maximum number of request redirections ("
-                                                    + clientConfig.maxRedirects() + ") reached.");
+            throw RedirectionProcessor.maxRedirectsReached(originalRequest.maxRedirects());
         }
 
         private void sendFirstChunk() {

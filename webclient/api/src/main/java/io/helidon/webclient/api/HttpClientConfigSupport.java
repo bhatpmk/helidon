@@ -238,8 +238,10 @@ class HttpClientConfigSupport {
             target.defaultHeadersMap()
                     .forEach(target::addHeader);
 
-            if (!target.redirectSensitiveHeaders().contains(HeaderNames.AUTHORIZATION)) {
-                target.redirectSensitiveHeaders(withAuthorizationRedirectSensitiveHeader(target.redirectSensitiveHeaders()));
+            if (!target.redirectSensitiveHeaders().contains(HeaderNames.AUTHORIZATION)
+                    || !target.redirectSensitiveHeaders().contains(HeaderNames.COOKIE)
+                    || !target.redirectSensitiveHeaders().contains(HeaderNames.PROXY_AUTHORIZATION)) {
+                target.redirectSensitiveHeaders(withDefaultRedirectSensitiveHeaders(target.redirectSensitiveHeaders()));
             }
 
             if (!target.mediaSupports().isEmpty()) {
@@ -262,9 +264,11 @@ class HttpClientConfigSupport {
             }
         }
 
-        private static Set<HeaderName> withAuthorizationRedirectSensitiveHeader(Set<HeaderName> headerNames) {
-            Set<HeaderName> effectiveHeaderNames = new LinkedHashSet<>(headerNames.size() + 1);
+        private static Set<HeaderName> withDefaultRedirectSensitiveHeaders(Set<HeaderName> headerNames) {
+            Set<HeaderName> effectiveHeaderNames = new LinkedHashSet<>(headerNames.size() + 3);
             effectiveHeaderNames.add(HeaderNames.AUTHORIZATION);
+            effectiveHeaderNames.add(HeaderNames.COOKIE);
+            effectiveHeaderNames.add(HeaderNames.PROXY_AUTHORIZATION);
             effectiveHeaderNames.addAll(headerNames);
             return Set.copyOf(effectiveHeaderNames);
         }

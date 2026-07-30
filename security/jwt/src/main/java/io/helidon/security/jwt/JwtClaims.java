@@ -35,32 +35,31 @@ class JwtClaims {
      *
      * @param base64 base64 URL encoded value
      * @param collector error collector
-     * @param description description of the decoded value
+     * @param tokenPart decoded token part
      * @return decoded value, or {@code null} when decoding fails
      */
-    protected static String decode(String base64, Errors.Collector collector, String description) {
+    protected static String decode(String base64, Errors.Collector collector, JwtTokenPart tokenPart) {
         try {
             return new String(URL_DECODER.decode(base64), StandardCharsets.UTF_8);
         } catch (Exception e) {
-            collector.fatal(base64, description + " is not a base64 encoded string.");
+            collector.fatal(tokenPart, tokenPart.text() + " is not a base64 encoded string.");
             return null;
         }
     }
 
     /**
-     * Parse a decoded JWT segment as JSON object.
+     * Parse a decoded JWT segment as a JSON object.
      *
      * @param jsonString decoded JSON string
      * @param collector error collector
-     * @param base64 original Base64 URL encoded value
-     * @param description description of the decoded value
+     * @param tokenPart decoded token part
      * @return parsed JSON object, or {@code null} when parsing fails
      */
-    protected static JsonObject parseJson(String jsonString, Errors.Collector collector, String base64, String description) {
+    protected static JsonObject parseJson(String jsonString, Errors.Collector collector, JwtTokenPart tokenPart) {
         try {
             return JsonParser.create(new StringReader(jsonString)).readJsonObject();
         } catch (Exception e) {
-            collector.fatal(base64, description + " is not a valid JSON object (value is base64 encoded)");
+            collector.fatal(tokenPart, tokenPart.text() + " is not a valid JSON object (value is base64 encoded)");
             return null;
         }
     }
