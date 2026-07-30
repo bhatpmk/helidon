@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,9 +106,23 @@ class RepositoryCodegen implements CodegenExtension {
                                                .orElseGet(repositoryInterface::typeName));
         }
         if (assigned.isEmpty()) {
-            throw new CodegenException("Interface extends no data repository provider's interface",
-                                       repositoryInterface.originatingElement()
-                                               .orElseGet(repositoryInterface::typeName));
+            // Annotation-only repositories have no entity-oriented base interface. Select the sole generator that owns
+            // their repository marker; ambiguity is still rejected instead of relying on service-loader order.
+            repositoryGenerators.stream()
+                    .filter(generator -> generator.annotations()
+                            .stream()
+                            .anyMatch(repositoryInterface::hasAnnotation))
+                    .forEach(assigned::add);
+            if (assigned.isEmpty()) {
+                throw new CodegenException("Interface extends no data repository provider's interface",
+                                           repositoryInterface.originatingElement()
+                                                   .orElseGet(repositoryInterface::typeName));
+            }
+            if (assigned.size() > 1) {
+                throw new CodegenException("Repository annotation is owned by multiple data repository generators",
+                                           repositoryInterface.originatingElement()
+                                                   .orElseGet(repositoryInterface::typeName));
+            }
         }
         // There is exactly one element in the set
         return assigned.stream()

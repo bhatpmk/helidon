@@ -1,0 +1,50 @@
+/*
+ * Copyright (c) 2026 Oracle and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.helidon.data.jdbc.codegen;
+
+import io.helidon.codegen.classmodel.Method;
+import io.helidon.common.types.TypeName;
+
+/**
+ * Emits the public client mapping stage for fixed scalar results.
+ */
+final class JdbcScalarMapperGenerator {
+    private JdbcScalarMapperGenerator() {
+    }
+
+    static void addQueryMapping(Method.Builder method, TypeName mappedType) {
+        method.addContent(".map(")
+                // Preserve a primitive class literal so JdbcClient can enforce SQL NULL semantics before unboxing.
+                .addContent(mappedType)
+                .addContent(".class)");
+    }
+
+    static void addGeneratedKeyMapping(Method.Builder method,
+                                       TypeName mappedType,
+                                       java.util.List<String> columnNames) {
+        method.addContent(".generatedKeys(row -> row.required(1, ")
+                .addContent(mappedType.boxed())
+                .addContent(".class)");
+        addColumnNames(method, columnNames);
+        method.addContent(")");
+    }
+
+    static void addColumnNames(Method.Builder method, java.util.List<String> columnNames) {
+        for (String columnName : columnNames) {
+            method.addContent(", ").addContentLiteral(columnName);
+        }
+    }
+}

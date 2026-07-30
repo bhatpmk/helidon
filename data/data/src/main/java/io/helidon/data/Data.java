@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 package io.helidon.data;
 
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.sql.JDBCType;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -132,6 +134,191 @@ public final class Data {
          * @return the query string
          */
         String value();
+    }
+
+    /**
+     * User-supplied data modification statement.
+     * <p>
+     * A persistence provider which supports this annotation interprets {@link #value()} using its statement language.
+     * The JDBC provider interprets the value as SQL and executes it as a data modification statement. The annotation is
+     * not repeatable and must not be combined with {@link Query} on the same method. Provider-specific code generation
+     * reports an invalid combination at compile time.
+     * <p>
+     * The Jakarta Persistence provider does not interpret this annotation; adding it does not change existing Jakarta
+     * Persistence repository behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Update {
+        /**
+         * Statement to execute.
+         *
+         * @return provider-specific data modification statement
+         */
+        String value();
+    }
+
+    /**
+     * Requests generated values from a method annotated with {@link Update}.
+     * <p>
+     * For the JDBC provider an empty value requests the driver's default generated-key result. One or more values name
+     * the columns to request, in result order. Using this annotation without {@link Update}, or on an update-count-only
+     * method, is rejected by JDBC code generation. Other persistence providers do not interpret this annotation unless
+     * they explicitly document support for it.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface GeneratedKeys {
+        /**
+         * Generated columns to request.
+         *
+         * @return generated column names, or an empty array to request driver-default generated keys
+         */
+        String[] value() default {};
+    }
+
+    /**
+     * Declares compile-time mapping for one mutable Java bean scope.
+     * <p>
+     * A supporting provider generates direct bean construction and property assignments. It does not use reflection,
+     * runtime classpath scanning, or a runtime mapper registry. One declaration with the default empty
+     * {@link #propertyPath() property path} and {@link #identityProperty() identity property} maps each physical result
+     * row to one flat bean.
+     * <p>
+     * A joined object graph repeats this annotation for the root and for every collection-valued scope. Each declaration
+     * identifies its Java property path and a local scalar property that identifies an object within that scope. A
+     * complete identity-bearing declaration set directs the JDBC provider to generate a row reducer that deduplicates
+     * roots and collection elements. SQL projection aliases describe the corresponding property paths; aliases alone do
+     * not enable graph reduction.
+     * <p>
+     * Provider-specific code generation validates bean types, property paths, identity properties, construction,
+     * readable and writable properties, projection aliases, and the repository result shape at compile time. Use
+     * {@link RowMapper} for application-defined mapping of one physical row and {@link RowReducer} for
+     * application-defined reduction of multiple rows.
+     * <p>
+     * This annotation is meaningful only for providers that document bean-mapping support. The Jakarta Persistence
+     * provider does not interpret it and retains its existing mapping behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    @Repeatable(BeanMappings.class)
+    public @interface BeanMapping {
+        /**
+         * Mutable bean type represented by this mapping scope.
+         * <p>
+         * For a flat result or the root of a graph, this type must match the mapped repository result element. For a
+         * collection scope, it must match the element type of the collection selected by {@link #propertyPath()}.
+         *
+         * @return exact mutable bean type for this mapping scope
+         */
+        Class<?> value();
+
+        /**
+         * Root-relative Java property path represented by this mapping scope.
+         * <p>
+         * The empty string identifies the root scope. A nested scope uses a dot-separated property path such as
+         * {@code "phones"} or {@code "phones.tags"}. This value describes Java bean properties; it is not an SQL table
+         * alias. The provider uses the path to associate projection aliases and nested collection properties with the
+         * declared bean type.
+         *
+         * @return empty string for the root, or a dot-separated Java property path for a nested scope
+         */
+        String propertyPath() default "";
+
+        /**
+         * Local Java property that identifies an object in this mapping scope.
+         * <p>
+         * A flat bean mapping leaves this value empty. Every declaration participating in generated graph reduction must
+         * name one non-blank scalar property. The value is a simple property name local to the bean declared by
+         * {@link #value()}; it is not an SQL column name, a database primary-key declaration, or a dotted property path.
+         * The JDBC provider combines it with {@link #propertyPath()} to locate the corresponding projection alias and
+         * uses the mapped value to deduplicate objects within their parent scope.
+         *
+         * @return local Java identity property, or an empty string for a flat mapping
+         */
+        String identityProperty() default "";
+    }
+
+    /**
+     * Container annotation for repeatable {@link BeanMapping} declarations.
+     * <p>
+     * Applications normally use repeated {@code @Data.BeanMapping} declarations directly. This container exists to
+     * satisfy Java's repeatable-annotation contract and has the same semantics as those repeated declarations.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface BeanMappings {
+        /**
+         * Bean mapping declarations for one repository method.
+         *
+         * @return bean mapping declarations
+         */
+        BeanMapping[] value();
+    }
+
+    /**
+     * Selects an explicitly-authored result mapper for a repository method.
+     * <p>
+     * A supporting provider validates the mapper type and emits direct construction or access. For the JDBC provider the
+     * selected class must implement the public JDBC row-mapper contract for the method's mapped element type and must be
+     * accessible to generated code. It is invalid on update-count methods and cannot be combined with
+     * {@link BeanMapping}, {@link RowReducer}, or generated graph reduction. Validation occurs during provider-specific
+     * code generation.
+     * <p>
+     * The Jakarta Persistence provider does not interpret this annotation and retains its existing mapping behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface RowMapper {
+        /**
+         * Mapper implementation selected for this method.
+         *
+         * @return mapper implementation class
+         */
+        Class<?> value();
+    }
+
+    /**
+     * Selects an explicitly-authored result-set reducer for a repository query.
+     * <p>
+     * The JDBC provider requires the selected class to implement {@code JdbcClient.RowReducer<R>}, where {@code R}
+     * exactly matches the repository method return type. The class must be concrete, accessible to generated code, and
+     * have an accessible no-argument constructor. Generated code constructs a fresh reducer for each invocation and calls
+     * the public JDBC client reduction terminal directly. The reducer receives only the provider's callback-scoped row
+     * view and never owns JDBC resources.
+     * <p>
+     * This annotation is valid only on a query that does not use a traversal callback. It cannot be combined with
+     * {@link BeanMapping}, {@link RowMapper}, {@link Update}, or {@link GeneratedKeys}. The Jakarta Persistence provider
+     * does not interpret this annotation and retains its existing behavior.
+     */
+    @Target(ElementType.METHOD)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface RowReducer {
+        /**
+         * Reducer implementation selected for this method.
+         *
+         * @return reducer implementation class
+         */
+        Class<?> value();
+    }
+
+    /**
+     * Overrides the JDBC type used to bind a repository method parameter.
+     * <p>
+     * This annotation is intended for nullable or otherwise ambiguous values for which the parameter's Java type does not
+     * provide sufficient portable JDBC type information. It does not select a converter and does not permit SQL value
+     * interpolation. The JDBC provider validates its placement and emits a typed bind operation. The Jakarta Persistence
+     * provider does not interpret it.
+     */
+    @Target(ElementType.PARAMETER)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface JdbcType {
+        /**
+         * JDBC type used for binding.
+         *
+         * @return JDBC type
+         */
+        JDBCType value();
     }
 
     /**
