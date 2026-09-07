@@ -1,0 +1,44 @@
+/*
+ * Copyright (c) 2026 Oracle and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.helidon.data.declarative.codegen;
+
+import java.util.Set;
+
+import io.helidon.codegen.CodegenContext;
+import io.helidon.codegen.spi.CodegenExtensionProvider;
+import io.helidon.common.Api.Incubating;
+import io.helidon.common.types.TypeName;
+
+@Incubating
+public final class DataDeclarativeCodegenExtensionProvider implements CodegenExtensionProvider {
+
+    private static final TypeName STATEMENT_BEARING = TypeName.create("io.helidon.data.declarative.StatementBearing");
+    
+    public DataDeclarativeCodegenExtensionProvider() {
+        super();
+    }
+
+    @Override // CodegenExtensionProvider
+    public DataDeclarativeCodegenExtension create(CodegenContext cc, TypeName type) {
+        return new DataDeclarativeCodegenExtension();
+    }
+
+    @Override // CodegenExtension
+    public Set<TypeName> supportedMetaAnnotations() {
+        return Set.of(STATEMENT_BEARING);
+    }
+    
+}
