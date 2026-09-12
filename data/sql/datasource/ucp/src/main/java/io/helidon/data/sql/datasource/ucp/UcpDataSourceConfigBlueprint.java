@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2024, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,6 +67,19 @@ interface UcpDataSourceConfigBlueprint extends ConnectionConfig, ProviderConfig 
      */
     @Option.Configured
     Optional<Boolean> xaDataSource();
+
+    /**
+     * Stable, non-secret name used by the transaction manager to recover this
+     * XA resource manager after restart.
+     * <p>
+     * The containing SQL data source name is used when this option is omitted.
+     * Deployments sharing a recovery store must configure names that are
+     * unique across every deployment using that store.
+     *
+     * @return XA recovery resource name
+     */
+    @Option.Configured
+    Optional<String> recoveryName();
 
     /**
      * Sets the abandoned connection timeout.

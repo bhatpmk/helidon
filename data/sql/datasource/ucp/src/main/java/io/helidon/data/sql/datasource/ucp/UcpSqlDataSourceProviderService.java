@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2026 Oracle and/or its affiliates.
+ * Copyright (c) 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,42 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.helidon.data.sql.datasource.ucp;
 
 import java.util.List;
-
-import javax.sql.DataSource;
 
 import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.Service;
 
 /**
- * Publishes the compatibility {@link DataSource} view of configured UCP
- * datasource descriptors.
+ * Publishes explicit SQL and XA capabilities for configured UCP pools.
  */
 @Service.Singleton
 @Service.Named(Service.Named.WILDCARD_NAME)
-class UcpDataSourceProviderService implements Service.ServicesFactory<DataSource> {
-
-    static final String PROVIDER_TYPE = "ucp";
+final class UcpSqlDataSourceProviderService implements Service.ServicesFactory<SqlDataSource> {
     private final UcpDataSources dataSources;
 
     @Service.Inject
-    UcpDataSourceProviderService(UcpDataSources dataSources) {
+    UcpSqlDataSourceProviderService(UcpDataSources dataSources) {
         this.dataSources = dataSources;
     }
 
     @Override
-    public List<Service.QualifiedInstance<DataSource>> services() {
-        return dataSources.descriptors()
-                .stream()
-                .map(UcpDataSourceProviderService::dataSourceInstance)
-                .toList();
-    }
-
-    private static Service.QualifiedInstance<DataSource> dataSourceInstance(
-            Service.QualifiedInstance<SqlDataSource> descriptor) {
-        return Service.QualifiedInstance.create(descriptor.get().dataSource(), descriptor.qualifiers());
+    public List<Service.QualifiedInstance<SqlDataSource>> services() {
+        return dataSources.descriptors();
     }
 }

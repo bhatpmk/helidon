@@ -48,7 +48,7 @@ final class JdbcRunner {
     // Updates, list terminals, and generated-key operations must not impose a provider-selected JDBC row limit.
     private static final ExecutionOptions UNBOUNDED = new ExecutionOptions(0);
 
-    private final DataSource dataSource;
+    private final JdbcConnectionSource source;
     private final JdbcConnectionLease.Provider leaseProvider;
     private final JdbcQueryHandler queryHandler;
     private final JdbcUpdateHandler updateHandler;
@@ -60,7 +60,17 @@ final class JdbcRunner {
      * @param leaseProvider connection lease provider
      */
     JdbcRunner(DataSource dataSource, JdbcConnectionLease.Provider leaseProvider) {
-        this.dataSource = dataSource;
+        this(JdbcConnectionSource.create(dataSource, TransactionParticipation.NONE), leaseProvider);
+    }
+
+    /**
+     * Creates a runner with resolved datasource and transaction capabilities.
+     *
+     * @param source operation connection source
+     * @param leaseProvider connection lease provider
+     */
+    JdbcRunner(JdbcConnectionSource source, JdbcConnectionLease.Provider leaseProvider) {
+        this.source = source;
         this.leaseProvider = leaseProvider;
         this.queryHandler = new JdbcQueryHandler();
         this.updateHandler = new JdbcUpdateHandler(queryHandler);
@@ -304,11 +314,12 @@ final class JdbcRunner {
         if (previousFailure instanceof SQLException) {
             Throwable failure = close(resultSet, "closing a result set", previousFailure);
             failure = close(statement, "closing a statement", failure);
-            return close(lease, "closing a connection lease", failure);
+            return closeLease(lease, failure, failure);
         }
         Throwable failure = close(resultSet, "closing a result set", null);
         failure = close(statement, "closing a statement", failure);
-        failure = close(lease, "closing a connection lease", failure);
+        Throwable operationFailure = previousFailure == null ? failure : previousFailure;
+        failure = closeLease(lease, failure, operationFailure);
         if (previousFailure == null) {
             return failure;
         }
@@ -341,6 +352,37 @@ final class JdbcRunner {
                 return JdbcExceptionTranslator.prepare(operation, closeFailure);
             }
             previousFailure = JdbcExceptionTranslator.suppress(previousFailure, operation, closeFailure);
+        }
+        return previousFailure;
+    }
+
+    /**
+     * Releases a connection lease after reporting the complete operation
+     * outcome needed for XA delistment.
+     *
+     * @param lease connection lease
+     * @param previousFailure earlier cleanup failure
+     * @param operationFailure operation or cleanup failure reported to the lease
+     * @return first cleanup failure, or {@code null}
+     */
+    private static Throwable closeLease(JdbcConnectionLease lease,
+                                        Throwable previousFailure,
+                                        Throwable operationFailure) {
+        if (lease == null) {
+            return previousFailure;
+        }
+        try {
+            lease.close(operationFailure != null);
+        } catch (Throwable closeFailure) {
+            if (previousFailure == null && closeFailure instanceof Error) {
+                return closeFailure;
+            }
+            if (previousFailure == null) {
+                return JdbcExceptionTranslator.prepare("closing a connection lease", closeFailure);
+            }
+            previousFailure = JdbcExceptionTranslator.suppress(previousFailure,
+                                                                "closing a connection lease",
+                                                                closeFailure);
         }
         return previousFailure;
     }
@@ -412,7 +454,7 @@ final class JdbcRunner {
         try {
             // The lease provider converts checked JDBC failures before they cross its contract boundary.
             try {
-                lease = leaseProvider.acquire(dataSource);
+                lease = leaseProvider.acquire(source);
             } catch (DataException leaseFailure) {
                 if (leaseFailure.getCause() instanceof SQLException sqlException) {
                     // Restore the SQL category inside the runner so the public

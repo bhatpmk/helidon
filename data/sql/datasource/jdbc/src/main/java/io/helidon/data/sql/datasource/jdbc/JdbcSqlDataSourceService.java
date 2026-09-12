@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
+ * Copyright (c) 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,39 +13,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.helidon.data.sql.datasource.jdbc;
 
 import java.util.List;
-
-import javax.sql.DataSource;
 
 import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.Service;
 
 /**
- * Publishes the compatibility {@link DataSource} view of configured basic
- * JDBC datasource descriptors.
+ * Publishes explicit local-only SQL capabilities for basic JDBC data sources.
  */
 @Service.Singleton
-class JdbcDataSourceService implements Service.ServicesFactory<DataSource> {
+final class JdbcSqlDataSourceService implements Service.ServicesFactory<SqlDataSource> {
     private final JdbcDataSources dataSources;
 
     @Service.Inject
-    JdbcDataSourceService(JdbcDataSources dataSources) {
+    JdbcSqlDataSourceService(JdbcDataSources dataSources) {
         this.dataSources = dataSources;
     }
 
     @Override
-    public List<Service.QualifiedInstance<DataSource>> services() {
-        return dataSources.descriptors()
-                .stream()
-                .map(JdbcDataSourceService::dataSourceInstance)
-                .toList();
-    }
-
-    private static Service.QualifiedInstance<DataSource> dataSourceInstance(
-            Service.QualifiedInstance<SqlDataSource> descriptor) {
-        return Service.QualifiedInstance.create(descriptor.get().dataSource(), descriptor.qualifiers());
+    public List<Service.QualifiedInstance<SqlDataSource>> services() {
+        return dataSources.descriptors();
     }
 }

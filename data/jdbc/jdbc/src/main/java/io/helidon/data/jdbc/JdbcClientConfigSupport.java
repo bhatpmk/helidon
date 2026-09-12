@@ -25,6 +25,7 @@ import javax.sql.DataSource;
 import io.helidon.builder.api.Prototype;
 import io.helidon.data.DataException;
 import io.helidon.data.sql.common.ConnectionConfig;
+import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.Service;
 
 /**
@@ -42,7 +43,7 @@ final class JdbcClientConfigSupport {
      */
     static void validate(JdbcClientConfig config) {
         validateClient(config.name(), config.dataSourceName());
-        validateSources(config.connection(), config.dataSourceName(), config.dataSource());
+        validateSources(config.connection(), config.dataSourceName(), config.dataSource(), config.sqlDataSource());
         cachePolicy(config);
     }
 
@@ -98,19 +99,21 @@ final class JdbcClientConfigSupport {
 
     private static void validateSources(Optional<ConnectionConfig> connection,
                                         Optional<String> dataSourceName,
-                                        Optional<DataSource> dataSource) {
+                                        Optional<DataSource> dataSource,
+                                        Optional<SqlDataSource> sqlDataSource) {
         int sourceCount = connection.isPresent() ? 1 : 0;
         sourceCount += dataSourceName.isPresent() ? 1 : 0;
         sourceCount += dataSource.isPresent() ? 1 : 0;
+        sourceCount += sqlDataSource.isPresent() ? 1 : 0;
         if (sourceCount == 0) {
             throw new DataException("The JDBC client configuration does not define a connection source. "
                                             + "Configure exactly one using connection properties, a data source name, "
-                                            + "or a DataSource instance.");
+                                            + "a DataSource instance, or an SqlDataSource descriptor.");
         }
         if (sourceCount > 1) {
             throw new DataException("The JDBC client configuration defines multiple connection sources. "
                                             + "Configure exactly one using connection properties, a data source name, "
-                                            + "or a DataSource instance.");
+                                            + "a DataSource instance, or an SqlDataSource descriptor.");
         }
     }
 

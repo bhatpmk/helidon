@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2026 Oracle and/or its affiliates.
+ * Copyright (c) 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,21 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package io.helidon.transaction.spi;
+
+import javax.transaction.xa.XAResource;
 
 /**
- * {@link javax.sql.DataSource} support API.
+ * Provider-owned XA resource handle used by transaction recovery.
  */
-module io.helidon.data.sql.datasource {
+public interface RecoverableXaResource extends AutoCloseable {
 
-    requires io.helidon.config;
-    requires io.helidon.builder.api;
-    requires io.helidon.service.registry;
-    requires transitive io.helidon.transaction;
-    requires static io.helidon.config.metadata;
+    /**
+     * Returns the XA resource used for recovery scanning and completion replay.
+     *
+     * @return XA resource
+     */
+    XAResource resource();
 
-    requires transitive java.sql;
-
-    exports io.helidon.data.sql.datasource;
-    exports io.helidon.data.sql.datasource.spi;
-
+    /**
+     * Releases the resource and its backing connection.
+     */
+    @Override
+    void close();
 }

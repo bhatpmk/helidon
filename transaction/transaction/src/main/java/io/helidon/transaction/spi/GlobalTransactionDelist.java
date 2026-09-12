@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2026 Oracle and/or its affiliates.
+ * Copyright (c) 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,21 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package io.helidon.transaction.spi;
 
 /**
- * {@link javax.sql.DataSource} support API.
+ * Reason for disassociating an XA resource from a global transaction.
  */
-module io.helidon.data.sql.datasource {
-
-    requires io.helidon.config;
-    requires io.helidon.builder.api;
-    requires io.helidon.service.registry;
-    requires transitive io.helidon.transaction;
-    requires static io.helidon.config.metadata;
-
-    requires transitive java.sql;
-
-    exports io.helidon.data.sql.datasource;
-    exports io.helidon.data.sql.datasource.spi;
-
+public enum GlobalTransactionDelist {
+    /**
+     * The resource completed its current work successfully.
+     */
+    SUCCESS,
+    /**
+     * The resource failed while performing its current work.
+     */
+    FAIL,
+    /**
+     * The transaction is being suspended and may later resume the resource.
+     */
+    SUSPEND
 }

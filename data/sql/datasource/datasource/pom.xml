@@ -52,6 +52,10 @@
             <artifactId>helidon-service-registry</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.helidon.transaction</groupId>
+            <artifactId>helidon-transaction</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.helidon.common</groupId>
             <artifactId>helidon-common-types</artifactId>
         </dependency>

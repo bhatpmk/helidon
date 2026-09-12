@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@ package io.helidon.transaction.jta;
 import java.lang.System.Logger.Level;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.helidon.common.Weight;
 import io.helidon.common.Weighted;
@@ -49,11 +51,16 @@ class JtaTxSupport implements TxSupport {
     private static final System.Logger LOGGER = System.getLogger(JtaTxSupport.class.getName());
 
     private final JtaProvider provider;
+    private final JtaGlobalTransactionSupport globalTransactions;
     private final List<TxLifeCycle> txListeners;
+    private final Set<Transaction> managedTransactions = ConcurrentHashMap.newKeySet();
 
     @Service.Inject
-    JtaTxSupport(JtaProvider provider, List<TxLifeCycle> txListeners) {
+    JtaTxSupport(JtaProvider provider,
+                 JtaGlobalTransactionSupport globalTransactions,
+                 List<TxLifeCycle> txListeners) {
         this.provider = provider;
+        this.globalTransactions = globalTransactions;
         this.txListeners = txListeners;
     }
 
@@ -456,17 +463,43 @@ class JtaTxSupport implements TxSupport {
 
     // boolean propagate - whether to propagate to event listeners
     private Transaction suspend(boolean propagate) {
+        Transaction current = transaction();
         try {
-            Transaction suspended = transactionManager().suspend();
+            globalTransactions.beforeSuspend();
+        } catch (RuntimeException | Error failure) {
+            try {
+                rollbackOnly(current);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            throw failure;
+        }
+        Transaction suspended;
+        try {
+            suspended = transactionManager().suspend();
             if (suspended == null) {
                 throw new NullPointerException("No transaction instance is available.");
             }
-            if (propagate) {
+            if (propagate && managedTransactions.contains(suspended)) {
                 suspend(Integer.toString(System.identityHashCode(suspended)));
             }
             return suspended;
         } catch (SystemException e) {
+            try {
+                globalTransactions.afterResume();
+                rollbackOnly(current);
+            } catch (RuntimeException recoveryFailure) {
+                e.addSuppressed(recoveryFailure);
+            }
             throw new TxException("Transaction suspend failed", e);
+        } catch (RuntimeException | Error failure) {
+            try {
+                resume(current, false);
+                rollbackOnly(current);
+            } catch (RuntimeException recoveryFailure) {
+                failure.addSuppressed(recoveryFailure);
+            }
+            throw failure;
         }
     }
 
@@ -476,10 +509,19 @@ class JtaTxSupport implements TxSupport {
             transactionManager().resume(tx);
         } catch (SystemException | InvalidTransactionException e) {
             throw new TxException("Transaction resume failed", e);
-        } finally {
-            if (propagate) {
+        }
+        try {
+            globalTransactions.afterResume();
+            if (propagate && managedTransactions.contains(tx)) {
                 resume(Integer.toString(System.identityHashCode(tx)));
             }
+        } catch (RuntimeException | Error failure) {
+            try {
+                rollbackOnly(tx);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            throw failure;
         }
     }
 
@@ -488,6 +530,7 @@ class JtaTxSupport implements TxSupport {
         try {
             transactionManager().begin();
             Transaction tx = transactionManager().getTransaction();
+            managedTransactions.add(tx);
             begin(Integer.toString(System.identityHashCode(tx)));
             return tx;
         } catch (SystemException | NotSupportedException e) {
@@ -502,7 +545,11 @@ class JtaTxSupport implements TxSupport {
         } catch (HeuristicRollbackException | SystemException | HeuristicMixedException | RollbackException e) {
             throw new TxException("Transaction commit failed", e);
         } finally {
-            commit(Integer.toString(System.identityHashCode(tx)));
+            try {
+                commit(Integer.toString(System.identityHashCode(tx)));
+            } finally {
+                managedTransactions.remove(tx);
+            }
         }
     }
 
@@ -522,7 +569,11 @@ class JtaTxSupport implements TxSupport {
         } catch (SystemException e) {
             throw new TxException("Transaction rollback failed", e);
         } finally {
-            rollback(Integer.toString(System.identityHashCode(tx)));
+            try {
+                rollback(Integer.toString(System.identityHashCode(tx)));
+            } finally {
+                managedTransactions.remove(tx);
+            }
         }
     }
 

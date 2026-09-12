@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Oracle and/or its affiliates.
+ * Copyright (c) 2025, 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package io.helidon.data.jakarta.persistence;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.util.Map;
+import java.util.Optional;
 
 import io.helidon.common.Functions;
 import io.helidon.data.DataException;
@@ -29,6 +30,7 @@ import io.helidon.data.OptimisticLockException;
 import io.helidon.service.registry.Service;
 import io.helidon.service.registry.Services;
 import io.helidon.transaction.Tx;
+import io.helidon.transaction.spi.GlobalTransactionSupport;
 import io.helidon.transaction.spi.TxSupport;
 
 import jakarta.persistence.EntityManager;
@@ -64,10 +66,23 @@ class JpaRepositoryExecutorImpl implements JpaRepositoryExecutor {
     // Instance shared by all repository instances
     private final EntityManagerFactory factory;
     private final PersistenceUnitTransactionType transactionType;
+    private final Optional<GlobalTransactionSupport> globalTransactions;
 
-    @Service.Inject
     JpaRepositoryExecutorImpl(EntityManagerFactory factory) {
+        this(factory, Optional.empty());
+    }
+
+    /**
+     * Creates an executor and installs the mixed Data-provider transaction guard.
+     *
+     * @param factory persistence unit entity manager factory
+     * @param globalTransactions global transaction context provider, when installed
+     */
+    @Service.Inject
+    JpaRepositoryExecutorImpl(EntityManagerFactory factory,
+                              Optional<GlobalTransactionSupport> globalTransactions) {
         this.factory = factory;
+        this.globalTransactions = globalTransactions;
         if (factory.getProperties().containsKey(TRANSACTION_TYPE)) {
             this.transactionType = (PersistenceUnitTransactionType) factory.getProperties().get(TRANSACTION_TYPE);
         } else {
@@ -127,6 +142,22 @@ class JpaRepositoryExecutorImpl implements JpaRepositoryExecutor {
             EXECUTORS.get(transactionType)
                     .run(this, task);
         }
+    }
+
+    void claimJtaParticipant() {
+        globalTransactions.flatMap(GlobalTransactionSupport::current)
+                .ifPresent(transaction -> transaction.claimParticipantFamily("helidon-data-jakarta-persistence"));
+    }
+
+    private static void claimJtaParticipant(JpaRepositoryExecutor executor,
+                                            PersistenceUnitTransactionType transactionType) {
+        if (transactionType != PersistenceUnitTransactionType.JTA) {
+            return;
+        }
+        if (!(executor instanceof JpaRepositoryExecutorImpl implementation)) {
+            throw new IllegalStateException("The Jakarta Persistence executor cannot enforce transaction participation.");
+        }
+        implementation.claimJtaParticipant();
     }
 
     // JTA provider shall be present when JTA transaction type is active.
@@ -199,6 +230,7 @@ class JpaRepositoryExecutorImpl implements JpaRepositoryExecutor {
         @Override
         public <R, E extends Throwable> R call(JpaRepositoryExecutor executor,
                                                Functions.CheckedFunction<EntityManager, R, E> task) {
+            claimJtaParticipant(executor, txType);
             EntityManager em = TransactionContext.getInstance()
                     .entityManager(executor.factory(), txType);
             return call(executor, em, task);
@@ -206,6 +238,7 @@ class JpaRepositoryExecutorImpl implements JpaRepositoryExecutor {
 
         @Override
         public <E extends Throwable> void run(JpaRepositoryExecutor executor, Functions.CheckedConsumer<EntityManager, E> task) {
+            claimJtaParticipant(executor, txType);
             EntityManager em = TransactionContext.getInstance()
                     .entityManager(executor.factory(), txType);
             run(executor, em, task);
@@ -228,6 +261,7 @@ class JpaRepositoryExecutorImpl implements JpaRepositoryExecutor {
                                                Functions.CheckedFunction<EntityManager, R, E> task) {
             checkTxSupport();
             return txSupport.transaction(Tx.Type.REQUIRED, () -> {
+                claimJtaParticipant(executor, PersistenceUnitTransactionType.JTA);
                 EntityManager em = TransactionContext.getInstance()
                         .entityManager(executor.factory(), PersistenceUnitTransactionType.JTA);
                 em.joinTransaction();
@@ -240,6 +274,7 @@ class JpaRepositoryExecutorImpl implements JpaRepositoryExecutor {
                                               Functions.CheckedConsumer<EntityManager, E> task) {
             checkTxSupport();
             txSupport.transaction(Tx.Type.REQUIRED, () -> {
+                claimJtaParticipant(executor, PersistenceUnitTransactionType.JTA);
                 EntityManager em = TransactionContext.getInstance()
                         .entityManager(executor.factory(), PersistenceUnitTransactionType.JTA);
                 em.joinTransaction();

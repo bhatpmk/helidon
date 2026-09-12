@@ -17,6 +17,7 @@ package io.helidon.data.jdbc;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Objects;
 
 import javax.sql.DataSource;
 
@@ -37,7 +38,7 @@ interface JdbcConnectionLease extends AutoCloseable {
      * @return provider of physically owned connections
      */
     static Provider ownedProvider() {
-        return Owned::acquire;
+        return source -> Owned.acquire(source.dataSource());
     }
 
     /**
@@ -48,13 +49,24 @@ interface JdbcConnectionLease extends AutoCloseable {
     Connection connection();
 
     /**
+     * Releases the logical lease with the aggregate operation outcome.
+     *
+     * @param failed whether execution or earlier resource cleanup failed
+     * @throws io.helidon.data.DataException when JDBC reports an SQL failure
+     * @throws IllegalStateException when the driver reports an unchecked failure
+     */
+    void close(boolean failed);
+
+    /**
      * Releases the logical lease.
      *
      * @throws io.helidon.data.DataException when JDBC reports an SQL failure
      * @throws IllegalStateException when the driver reports an unchecked failure
      */
     @Override
-    void close();
+    default void close() {
+        close(false);
+    }
 
     /**
      * Supplies an owned or transaction-bound lease for one operation.
@@ -62,14 +74,28 @@ interface JdbcConnectionLease extends AutoCloseable {
     @FunctionalInterface
     interface Provider {
         /**
-         * Acquires a logical connection lease.
+         * Acquires a lease for a compatibility datasource using local
+         * transaction participation.
          *
          * @param dataSource operation datasource
          * @return acquired lease
+         * @throws NullPointerException if {@code dataSource} is {@code null}
+         */
+        default JdbcConnectionLease acquire(DataSource dataSource) {
+            Objects.requireNonNull(dataSource, "The JDBC data source must not be null.");
+            return acquire(JdbcConnectionSource.create(dataSource, TransactionParticipation.LOCAL));
+        }
+
+        /**
+         * Acquires a logical connection lease.
+         *
+         * @param source resolved connection source
+         * @return acquired lease
+         * @throws NullPointerException if {@code source} is {@code null}
          * @throws io.helidon.data.DataException when the connection cannot be acquired
          * @throws IllegalStateException when the driver reports an unchecked failure
          */
-        JdbcConnectionLease acquire(DataSource dataSource);
+        JdbcConnectionLease acquire(JdbcConnectionSource source);
     }
 
     /**
@@ -150,7 +176,7 @@ interface JdbcConnectionLease extends AutoCloseable {
          * @throws IllegalStateException when the driver reports an unchecked failure
          */
         @Override
-        public void close() {
+        public void close(boolean failed) {
             if (closed) {
                 return;
             }

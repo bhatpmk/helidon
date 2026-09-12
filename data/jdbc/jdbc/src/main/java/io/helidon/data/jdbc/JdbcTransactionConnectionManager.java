@@ -21,12 +21,18 @@ import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 import javax.sql.DataSource;
 
 import io.helidon.data.DataException;
 import io.helidon.service.registry.Service;
 import io.helidon.transaction.TxException;
+import io.helidon.transaction.spi.GlobalTransaction;
+import io.helidon.transaction.spi.GlobalTransactionRecovery;
+import io.helidon.transaction.spi.GlobalTransactionStatus;
+import io.helidon.transaction.spi.GlobalTransactionSupport;
+import io.helidon.transaction.spi.RecoverableXaResourceFactory;
 import io.helidon.transaction.spi.TxLifeCycle;
 
 /**
@@ -57,12 +63,49 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
 
     // Transaction context is synchronous and does not propagate to another thread.
     private final ThreadLocal<State> local = new ThreadLocal<>();
+    private final Optional<GlobalTransactionSupport> globalTransactions;
+    private final Optional<GlobalTransactionRecovery> recovery;
+    private final Map<String, RecoveryRegistration> recoveryRegistrations = new HashMap<>();
+
+    /**
+     * Creates a local-only manager for direct internal use.
+     */
+    JdbcTransactionConnectionManager() {
+        this(Optional.empty(), Optional.empty());
+    }
+
+    /**
+     * Creates the registry-managed local and global connection manager.
+     *
+     * @param globalTransactions global transaction context provider, when installed
+     * @param recovery global transaction recovery provider, when installed
+     */
+    @Service.Inject
+    JdbcTransactionConnectionManager(Optional<GlobalTransactionSupport> globalTransactions,
+                                     Optional<GlobalTransactionRecovery> recovery) {
+        this.globalTransactions = globalTransactions;
+        this.recovery = recovery;
+    }
 
     @Override
-    public JdbcConnectionLease acquire(DataSource dataSource) {
+    public JdbcConnectionLease acquire(JdbcConnectionSource source) {
+        Objects.requireNonNull(source, "The JDBC connection source must not be null.");
+        Optional<GlobalTransaction> global = globalTransactions.flatMap(GlobalTransactionSupport::current);
+        if (global.isPresent()) {
+            return acquireGlobal(source, global.get(), local.get());
+        }
+
         State state = local.get();
+        if (source.participation() != TransactionParticipation.LOCAL) {
+            if (source.participation() == TransactionParticipation.GLOBAL
+                    && state != null
+                    && (state.activeJdbc != null || state.activeForeign != null)) {
+                throw new DataException("A globally enabled JDBC client cannot join a local transaction.");
+            }
+            return JdbcConnectionLease.Owned.acquire(source.dataSource());
+        }
         if (state == null) {
-            return JdbcConnectionLease.Owned.acquire(dataSource);
+            return JdbcConnectionLease.Owned.acquire(source.dataSource());
         }
         if (state.failedJdbc != null) {
             throw new DataException("The active local JDBC transaction cannot be used after a lifecycle failure.");
@@ -77,7 +120,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
         // Lifecycle state may exist without an active transaction, such as during
         // supported work or while an outer transaction is suspended.
         if (state.activeJdbc == null) {
-            return JdbcConnectionLease.Owned.acquire(dataSource);
+            return JdbcConnectionLease.Owned.acquire(source.dataSource());
         }
 
         Association association = state.jdbcTransactions.get(state.activeJdbc);
@@ -85,7 +128,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
             throw new IllegalStateException("The active JDBC transaction has no lifecycle association.");
         }
         association.require(AssociationState.ACTIVE, "acquire a connection");
-        Object identity = transactionIdentity(dataSource);
+        Object identity = source.transactionIdentity();
         if (association.dataSourceIdentitySet && !sameIdentity(association.dataSourceIdentity, identity)) {
             throw new DataException("A local JDBC transaction cannot use more than one data source.");
         }
@@ -98,7 +141,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
             Connection connection;
             try {
                 connection = JdbcExceptionTranslator.invoke("acquiring a transaction connection",
-                                                            dataSource::getConnection);
+                                                            source.dataSource()::getConnection);
             } catch (SQLException | RuntimeException | Error failure) {
                 failJdbcAssociation(state, state.activeJdbc, association);
                 throw JdbcExceptionTranslator.translateFailure("transaction connection acquisition", failure);
@@ -236,6 +279,82 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
             failKnownContext(state);
             throw new IllegalStateException("The transaction cannot be resumed because its identity is not recognized.");
         }
+    }
+
+    /**
+     * Validates activation requirements and registers recovery for a globally
+     * enabled source.
+     *
+     * @param source resolved client connection source
+     */
+    synchronized void validate(JdbcConnectionSource source) {
+        if (source.participation() != TransactionParticipation.GLOBAL) {
+            return;
+        }
+        if (globalTransactions.isEmpty()) {
+            throw new DataException("Global JDBC transaction participation requires a global transaction provider.");
+        }
+        GlobalTransactionRecovery recoveryService = recovery.orElseThrow(() ->
+                new DataException("Global JDBC transaction participation requires XA recovery integration."));
+        var xa = source.xa().orElseThrow(() ->
+                new DataException("Global JDBC transaction participation requires an explicitly XA-capable data source."));
+        RecoverableXaResourceFactory factory = xa.recoveryFactory();
+        String name = factory.name();
+        RecoveryRegistration existing = recoveryRegistrations.get(name);
+        if (existing == null) {
+            GlobalTransactionRecovery.Registration registration = recoveryService.register(factory);
+            recoveryRegistrations.put(name, new RecoveryRegistration(factory, registration));
+        } else if (existing.factory() != factory) {
+            throw new DataException("XA recovery resource name '" + name + "' is used by more than one JDBC data source.");
+        }
+    }
+
+    /**
+     * Deregisters provider-owned recovery resources during service shutdown.
+     */
+    @Service.PreDestroy
+    synchronized void shutdown() {
+        Throwable failure = null;
+        for (RecoveryRegistration registered : recoveryRegistrations.values()) {
+            try {
+                registered.registration().close();
+            } catch (RuntimeException | Error closeFailure) {
+                if (failure == null) {
+                    failure = closeFailure;
+                } else if (failure != closeFailure) {
+                    failure.addSuppressed(closeFailure);
+                }
+            }
+        }
+        recoveryRegistrations.clear();
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+    }
+
+    private static JdbcConnectionLease acquireGlobal(JdbcConnectionSource source,
+                                                     GlobalTransaction transaction,
+                                                     State localState) {
+        if (localState != null && localState.activeJdbc != null) {
+            transaction.rollbackOnly();
+            throw new DataException("A JDBC operation cannot have simultaneous local and global transaction state.");
+        }
+        if (source.participation() != TransactionParticipation.GLOBAL) {
+            transaction.rollbackOnly();
+            throw new DataException("The JDBC client is not enabled for global transaction participation.");
+        }
+        if (source.xa().isEmpty()) {
+            transaction.rollbackOnly();
+            throw new DataException("The JDBC data source is not XA-capable and cannot join a global transaction.");
+        }
+        GlobalTransactionStatus status = transaction.status();
+        if (status != GlobalTransactionStatus.ACTIVE) {
+            throw new DataException("The global transaction cannot accept JDBC work while its status is '" + status + "'.");
+        }
+        return JdbcGlobalTransactionAssociation.getOrCreate(transaction).acquire(source);
     }
 
     /**
@@ -627,6 +746,16 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
     }
 
     /**
+     * Recovery registration retained for the manager service lifetime.
+     *
+     * @param factory registered recovery factory
+     * @param registration recovery provider registration
+     */
+    private record RecoveryRegistration(RecoverableXaResourceFactory factory,
+                                        GlobalTransactionRecovery.Registration registration) {
+    }
+
+    /**
      * All lifecycle state associated with one thread.
      */
     private static final class State {
@@ -763,7 +892,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
         }
 
         @Override
-        public void close() {
+        public void close(boolean failed) {
             closed = true;
         }
     }

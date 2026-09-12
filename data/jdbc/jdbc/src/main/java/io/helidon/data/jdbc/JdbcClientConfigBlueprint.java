@@ -15,19 +15,22 @@
  */
 package io.helidon.data.jdbc;
 
+import java.util.Optional;
+
 import io.helidon.builder.api.Option;
 import io.helidon.builder.api.Prototype;
 import io.helidon.common.Api;
 import io.helidon.data.sql.common.SqlConfig;
+import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.Service;
 
 /**
  * Configuration for a JDBC client.
  * <p>
- * A client can use an existing application-owned data source, a named data
- * source, or direct connection settings. An existing data source can be
- * supplied only through a programmatic builder. Registry managed clients are
- * configured under {@code data.clients.jdbc}.
+ * A client can use an existing application-owned data source or SQL datasource
+ * descriptor, a named data source, or direct connection settings. Existing
+ * instances can be supplied only through a programmatic builder. Registry
+ * managed clients are configured under {@code data.clients.jdbc}.
  */
 @Api.Preview
 @Prototype.Blueprint(createEmptyPublic = false, decorator = JdbcClientConfigSupport.Decorator.class)
@@ -42,6 +45,31 @@ interface JdbcClientConfigBlueprint extends SqlConfig, Prototype.Factory<JdbcCli
     @Option.Configured
     @Option.Default(Service.Named.DEFAULT_NAME)
     String name();
+
+    /**
+     * Explicit transaction participation policy.
+     * <p>
+     * An omitted policy defaults to {@link TransactionParticipation#LOCAL}
+     * for registry-managed clients and {@link TransactionParticipation#NONE}
+     * for clients created directly with {@link JdbcClient#create(JdbcClientConfig)}.
+     *
+     * @return configured transaction participation policy
+     */
+    @Option.Configured
+    Optional<TransactionParticipation> transactionParticipation();
+
+    /**
+     * Explicit SQL datasource capability descriptor.
+     * <p>
+     * This option is available only through programmatic builders. Use it for
+     * a directly constructed globally enabled client so XA acquisition,
+     * transaction identity, and recovery capability are explicit. The
+     * application retains ownership of the datasource lifecycle.
+     *
+     * @return configured SQL datasource descriptor
+     */
+    @Option.Confidential
+    Optional<SqlDataSource> sqlDataSource();
 
     /**
      * The maximum number of SQL marker counts retained by this client must be between zero and 4096 inclusive,

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2026 Oracle and/or its affiliates.
+ * Copyright (c) 2026 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,37 +17,24 @@ package io.helidon.data.sql.datasource.hikari;
 
 import java.util.List;
 
-import javax.sql.DataSource;
-
 import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.Service;
 
 /**
- * Publishes the compatibility {@link DataSource} view of configured Hikari
- * datasource descriptors.
+ * Publishes explicit local-only SQL capabilities for Hikari data sources.
  */
 @Service.Singleton
 @Service.Named(Service.Named.WILDCARD_NAME)
-class HikariDataSourceProviderService implements Service.ServicesFactory<DataSource> {
-
-    static final String PROVIDER_TYPE = "hikari";
+final class HikariSqlDataSourceProviderService implements Service.ServicesFactory<SqlDataSource> {
     private final HikariDataSources dataSources;
 
     @Service.Inject
-    HikariDataSourceProviderService(HikariDataSources dataSources) {
+    HikariSqlDataSourceProviderService(HikariDataSources dataSources) {
         this.dataSources = dataSources;
     }
 
     @Override
-    public List<Service.QualifiedInstance<DataSource>> services() {
-        return dataSources.descriptors()
-                .stream()
-                .map(HikariDataSourceProviderService::dataSourceInstance)
-                .toList();
-    }
-
-    private static Service.QualifiedInstance<DataSource> dataSourceInstance(
-            Service.QualifiedInstance<SqlDataSource> descriptor) {
-        return Service.QualifiedInstance.create(descriptor.get().dataSource(), descriptor.qualifiers());
+    public List<Service.QualifiedInstance<SqlDataSource>> services() {
+        return dataSources.descriptors();
     }
 }

@@ -22,6 +22,7 @@ import javax.sql.DataSource;
 
 import io.helidon.common.LruCache;
 import io.helidon.data.DataException;
+import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.ServiceRegistryException;
 import io.helidon.service.registry.Services;
 
@@ -52,8 +53,26 @@ final class JdbcClientImpl implements JdbcClient {
                    DataSource dataSource,
                    JdbcConnectionLease.Provider leaseProvider,
                    CachePolicy cachePolicy) {
+        this(prototype,
+             JdbcConnectionSource.create(dataSource, TransactionParticipation.NONE),
+             leaseProvider,
+             cachePolicy);
+    }
+
+    /**
+     * Creates a client with resolved datasource and transaction capabilities.
+     *
+     * @param prototype immutable source configuration
+     * @param source resolved connection source
+     * @param leaseProvider provider that decides whether an operation owns or borrows a connection
+     * @param cachePolicy parameter count cache policy
+     */
+    JdbcClientImpl(JdbcClientConfig prototype,
+                   JdbcConnectionSource source,
+                   JdbcConnectionLease.Provider leaseProvider,
+                   CachePolicy cachePolicy) {
         this.prototype = prototype;
-        this.runner = new JdbcRunner(dataSource, leaseProvider);
+        this.runner = new JdbcRunner(source, leaseProvider);
         this.cachePolicy = cachePolicy;
         this.parameterCounts = cachePolicy.capacity() == 0 ? null : LruCache.create(cachePolicy.capacity());
     }
@@ -68,27 +87,55 @@ final class JdbcClientImpl implements JdbcClient {
         JdbcClientConfigSupport.validate(config);
         CachePolicy cachePolicy = JdbcClientConfigSupport.cachePolicy(config);
         String clientDescription = JdbcClientConfigSupport.clientDescription(config.name());
-        DataSource dataSource;
-        if (config.dataSource().isPresent()) {
-            dataSource = config.dataSource().get();
+        JdbcConnectionSource source;
+        TransactionParticipation participation = config.transactionParticipation().orElse(TransactionParticipation.NONE);
+        if (config.sqlDataSource().isPresent()) {
+            source = JdbcConnectionSource.create(config.sqlDataSource().get(), participation);
+        } else if (config.dataSource().isPresent()) {
+            source = JdbcConnectionSource.create(config.dataSource().get(), participation);
         } else if (config.dataSourceName().isPresent()) {
             String dataSourceName = config.dataSourceName().get();
             String resolutionMessage = clientDescription + " could not resolve SQL data source '"
                     + dataSourceName + "'.";
-            Optional<DataSource> resolved;
+            Optional<SqlDataSource> descriptor;
             try {
-                resolved = Services.firstNamed(DataSource.class, dataSourceName);
+                descriptor = Services.firstNamed(SqlDataSource.class, dataSourceName);
             } catch (ServiceRegistryException failure) {
                 // Registry diagnostics can retain details from a data source provider activation failure.
                 throw new DataException(resolutionMessage,
                                         JdbcExceptionTranslator.sanitize("resolving a SQL data source", failure));
             }
-            dataSource = resolved.orElseThrow(() -> new DataException(resolutionMessage));
+            if (descriptor.isPresent()) {
+                source = JdbcConnectionSource.create(descriptor.get(), participation);
+            } else {
+                Optional<DataSource> resolved;
+                try {
+                    resolved = Services.firstNamed(DataSource.class, dataSourceName);
+                } catch (ServiceRegistryException failure) {
+                    throw new DataException(resolutionMessage,
+                                            JdbcExceptionTranslator.sanitize("resolving a SQL data source", failure));
+                }
+                source = JdbcConnectionSource.create(resolved.orElseThrow(() -> new DataException(resolutionMessage)),
+                                                     participation);
+            }
         } else {
-            dataSource = JdbcConnectionSourceSupport.directDataSource(clientDescription,
-                                                                      config.connection().orElseThrow());
+            DataSource dataSource = JdbcConnectionSourceSupport.directDataSource(clientDescription,
+                                                                                  config.connection().orElseThrow());
+            source = JdbcConnectionSource.create(dataSource, participation);
         }
-        return new JdbcClientImpl(config, dataSource, JdbcConnectionLease.ownedProvider(), cachePolicy);
+        JdbcConnectionLease.Provider leaseProvider;
+        Optional<JdbcTransactionConnectionManager> transactionManager =
+                Services.first(JdbcTransactionConnectionManager.class);
+        if (transactionManager.isPresent()) {
+            JdbcTransactionConnectionManager manager = transactionManager.get();
+            manager.validate(source);
+            leaseProvider = manager;
+        } else if (participation == TransactionParticipation.NONE) {
+            leaseProvider = JdbcConnectionLease.ownedProvider();
+        } else {
+            throw new DataException(clientDescription + " requires the registry-managed JDBC transaction service.");
+        }
+        return new JdbcClientImpl(config, source, leaseProvider, cachePolicy);
     }
 
     @Override

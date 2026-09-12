@@ -23,6 +23,7 @@ import javax.sql.DataSource;
 
 import io.helidon.data.Data;
 import io.helidon.data.DataException;
+import io.helidon.data.sql.datasource.spi.SqlDataSource;
 import io.helidon.service.registry.Qualifier;
 import io.helidon.service.registry.Service;
 import io.helidon.service.registry.ServiceInstance;
@@ -40,21 +41,38 @@ final class JdbcClientFactory implements Service.ServicesFactory<JdbcClient> {
             .build();
 
     private final Supplier<List<JdbcClientConfig>> configurations;
+    private final Supplier<List<ServiceInstance<SqlDataSource>>> sqlDataSources;
     private final Supplier<List<ServiceInstance<DataSource>>> dataSources;
     private final JdbcTransactionConnectionManager connectionManager;
+
+    /**
+     * Creates a factory with compatibility datasource services only.
+     *
+     * @param configurations effective client configurations
+     * @param dataSources compatibility JDBC data sources
+     * @param connectionManager transaction aware connection manager
+     */
+    JdbcClientFactory(Supplier<List<JdbcClientConfig>> configurations,
+                      Supplier<List<ServiceInstance<DataSource>>> dataSources,
+                      JdbcTransactionConnectionManager connectionManager) {
+        this(configurations, List::of, dataSources, connectionManager);
+    }
 
     /**
      * Creates the registry managed client factory.
      *
      * @param configurations effective client configurations
-     * @param dataSources available SQL data sources
+     * @param sqlDataSources explicit SQL datasource descriptors
+     * @param dataSources compatibility JDBC data sources
      * @param connectionManager transaction aware connection manager
      */
     @Service.Inject
     JdbcClientFactory(Supplier<List<JdbcClientConfig>> configurations,
+                      Supplier<List<ServiceInstance<SqlDataSource>>> sqlDataSources,
                       Supplier<List<ServiceInstance<DataSource>>> dataSources,
                       JdbcTransactionConnectionManager connectionManager) {
         this.configurations = configurations;
+        this.sqlDataSources = sqlDataSources;
         this.dataSources = dataSources;
         this.connectionManager = connectionManager;
     }
@@ -72,9 +90,11 @@ final class JdbcClientFactory implements Service.ServicesFactory<JdbcClient> {
             preparedClients.add(new PreparedClient(config, cachePolicy));
         }
 
+        List<ServiceInstance<SqlDataSource>> availableSqlDataSources = List.of();
         List<ServiceInstance<DataSource>> availableDataSources = List.of();
         if (configs.stream().anyMatch(config -> config.dataSourceName().isPresent())) {
             try {
+                availableSqlDataSources = List.copyOf(sqlDataSources.get());
                 availableDataSources = List.copyOf(dataSources.get());
             } catch (RuntimeException failure) {
                 // Data source activation failures can retain provider details.
@@ -87,44 +107,77 @@ final class JdbcClientFactory implements Service.ServicesFactory<JdbcClient> {
         List<PlannedClient> plannedClients = new ArrayList<>(preparedClients.size());
         for (PreparedClient prepared : preparedClients) {
             JdbcClientConfig config = prepared.config();
-            DataSource dataSource;
+            SqlDataSource sqlDataSource = null;
+            DataSource dataSource = null;
+            ServiceInstance<SqlDataSource> sqlDataSourceService = null;
             ServiceInstance<DataSource> dataSourceService = null;
-            if (config.dataSource().isPresent()) {
+            if (config.sqlDataSource().isPresent()) {
+                sqlDataSource = config.sqlDataSource().get();
+            } else if (config.dataSource().isPresent()) {
                 dataSource = config.dataSource().get();
             } else if (config.dataSourceName().isPresent()) {
-                dataSource = null;
                 String dataSourceName = config.dataSourceName().get();
                 Qualifier named = Qualifier.createNamed(dataSourceName);
-                List<ServiceInstance<DataSource>> matches = availableDataSources.stream()
+                List<ServiceInstance<SqlDataSource>> descriptorMatches = availableSqlDataSources.stream()
                         .filter(instance -> instance.qualifiers().contains(named))
                         .toList();
-                if (matches.size() != 1) {
+                if (descriptorMatches.size() > 1) {
                     throw new DataException(JdbcClientConfigSupport.clientDescription(config.name())
                                                     + " could not resolve SQL data source '" + dataSourceName + "'.");
                 }
-                dataSourceService = matches.getFirst();
+                if (descriptorMatches.size() == 1) {
+                    sqlDataSourceService = descriptorMatches.getFirst();
+                } else {
+                    List<ServiceInstance<DataSource>> matches = availableDataSources.stream()
+                            .filter(instance -> instance.qualifiers().contains(named))
+                            .toList();
+                    if (matches.size() != 1) {
+                        throw new DataException(JdbcClientConfigSupport.clientDescription(config.name())
+                                                        + " could not resolve SQL data source '" + dataSourceName + "'.");
+                    }
+                    dataSourceService = matches.getFirst();
+                }
             } else {
                 dataSource = JdbcConnectionSourceSupport.directDataSource(
                         JdbcClientConfigSupport.clientDescription(config.name()),
                         config.connection().orElseThrow());
             }
-            plannedClients.add(new PlannedClient(config, prepared.cachePolicy(), dataSource, dataSourceService));
+            plannedClients.add(new PlannedClient(config,
+                                                  prepared.cachePolicy(),
+                                                  sqlDataSource,
+                                                  sqlDataSourceService,
+                                                  dataSource,
+                                                  dataSourceService));
         }
 
         List<ResolvedClient> resolvedClients = new ArrayList<>(plannedClients.size());
         for (PlannedClient planned : plannedClients) {
-            DataSource dataSource = planned.dataSource();
-            if (dataSource == null) {
-                dataSource = planned.dataSourceService().get();
+            TransactionParticipation participation = planned.config().transactionParticipation()
+                    .orElse(TransactionParticipation.LOCAL);
+            SqlDataSource sqlDataSource = planned.sqlDataSource();
+            if (sqlDataSource == null && planned.sqlDataSourceService() != null) {
+                sqlDataSource = planned.sqlDataSourceService().get();
             }
-            resolvedClients.add(new ResolvedClient(planned.config(), planned.cachePolicy(), dataSource));
+            JdbcConnectionSource source;
+            if (sqlDataSource != null) {
+                source = JdbcConnectionSource.create(sqlDataSource, participation);
+            } else {
+                DataSource dataSource = planned.dataSource();
+                if (dataSource == null) {
+                    dataSource = planned.dataSourceService().get();
+                }
+                source = JdbcConnectionSource.create(dataSource, participation);
+            }
+            resolvedClients.add(new ResolvedClient(planned.config(), planned.cachePolicy(), source));
         }
 
         List<Service.QualifiedInstance<JdbcClient>> clients = new ArrayList<>(resolvedClients.size());
         for (ResolvedClient resolved : resolvedClients) {
             JdbcClientConfig config = resolved.config();
+            JdbcConnectionSource source = resolved.source();
+            connectionManager.validate(source);
             JdbcClient client = new JdbcClientImpl(config,
-                                                   resolved.dataSource(),
+                                                   source,
                                                    connectionManager,
                                                    resolved.cachePolicy());
             clients.add(Service.QualifiedInstance.create(client,
@@ -150,11 +203,15 @@ final class JdbcClientFactory implements Service.ServicesFactory<JdbcClient> {
      *
      * @param config client configuration
      * @param cachePolicy cache policy
+     * @param sqlDataSource resolved explicit SQL datasource descriptor
+     * @param sqlDataSourceService inactive named SQL datasource descriptor service
      * @param dataSource resolved data source when one is already available
      * @param dataSourceService inactive named data source service when needed
      */
     private record PlannedClient(JdbcClientConfig config,
                                  JdbcClientImpl.CachePolicy cachePolicy,
+                                 SqlDataSource sqlDataSource,
+                                 ServiceInstance<SqlDataSource> sqlDataSourceService,
                                  DataSource dataSource,
                                  ServiceInstance<DataSource> dataSourceService) {
     }
@@ -164,10 +221,10 @@ final class JdbcClientFactory implements Service.ServicesFactory<JdbcClient> {
      *
      * @param config client configuration
      * @param cachePolicy cache policy
-     * @param dataSource resolved data source
+     * @param source resolved connection and transaction capabilities
      */
     private record ResolvedClient(JdbcClientConfig config,
                                   JdbcClientImpl.CachePolicy cachePolicy,
-                                  DataSource dataSource) {
+                                  JdbcConnectionSource source) {
     }
 }
