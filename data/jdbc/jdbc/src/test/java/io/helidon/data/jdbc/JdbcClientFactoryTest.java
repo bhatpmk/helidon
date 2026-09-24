@@ -38,11 +38,13 @@ import io.helidon.service.registry.ServiceRegistryException;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -279,6 +281,47 @@ class JdbcClientFactoryTest {
                 () -> factory(List.of(config), () -> List.of(instance)).services());
 
         assertThat(failure, sameInstance(unexpected));
+    }
+
+    /**
+     * Verifies one failing inactive datasource prevents atomic client publication and exposes no activation details.
+     */
+    @Test
+    void failingDataSourceActivationPublishesNoPartialClientAndSanitizesFailure() {
+        String canary = "private-atomic-activation-canary";
+        DataSource existingDataSource = mock(DataSource.class);
+        ServiceInstance<DataSource> failingSource = serviceInstance("failing-source", mock(DataSource.class));
+        ServiceInstance<DataSource> laterSource = serviceInstance("later-source", mock(DataSource.class));
+        when(failingSource.get()).thenThrow(new IllegalStateException(canary));
+        JdbcClientConfig existing = JdbcClientConfig.builder()
+                .name("existing")
+                .dataSource(existingDataSource)
+                .buildPrototype();
+        JdbcClientConfig failing = JdbcClientConfig.builder()
+                .name("failing")
+                .dataSourceName("failing-source")
+                .buildPrototype();
+        JdbcClientConfig later = JdbcClientConfig.builder()
+                .name("later")
+                .dataSourceName("later-source")
+                .buildPrototype();
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class,
+                () -> factory(List.of(existing, failing, later), () -> List.of(failingSource, laterSource)).services());
+
+        verify(failingSource).get();
+        verify(laterSource, never()).get();
+        verifyZeroInteractions(existingDataSource);
+        assertAll("atomic datasource activation failure",
+                  () -> assertThat(failure, instanceOf(DataException.class)),
+                  () -> {
+                      for (Throwable current = failure;
+                              current != null && current != current.getCause();
+                              current = current.getCause()) {
+                          assertThat(current.toString(), not(containsString(canary)));
+                      }
+                  });
     }
 
     /**

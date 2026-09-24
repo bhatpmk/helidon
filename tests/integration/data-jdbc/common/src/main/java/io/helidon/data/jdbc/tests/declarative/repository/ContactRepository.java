@@ -26,6 +26,9 @@ import io.helidon.data.jdbc.tests.application.MapperFailureContact;
 import io.helidon.data.jdbc.tests.application.SingleMapperContact;
 import io.helidon.data.jdbc.tests.application.TestSql;
 import io.helidon.data.jdbc.tests.declarative.ExplicitContactMapper;
+import io.helidon.data.jdbc.tests.declarative.DetailLabelMapper;
+import io.helidon.data.jdbc.tests.declarative.PhysicalNameMapper;
+import io.helidon.data.jdbc.tests.declarative.TargetLabelMapper;
 import io.helidon.data.jdbc.tests.declarative.ThrowingContactMapper;
 import io.helidon.transaction.Tx;
 
@@ -153,6 +156,121 @@ public interface ContactRepository {
      */
     @Jdbc.Statement(TestSql.FIND_WITH_MISSING_LABEL)
     ContactView missingRecordLabel(long id);
+
+    /**
+     * Maps a unique requested label while duplicate unused labels remain in the result.
+     *
+     * @param id contact identifier
+     * @return contact identifier
+     */
+    @Jdbc.Statement("""
+            SELECT ID AS target, NAME AS "detail", EMAIL AS "DETAIL"
+            FROM CONTACT
+            WHERE ID = :id
+            """)
+    @Jdbc.RowMapper(TargetLabelMapper.class)
+    Long uniqueLabelAmongUnusedDuplicates(long id);
+
+    /**
+     * Requests one of two labels which differ only by case.
+     *
+     * @param id contact identifier
+     * @return unreachable value when the duplicate is rejected
+     */
+    @Jdbc.Statement("""
+            SELECT NAME AS "detail", EMAIL AS "DETAIL"
+            FROM CONTACT
+            WHERE ID = :id
+            """)
+    @Jdbc.RowMapper(DetailLabelMapper.class)
+    String duplicatedCaseInsensitiveLabel(long id);
+
+    /**
+     * Resolves a physical column name when the driver exposes a blank label.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("SELECT NAME AS \"\" FROM CONTACT WHERE ID = :id")
+    @Jdbc.RowMapper(PhysicalNameMapper.class)
+    String blankLabelFallback(long id);
+
+    /**
+     * Executes valid SQL after a leading line comment.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("""
+            -- :ignored ?
+            SELECT NAME FROM CONTACT WHERE ID = :id
+            """)
+    String leadingLineComment(long id);
+
+    /**
+     * Executes valid SQL after a leading block comment.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("/* :ignored ? */ SELECT NAME FROM CONTACT WHERE ID = :id")
+    String leadingBlockComment(long id);
+
+    /**
+     * Executes valid SQL containing an embedded block comment.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("SELECT NAME /* :ignored ? */ FROM CONTACT WHERE ID = :id")
+    String embeddedBlockComment(long id);
+
+    /**
+     * Executes valid SQL with a trailing block comment.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("SELECT NAME FROM CONTACT WHERE ID = :id /* :ignored ? */")
+    String trailingBlockComment(long id);
+
+    /**
+     * Executes valid SQL with a trailing line comment.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("SELECT NAME FROM CONTACT WHERE ID = :id -- :ignored ?")
+    String trailingLineComment(long id);
+
+    /**
+     * Executes valid SQL surrounded by comments containing marker-shaped text.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("""
+            /* :before ? */ SELECT NAME FROM /* :middle ? */ CONTACT
+            WHERE ID = :id /* :after ? */
+            """)
+    String surroundingComments(long id);
+
+    /**
+     * Delegates a semicolon-only statement to the driver.
+     *
+     * @return unreachable result when the driver rejects the statement
+     */
+    @Jdbc.Statement(";")
+    List<String> semicolonOnly();
+
+    /**
+     * Executes a valid query ending in a semicolon.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    @Jdbc.Statement("SELECT NAME FROM CONTACT WHERE ID = :id;")
+    String nameWithTerminalSemicolon(long id);
 
     /**
      * Uses the marker mapper selected by generic service contract.

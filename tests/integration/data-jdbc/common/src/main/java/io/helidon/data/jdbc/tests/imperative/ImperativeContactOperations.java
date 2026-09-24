@@ -31,6 +31,20 @@ import io.helidon.service.registry.Service;
 @Service.Singleton
 public final class ImperativeContactOperations implements ContactOperations {
     private static final String GENERATED_KEY_COLUMN_PROPERTY = "helidon.data.jdbc.tests.generated-key-column";
+    private static final String LEADING_LINE_COMMENT_SQL = """
+            -- :ignored ?
+            SELECT NAME FROM CONTACT WHERE ID = ?
+            """;
+    private static final String LEADING_BLOCK_COMMENT_SQL =
+            "/* :ignored ? */ SELECT NAME FROM CONTACT WHERE ID = ?";
+    private static final String EMBEDDED_BLOCK_COMMENT_SQL =
+            "SELECT NAME /* :ignored ? */ FROM CONTACT WHERE ID = ?";
+    private static final String TRAILING_BLOCK_COMMENT_SQL =
+            "SELECT NAME FROM CONTACT WHERE ID = ? /* :ignored ? */";
+    private static final String TRAILING_LINE_COMMENT_SQL =
+            "SELECT NAME FROM CONTACT WHERE ID = ? -- :ignored ?";
+    private static final String SURROUNDING_COMMENTS_SQL =
+            "/* :before ? */ SELECT NAME FROM /* :middle ? */ CONTACT WHERE ID = ? /* :after ? */";
 
     private final JdbcClient client;
 
@@ -166,6 +180,48 @@ public final class ImperativeContactOperations implements ContactOperations {
                 .one();
     }
 
+    @Override
+    public List<String> commentedNames(long id) {
+        return List.of(name(LEADING_LINE_COMMENT_SQL, id),
+                       name(LEADING_BLOCK_COMMENT_SQL, id),
+                       name(EMBEDDED_BLOCK_COMMENT_SQL, id),
+                       name(TRAILING_BLOCK_COMMENT_SQL, id),
+                       name(TRAILING_LINE_COMMENT_SQL, id),
+                       name(SURROUNDING_COMMENTS_SQL, id));
+    }
+
+    @Override
+    public long uniqueLabelAmongUnusedDuplicates(long id) {
+        return client.create("""
+                        SELECT ID AS target, NAME AS "detail", EMAIL AS "DETAIL"
+                        FROM CONTACT
+                        WHERE ID = ?
+                        """)
+                .bind(1, id)
+                .map(row -> row.get("target", Long.class))
+                .one();
+    }
+
+    @Override
+    public String duplicatedCaseInsensitiveLabel(long id) {
+        return client.create("""
+                        SELECT NAME AS "detail", EMAIL AS "DETAIL"
+                        FROM CONTACT
+                        WHERE ID = ?
+                        """)
+                .bind(1, id)
+                .map(row -> row.get("detail", String.class))
+                .one();
+    }
+
+    @Override
+    public String blankLabelFallback(long id) {
+        return client.create("SELECT NAME AS \"\" FROM CONTACT WHERE ID = ?")
+                .bind(1, id)
+                .map(row -> row.get("NAME", String.class))
+                .one();
+    }
+
     /**
      * Executes deliberately invalid SQL.
      */
@@ -174,6 +230,19 @@ public final class ImperativeContactOperations implements ContactOperations {
         client.create(TestSql.INVALID_QUERY)
                 .map(Long.class)
                 .list();
+    }
+
+    @Override
+    public void executeSemicolonOnly() {
+        client.create(";").map(String.class).list();
+    }
+
+    @Override
+    public String nameWithTerminalSemicolon(long id) {
+        return client.create("SELECT NAME FROM CONTACT WHERE ID = ?;")
+                .bind(1, id)
+                .map(String.class)
+                .one();
     }
 
     /**
@@ -286,5 +355,12 @@ public final class ImperativeContactOperations implements ContactOperations {
             generatedKeys.addColumn(column);
         }
         return generatedKeys;
+    }
+
+    private String name(String sql, long id) {
+        return client.create(sql)
+                .bind(1, id)
+                .map(String.class)
+                .one();
     }
 }

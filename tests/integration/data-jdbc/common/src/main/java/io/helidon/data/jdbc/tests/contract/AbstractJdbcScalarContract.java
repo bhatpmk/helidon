@@ -89,6 +89,18 @@ public abstract class AbstractJdbcScalarContract {
             FROM SCALAR_VALUE
             WHERE ID = 1
             """;
+    private static final String UPDATE_BYTES_SQL = "UPDATE SCALAR_VALUE SET BYTES_VALUE = ? WHERE ID = 1";
+    private static final String SELECT_BYTES_SQL = "SELECT BYTES_VALUE FROM SCALAR_VALUE WHERE ID = 1";
+    private static final String UPDATE_LEGACY_TEMPORAL_SQL = """
+            UPDATE SCALAR_VALUE
+            SET DATE_VALUE = ?, TIME_VALUE = ?, TIMESTAMP_VALUE = ?
+            WHERE ID = 1
+            """;
+    private static final String SELECT_LEGACY_TEMPORAL_SQL = """
+            SELECT DATE_VALUE, TIME_VALUE, TIMESTAMP_VALUE
+            FROM SCALAR_VALUE
+            WHERE ID = 1
+            """;
     private static final ScalarValues VALUES = new ScalarValues(Boolean.TRUE,
                                                                  (byte) 2,
                                                                  (short) 3,
@@ -271,6 +283,72 @@ public abstract class AbstractJdbcScalarContract {
                               () -> assertThat(row.get(1, Long.class), is(4L)),
                               () -> assertThat(row.get(2, BigDecimal.class),
                                                comparesEqualTo(BigDecimal.valueOf(4L))));
+                    return true;
+                })
+                .one();
+    }
+
+    /**
+     * Proves binding snapshots an application-owned byte array before terminal execution.
+     */
+    @Test
+    protected final void snapshotsMutableByteArrayAtBindTime() {
+        byte[] value = {11, 12, 13};
+        byte[] expected = value.clone();
+        JdbcClient.Statement statement = client.create(UPDATE_BYTES_SQL).bind(1, value);
+        value[0] = 99;
+        value[1] = 98;
+        value[2] = 97;
+
+        assertThat(statement.execute(), is(1L));
+        assertThat(client.create(SELECT_BYTES_SQL).map(byte[].class).one(), is(expected));
+    }
+
+    /**
+     * Proves each statement snapshots a reused mutable value independently.
+     */
+    @Test
+    protected final void independentlySnapshotsReusedMutableByteArray() {
+        byte[] value = {21, 22};
+        JdbcClient.Statement first = client.create(UPDATE_BYTES_SQL).bind(1, value);
+        value[0] = 31;
+        value[1] = 32;
+        byte[] secondExpected = value.clone();
+        JdbcClient.Statement second = client.create(UPDATE_BYTES_SQL).bind(1, value);
+        value[0] = 41;
+        value[1] = 42;
+
+        assertThat(first.execute(), is(1L));
+        assertThat(client.create(SELECT_BYTES_SQL).map(byte[].class).one(), is(new byte[] {21, 22}));
+        assertThat(second.execute(), is(1L));
+        assertThat(client.create(SELECT_BYTES_SQL).map(byte[].class).one(), is(secondExpected));
+    }
+
+    /**
+     * Proves binding snapshots mutable legacy JDBC temporal values before terminal execution.
+     */
+    @Test
+    protected final void snapshotsMutableLegacyTemporalValuesAtBindTime() {
+        Date date = Date.valueOf("2026-08-01");
+        Time time = Time.valueOf("13:14:15");
+        Timestamp timestamp = Timestamp.valueOf("2026-08-01 13:14:15");
+        JdbcClient.Statement statement = client.create(UPDATE_LEGACY_TEMPORAL_SQL)
+                .bind(1, date)
+                .bind(2, time)
+                .bind(3, timestamp);
+        date.setTime(Date.valueOf("2027-01-02").getTime());
+        time.setTime(Time.valueOf("20:21:22").getTime());
+        timestamp.setTime(Timestamp.valueOf("2027-01-02 20:21:22").getTime());
+        timestamp.setNanos(987_654_321);
+
+        assertThat(statement.execute(), is(1L));
+        client.create(SELECT_LEGACY_TEMPORAL_SQL)
+                .map(row -> {
+                    assertAll("snapshotted legacy temporal values",
+                              () -> assertThat(row.get(1, Date.class), is(Date.valueOf("2026-08-01"))),
+                              () -> assertThat(row.get(2, Time.class), is(Time.valueOf("13:14:15"))),
+                              () -> assertThat(row.get(3, Timestamp.class),
+                                               is(Timestamp.valueOf("2026-08-01 13:14:15"))));
                     return true;
                 })
                 .one();

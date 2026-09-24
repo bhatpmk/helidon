@@ -93,9 +93,12 @@ class JdbcClientCacheTest {
         String malformed = "select 'unterminated";
         String longMalformed = malformed + "x".repeat(8_192);
 
+        IllegalArgumentException empty = assertThrows(IllegalArgumentException.class, () -> client.create(""));
+        assertThat(empty.getMessage(), is("The SQL statement must not be blank."));
         assertThrows(IllegalArgumentException.class, () -> client.create(" \t\n"));
         assertThrows(IllegalArgumentException.class, () -> client.create(malformed));
         assertThrows(IllegalArgumentException.class, () -> client.create(longMalformed));
+        client.create("select 1");
 
         verifyNoMoreInteractions(dataSource);
     }

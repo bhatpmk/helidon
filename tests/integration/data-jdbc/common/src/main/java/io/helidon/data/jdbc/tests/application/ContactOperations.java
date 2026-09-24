@@ -86,9 +86,54 @@ public interface ContactOperations {
     ContactView missingRecordLabel(long id);
 
     /**
+     * Executes valid SQL with leading, embedded, and trailing comments.
+     *
+     * @param id contact identifier
+     * @return the mapped name from each comment placement
+     */
+    List<String> commentedNames(long id);
+
+    /**
+     * Looks up a unique label while ignoring duplicate unused labels.
+     *
+     * @param id contact identifier
+     * @return contact identifier
+     */
+    long uniqueLabelAmongUnusedDuplicates(long id);
+
+    /**
+     * Looks up a label duplicated with different case.
+     *
+     * @param id contact identifier
+     * @return unreachable value when the duplicate is rejected
+     */
+    String duplicatedCaseInsensitiveLabel(long id);
+
+    /**
+     * Looks up a physical column name when the driver exposes a blank label.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    String blankLabelFallback(long id);
+
+    /**
      * Executes deliberately invalid SQL.
      */
     void executeInvalidQuery();
+
+    /**
+     * Delegates a semicolon-only statement to the JDBC driver.
+     */
+    void executeSemicolonOnly();
+
+    /**
+     * Executes a valid query ending in a semicolon.
+     *
+     * @param id contact identifier
+     * @return contact name
+     */
+    String nameWithTerminalSemicolon(long id);
 
     /**
      * Inserts a contact with an email address.

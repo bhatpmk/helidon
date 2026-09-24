@@ -81,8 +81,43 @@ public final class DeclarativeContactOperations implements ContactOperations {
     }
 
     @Override
+    public List<String> commentedNames(long id) {
+        return List.of(repository.leadingLineComment(id),
+                       repository.leadingBlockComment(id),
+                       repository.embeddedBlockComment(id),
+                       repository.trailingBlockComment(id),
+                       repository.trailingLineComment(id),
+                       repository.surroundingComments(id));
+    }
+
+    @Override
+    public long uniqueLabelAmongUnusedDuplicates(long id) {
+        return repository.uniqueLabelAmongUnusedDuplicates(id);
+    }
+
+    @Override
+    public String duplicatedCaseInsensitiveLabel(long id) {
+        return repository.duplicatedCaseInsensitiveLabel(id);
+    }
+
+    @Override
+    public String blankLabelFallback(long id) {
+        return repository.blankLabelFallback(id);
+    }
+
+    @Override
     public void executeInvalidQuery() {
         repository.invalidQuery();
+    }
+
+    @Override
+    public void executeSemicolonOnly() {
+        repository.semicolonOnly();
+    }
+
+    @Override
+    public String nameWithTerminalSemicolon(long id) {
+        return repository.nameWithTerminalSemicolon(id);
     }
 
     @Override
