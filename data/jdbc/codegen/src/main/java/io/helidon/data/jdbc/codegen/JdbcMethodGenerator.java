@@ -20,6 +20,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 
@@ -106,9 +107,32 @@ final class JdbcMethodGenerator {
             bindParameterMethodName = null;
         }
 
-        List<MapperDependency> mapperDependencies = mapperDependencies(plans, classModel);
+        List<JdbcMethodPlan> mappingPlans = new ArrayList<>();
+        for (JdbcMethodPlan plan : plans) {
+            mappingPlans.add(plan);
+            if (plan.callable() != null && plan.callable().aggregate()) {
+                int index = 0;
+                for (JdbcCallablePlan.Output output : plan.callable().components()) {
+                    if (output.mapping() != null) {
+                        output.mapping().mapperFieldName(plan.mapperFieldName() + "_OUTPUT_" + index++);
+                        mappingPlans.add(output.mapping());
+                    }
+                }
+            }
+        }
+        List<MapperDependency> mapperDependencies = mapperDependencies(mappingPlans, classModel);
         JdbcRepositoryClassGenerator.generateConstructor(classModel, repositoryInfo, mapperDependencies, plans);
         Map<ResolvedType, JdbcMethodPlan> recordMappers = new LinkedHashMap<>();
+        for (JdbcMethodPlan mappingPlan : mappingPlans) {
+            if (mappingPlan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD) {
+                JdbcMethodPlan first = recordMappers.putIfAbsent(ResolvedType.create(mappingPlan.mappedType()), mappingPlan);
+                if (first == null) {
+                    JdbcRecordMapperGenerator.generate(mappingPlan, mappingPlan.mapperFieldName(), classModel);
+                } else {
+                    mappingPlan.mapperFieldName(first.mapperFieldName());
+                }
+            }
+        }
         for (JdbcMethodPlan plan : plans) {
             if (plan.reference() == null) {
                 classModel.addField(field -> field.name(plan.sqlFieldName())
@@ -121,17 +145,6 @@ final class JdbcMethodGenerator {
                         .type(TypeName.builder(TypeName.create(Supplier.class))
                                       .addTypeArgument(JdbcCodegenTypes.JDBC_CLIENT_STATEMENT).build())
                         .isFinal(true));
-            }
-            if (plan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD) {
-                // Avoid duplicate record mappers by reusing the first mapper planned for each exact mapped type.
-                // The shared field keeps the variable name derived from that first repository method. ResolvedType
-                // retains nested generic arguments that TypeName equality deliberately omits.
-                JdbcMethodPlan firstPlan = recordMappers.putIfAbsent(ResolvedType.create(plan.mappedType()), plan);
-                if (firstPlan == null) {
-                    JdbcRecordMapperGenerator.generate(plan, plan.mapperFieldName(), classModel);
-                } else {
-                    plan.mapperFieldName(firstPlan.mapperFieldName());
-                }
             }
             classModel.addMethod(method -> generateMethod(plan, method, bindParameterMethodName));
         }
@@ -256,6 +269,11 @@ final class JdbcMethodGenerator {
         while (generatedParameterNames.contains(statementName)) {
             statementName = JdbcCodegenConstants.JDBC_STATEMENT_NAME + statementNameSuffix++;
         }
+        if (plan.callable() != null && plan.callable().control() != null) {
+            method.addContent(Objects.class).addContent(".requireNonNull(")
+                    .addContent(parameterNames.get(plan.callable().control().elementName()))
+                    .addContentLine(", \"The callable callback must not be null.\");");
+        }
         method.addContent(JdbcCodegenTypes.JDBC_CLIENT_STATEMENT)
                 .addContent(" ")
                 .addContent(statementName)
@@ -275,7 +293,11 @@ final class JdbcMethodGenerator {
         for (JdbcSqlParameterPlan.Bind bind : plan.parameterPlan().binds()) {
             addBind(method, statementName, parameterNames, bind, plan.configured() ? null : bindParameterMethodName);
         }
-        addTerminal(plan, method, statementName);
+        if (plan.callable() == null) {
+            addTerminal(plan, method, statementName);
+        } else {
+            JdbcCallableGenerator.terminal(plan, method, statementName, parameterNames);
+        }
     }
 
     /**

@@ -62,6 +62,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
 
     @Override
     public JdbcConnectionLease acquire(DataSource dataSource) {
+        Objects.requireNonNull(dataSource, "The datasource must not be null.");
         State state = local.get();
         if (state == null) {
             return JdbcConnectionLease.Owned.acquire(dataSource);
@@ -87,6 +88,9 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
             throw new IllegalStateException("The active JDBC transaction has no lifecycle association.");
         }
         association.require(AssociationState.ACTIVE, "acquire a connection");
+        if (association.reserved) {
+            throw new IllegalStateException("The transaction connection is reserved by a scoped JDBC operation.");
+        }
         Object identity = transactionIdentity(dataSource);
         if (association.dataSourceIdentitySet && !sameIdentity(association.dataSourceIdentity, identity)) {
             throw new DataException("A local JDBC transaction cannot use more than one data source.");
@@ -184,6 +188,9 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
         State state = requireState("suspend a transaction");
         if (txIdentity.equals(state.activeJdbc)) {
             Association association = requireAssociation(state, txIdentity);
+            if (association.reserved) {
+                throw new IllegalStateException("A transaction with a reserved JDBC connection cannot be suspended.");
+            }
             try {
                 association.transition(AssociationState.ACTIVE,
                                        AssociationState.SUSPENDED,
@@ -258,6 +265,16 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
      */
     CompletionReceipt rollbackLocal(String txIdentity) {
         return completeLocal(txIdentity, false);
+    }
+
+    void requireSuspensionAllowed() {
+        State state = local.get();
+        if (state != null && state.activeJdbc != null) {
+            Association association = state.jdbcTransactions.get(state.activeJdbc);
+            if (association != null && association.reserved) {
+                throw new IllegalStateException("A transaction with a reserved JDBC connection cannot be suspended.");
+            }
+        }
     }
 
     /**
@@ -604,13 +621,15 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
             failedContext = true;
         }
         // A failed context can only roll back, even when the lifecycle requests commit.
-        boolean effectiveCommit = commit && !failedContext;
+        boolean effectiveCommit = commit && !failedContext && !association.rollbackOnly;
         Throwable failure = null;
         try {
             association.beginCompletion();
             completeConnection(association, effectiveCommit);
-            if (failedContext && commit) {
-                failure = new TxException("The failed local JDBC transaction was rolled back instead of committed.");
+            if ((failedContext || association.rollbackOnly) && commit) {
+                failure = new TxException(failedContext
+                        ? "The failed local JDBC transaction was rolled back instead of committed."
+                        : "The local JDBC transaction required rollback and was not committed.");
             }
         } catch (RuntimeException | Error completionFailure) {
             failure = completionFailure;
@@ -791,6 +810,8 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
      */
     private static final class Association {
 
+        private boolean reserved;
+        private boolean rollbackOnly;
         private AssociationState state = AssociationState.ACTIVE;
 
         // The first operation fixes the only data source identity allowed in the transaction.
@@ -927,6 +948,19 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
         }
 
         @Override
+        public void reserve() {
+            if (closed || association.reserved) {
+                throw new IllegalStateException("The transaction connection cannot be reserved.");
+            }
+            association.reserved = true;
+        }
+
+        @Override
+        public void processingFailed() {
+            association.rollbackOnly = true;
+        }
+
+        @Override
         public void close() {
             if (closed) {
                 return;
@@ -941,6 +975,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
                                                                    association.failure);
                 }
             } finally {
+                association.reserved = false;
                 closed = true;
             }
         }
