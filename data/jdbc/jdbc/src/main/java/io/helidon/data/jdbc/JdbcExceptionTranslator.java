@@ -330,6 +330,7 @@ final class JdbcExceptionTranslator {
         case QUERY -> "query";
         case UPDATE -> "update";
         case GENERATED_KEYS -> "generated keys operation";
+        case CALL -> "callable operation";
         };
     }
 

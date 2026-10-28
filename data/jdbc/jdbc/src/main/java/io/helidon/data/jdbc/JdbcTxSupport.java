@@ -519,6 +519,7 @@ final class JdbcTxSupport implements TxSupport {
         if (transaction == null) {
             return null;
         }
+        connectionManager.requireSuspensionAllowed();
         transaction.suspend();
         try {
             notifyListeners(listeners,
