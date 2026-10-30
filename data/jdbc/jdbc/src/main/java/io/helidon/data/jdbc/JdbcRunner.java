@@ -24,6 +24,8 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import javax.sql.DataSource;
 
@@ -188,6 +190,13 @@ final class JdbcRunner {
             rethrow(operation, failure);
         }
         return value;
+    }
+
+    <T> void useStream(JdbcOperation operation, JdbcClient.RowMapper<T> mapper, Consumer<Stream<T>> action) {
+        run(operation, UNBOUNDED, scope -> {
+            queryHandler.useStream(scope, mapper, action);
+            return null;
+        }, true);
     }
 
     private static Throwable closeCallable(AutoCloseable resource, String operation, Throwable failure) {
@@ -376,6 +385,10 @@ final class JdbcRunner {
         if (previousFailure == null) {
             return failure;
         }
+        if (failure instanceof Error && !(previousFailure instanceof Error)) {
+            failure.addSuppressed(previousFailure);
+            return failure;
+        }
         if (failure != null) {
             previousFailure.addSuppressed(cleanupException(operation, failure));
         }
@@ -397,8 +410,18 @@ final class JdbcRunner {
         try {
             resource.close();
         } catch (Throwable closeFailure) {
-            // Preserve a primary fatal error. An error attached below another failure is sanitized.
-            if (previousFailure == null && closeFailure instanceof Error) {
+            if (closeFailure instanceof Error) {
+                if (previousFailure == null) {
+                    return closeFailure;
+                }
+                if (previousFailure instanceof Error) {
+                    if (previousFailure != closeFailure) {
+                        previousFailure.addSuppressed(closeFailure);
+                    }
+                    return previousFailure;
+                }
+                closeFailure.addSuppressed(JdbcExceptionTranslator.sanitize("retaining an earlier cleanup failure",
+                                                                            previousFailure));
                 return closeFailure;
             }
             if (previousFailure == null) {
@@ -467,6 +490,10 @@ final class JdbcRunner {
     private <T> T run(JdbcOperation operation,
                       ExecutionOptions options,
                       HandlerAction<T> action) {
+        return run(operation, options, action, false);
+    }
+
+    private <T> T run(JdbcOperation operation, ExecutionOptions options, HandlerAction<T> action, boolean streaming) {
         // Explicit cleanup preserves every failure in resource ownership order.
         JdbcConnectionLease lease = null;
         PreparedStatement statement = null;
@@ -485,6 +512,9 @@ final class JdbcRunner {
                 }
                 throw leaseFailure;
             }
+            if (streaming) {
+                lease.reserve();
+            }
             Connection connection = lease.connection();
             statement = prepare(connection, operation);
             applyOptions(statement, options);
@@ -497,6 +527,11 @@ final class JdbcRunner {
 
         ResultSet resultSet = scope == null ? null : scope.resultSet();
         failure = closeAll(operation, resultSet, statement, lease, failure);
+        if (streaming && lease != null) {
+            if (failure != null) {
+                lease.processingFailed();
+            }
+        }
         if (failure != null) {
             rethrow(operation, failure);
         }

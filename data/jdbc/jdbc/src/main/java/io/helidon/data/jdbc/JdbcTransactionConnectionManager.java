@@ -188,9 +188,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
         State state = requireState("suspend a transaction");
         if (txIdentity.equals(state.activeJdbc)) {
             Association association = requireAssociation(state, txIdentity);
-            if (association.reserved) {
-                throw new IllegalStateException("A transaction with a reserved JDBC connection cannot be suspended.");
-            }
+            requireUnreserved(txIdentity);
             try {
                 association.transition(AssociationState.ACTIVE,
                                        AssociationState.SUSPENDED,
@@ -275,6 +273,31 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
                 throw new IllegalStateException("A transaction with a reserved JDBC connection cannot be suspended.");
             }
         }
+    }
+
+    /**
+     * Rejects suspension or completion while a scoped JDBC operation owns the connection.
+     *
+     * @param txIdentity The identity selects the participating transaction.
+     */
+    void requireUnreserved(String txIdentity) {
+        State state = local.get();
+        Association association = state == null ? null : state.jdbcTransactions.get(txIdentity);
+        if (association != null && association.reserved) {
+            throw new IllegalStateException("The transaction cannot be suspended or completed during a scoped JDBC operation.");
+        }
+    }
+
+    /**
+     * Reports a retained processing failure without compromising lifecycle state.
+     *
+     * @param txIdentity The identity selects the participating transaction.
+     * @return Whether transaction completion must roll back.
+     */
+    boolean rollbackOnly(String txIdentity) {
+        State state = local.get();
+        Association association = state == null ? null : state.jdbcTransactions.get(txIdentity);
+        return association != null && association.rollbackOnly;
     }
 
     /**
@@ -615,6 +638,7 @@ final class JdbcTransactionConnectionManager implements TxLifeCycle, JdbcConnect
                                               Association association,
                                               boolean commit) {
 
+        requireUnreserved(txIdentity);
         boolean failedContext = association.state == AssociationState.FAILED;
         if (!failedContext && !txIdentity.equals(state.activeJdbc)) {
             failJdbcAssociation(state, txIdentity, association);
