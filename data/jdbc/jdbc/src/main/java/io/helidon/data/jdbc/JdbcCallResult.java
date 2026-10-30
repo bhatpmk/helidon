@@ -37,6 +37,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import io.helidon.data.DataException;
 import io.helidon.data.NoResultException;
@@ -235,7 +237,7 @@ final class JdbcCallResult implements JdbcClient.CallResult {
     }
 
     Throwable finish(Throwable escaped) {
-        Throwable primary = mergeProcessingFailures(failure, escaped);
+        Throwable primary = JdbcStreamScope.mergeProcessingFailures(failure, escaped);
         if (primary == null) {
             try {
                 // A selected but unconsumed cursor is discarded with the statement.
@@ -253,30 +255,8 @@ final class JdbcCallResult implements JdbcClient.CallResult {
             closeCurrent();
         } catch (Throwable caught) {
             lease.processingFailed();
-            primary = JdbcExceptionTranslator.mergeInfrastructure(primary, "closing callable rows", caught);
+            primary = JdbcExceptionTranslator.mergeOperationCleanup(primary, "closing callable rows", caught);
         }
-        return primary;
-    }
-
-    private static Throwable mergeProcessingFailures(Throwable primary, Throwable secondary) {
-        if (primary == null) {
-            return secondary;
-        }
-        if (secondary == null || secondary == primary) {
-            return primary;
-        }
-        if (secondary instanceof Error && !(primary instanceof Error)) {
-            Throwable earlier = primary;
-            primary = secondary;
-            secondary = earlier;
-        }
-        // Nested processing boundaries can observe the same secondary failure more than once.
-        for (Throwable suppressed : primary.getSuppressed()) {
-            if (suppressed == secondary) {
-                return primary;
-            }
-        }
-        primary.addSuppressed(secondary);
         return primary;
     }
 
@@ -367,12 +347,17 @@ final class JdbcCallResult implements JdbcClient.CallResult {
         if (failure == null) {
             lease.processingFailed();
         }
-        failure = mergeProcessingFailures(failure, caught);
+        failure = JdbcStreamScope.mergeProcessingFailures(failure, caught);
     }
 
     @FunctionalInterface
     private interface Action<T> {
         T run() throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface RowAction<R> {
+        R run(JdbcColumnLayout columns) throws SQLException;
     }
 
     private final class CallRows<T> implements JdbcClient.Rows<T> {
@@ -402,7 +387,50 @@ final class JdbcCallResult implements JdbcClient.CallResult {
             return materialize(-1);
         }
 
+        @Override
+        public void useStream(Consumer<Stream<T>> action) {
+            Objects.requireNonNull(action, "The stream consumer must not be null.");
+            consume(columns -> {
+                JdbcStreamScope lifetime = new JdbcStreamScope(JdbcCallResult.this::check, JdbcCallResult.this::retain);
+                JdbcQueryHandler.useStream(operation, current, columns, mapper, action, lifetime, () -> { });
+                return Boolean.TRUE;
+            });
+        }
+
         private List<T> materialize(int cardinality) {
+            return consume(columns -> {
+                List<T> values = new ArrayList<>();
+                while (JdbcExceptionTranslator.invoke("advancing callable rows", current::next)) {
+                    if (cardinality >= 0 && !values.isEmpty()) {
+                        throw new NonUniqueResultException("The callable result contains more than one row.");
+                    }
+                    JdbcRow row = new JdbcRow(current, columns, operation,
+                                              JdbcCallResult.this::check, JdbcCallResult.this::retain);
+                    T value;
+                    try {
+                        value = mapper.map(row);
+                        if (failure instanceof RuntimeException runtime) {
+                            throw runtime;
+                        }
+                        if (failure instanceof Error error) {
+                            throw error;
+                        }
+                        if (value == null) {
+                            throw new DataException("The callable row mapper returned null.");
+                        }
+                    } finally {
+                        row.expire();
+                    }
+                    values.add(value);
+                }
+                if (cardinality == 1 && values.isEmpty()) {
+                    throw new NoResultException("The callable result contains no rows.");
+                }
+                return List.copyOf(values);
+            });
+        }
+
+        private <R> R consume(RowAction<R> action) {
             check();
             if (consumed || selectedEvent != event || terminalActive) {
                 throw new IllegalStateException("The callable row stage has already been consumed or expired.");
@@ -419,33 +447,7 @@ final class JdbcCallResult implements JdbcClient.CallResult {
                     }
                     JdbcColumnLayout columns = JdbcColumnLayout.create(
                             JdbcExceptionTranslator.invoke("reading callable column metadata", current::getMetaData), operation);
-                    List<T> values = new ArrayList<>();
-                    while (JdbcExceptionTranslator.invoke("advancing callable rows", current::next)) {
-                        if (cardinality >= 0 && !values.isEmpty()) {
-                            throw new NonUniqueResultException("The callable result contains more than one row.");
-                        }
-                        JdbcRow row = new JdbcRow(current, columns, operation);
-                        T value;
-                        try {
-                            value = mapper.map(new ScopedRow(row));
-                            if (failure instanceof RuntimeException runtime) {
-                                throw runtime;
-                            }
-                            if (failure instanceof Error error) {
-                                throw error;
-                            }
-                            if (value == null) {
-                                throw new DataException("The callable row mapper returned null.");
-                            }
-                        } finally {
-                            row.expire();
-                        }
-                        values.add(value);
-                    }
-                    if (cardinality == 1 && values.isEmpty()) {
-                        throw new NoResultException("The callable result contains no rows.");
-                    }
-                    return List.copyOf(values);
+                    return action.run(columns);
                 } catch (SQLException caught) {
                     RuntimeException translated = JdbcExceptionTranslator.translate(operation, caught);
                     retain(translated);
@@ -462,68 +464,10 @@ final class JdbcCallResult implements JdbcClient.CallResult {
                         if (failure == null) {
                             throw caught;
                         }
-                        failure = JdbcExceptionTranslator.mergeInfrastructure(failure, "closing callable rows", caught);
+                        failure = JdbcExceptionTranslator.mergeOperationCleanup(failure, "closing callable rows", caught);
                     }
                 }
             });
-        }
-    }
-
-    private final class ScopedRow implements JdbcClient.Row {
-        private final JdbcRow row;
-
-        private ScopedRow(JdbcRow row) {
-            this.row = row;
-        }
-
-        @Override
-        public <T> Optional<T> optional(int index, Class<T> type) {
-            Objects.requireNonNull(type, "The scalar class must not be null.");
-            check();
-            try {
-                return row.optional(index, type);
-            } catch (DataException | Error caught) {
-                retain(caught);
-                throw caught;
-            }
-        }
-
-        @Override
-        public <T> Optional<T> optional(String label, Class<T> type) {
-            Objects.requireNonNull(label, "The column label must not be null.");
-            Objects.requireNonNull(type, "The scalar class must not be null.");
-            check();
-            try {
-                return row.optional(label, type);
-            } catch (DataException | Error caught) {
-                retain(caught);
-                throw caught;
-            }
-        }
-
-        @Override
-        public <T> T get(int index, Class<T> type) {
-            Objects.requireNonNull(type, "The scalar class must not be null.");
-            check();
-            try {
-                return row.get(index, type);
-            } catch (DataException | Error caught) {
-                retain(caught);
-                throw caught;
-            }
-        }
-
-        @Override
-        public <T> T get(String label, Class<T> type) {
-            Objects.requireNonNull(label, "The column label must not be null.");
-            Objects.requireNonNull(type, "The scalar class must not be null.");
-            check();
-            try {
-                return row.get(label, type);
-            } catch (DataException | Error caught) {
-                retain(caught);
-                throw caught;
-            }
         }
     }
 }

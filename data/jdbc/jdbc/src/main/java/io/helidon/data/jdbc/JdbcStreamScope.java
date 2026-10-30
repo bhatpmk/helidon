@@ -17,29 +17,64 @@ package io.helidon.data.jdbc;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
- * Retains processing failures and confines a query stream to its callback thread.
+ * Retains processing failures and confines a JDBC stream to its callback thread.
  */
 final class JdbcStreamScope {
     private final Thread thread = Thread.currentThread();
     private final List<Runnable> closeHandlers = new ArrayList<>();
+    private final Runnable parentCheck;
+    private final Consumer<Throwable> failureHandler;
     private volatile boolean closed;
     private Throwable failure;
+
+    JdbcStreamScope() {
+        this(() -> { }, _ -> { });
+    }
+
+    JdbcStreamScope(Runnable parentCheck, Consumer<Throwable> failureHandler) {
+        this.parentCheck = parentCheck;
+        this.failureHandler = failureHandler;
+    }
+
+    static Throwable mergeProcessingFailures(Throwable primary, Throwable secondary) {
+        if (primary == null) {
+            return secondary;
+        }
+        if (secondary == null || secondary == primary) {
+            return primary;
+        }
+        if (secondary instanceof Error && !(primary instanceof Error)) {
+            Throwable earlier = primary;
+            primary = secondary;
+            secondary = earlier;
+        }
+        // Nested processing boundaries can observe the same secondary failure more than once.
+        for (Throwable suppressed : primary.getSuppressed()) {
+            if (suppressed == secondary) {
+                return primary;
+            }
+        }
+        primary.addSuppressed(secondary);
+        return primary;
+    }
 
     void check() {
         checkThread();
         if (closed) {
-            throw new IllegalStateException("The query stream is closed.");
+            throw new IllegalStateException("The JDBC stream is closed.");
         }
         if (failure != null) {
-            throw new IllegalStateException("The query stream cannot be used after a processing failure.");
+            throw new IllegalStateException("The JDBC stream cannot be used after a processing failure.");
         }
+        parentCheck.run();
     }
 
     void checkThread() {
         if (Thread.currentThread() != thread) {
-            throw new IllegalStateException("The query stream can be used only on its callback thread.");
+            throw new IllegalStateException("The JDBC stream can be used only on its callback thread.");
         }
     }
 
@@ -61,7 +96,8 @@ final class JdbcStreamScope {
     }
 
     void record(Throwable caught) {
-        failure = merge(failure, caught);
+        failure = mergeProcessingFailures(failure, caught);
+        failureHandler.accept(caught);
     }
 
     void onClose(Runnable handler) {
@@ -75,7 +111,7 @@ final class JdbcStreamScope {
             try {
                 handler.run();
             } catch (RuntimeException | Error caught) {
-                closingFailure = merge(closingFailure, caught);
+                closingFailure = mergeProcessingFailures(closingFailure, caught);
             }
         }
         closeHandlers.clear();
@@ -96,24 +132,4 @@ final class JdbcStreamScope {
             throw (RuntimeException) failure;
         }
     }
-    private static Throwable merge(Throwable first, Throwable caught) {
-        if (first == null) {
-            return caught;
-        }
-        if (first == caught) {
-            return first;
-        }
-        for (Throwable suppressed : first.getSuppressed()) {
-            if (suppressed == caught) {
-                return first;
-            }
-        }
-        if (caught instanceof Error && !(first instanceof Error)) {
-            caught.addSuppressed(first);
-            return caught;
-        }
-        first.addSuppressed(caught);
-        return first;
-    }
-
 }

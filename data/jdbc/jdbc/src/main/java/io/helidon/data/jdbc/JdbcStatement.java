@@ -20,8 +20,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
-import java.util.stream.Stream;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * In-memory description of one JDBC statement assembled by an application or

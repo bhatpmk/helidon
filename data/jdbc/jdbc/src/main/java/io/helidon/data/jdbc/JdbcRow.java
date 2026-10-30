@@ -19,6 +19,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import io.helidon.data.DataException;
 
@@ -36,7 +37,8 @@ final class JdbcRow implements JdbcClient.Row {
     private final JdbcColumnLayout columns;
     private final JdbcOperation operation;
     private final Thread callbackThread;
-    private final JdbcStreamScope streamScope;
+    private final Runnable scopeCheck;
+    private final Consumer<Throwable> failureRecorder;
 
     // Volatile makes expiration visible to code that retained the row after the callback.
     private volatile boolean active = true;
@@ -49,11 +51,17 @@ final class JdbcRow implements JdbcClient.Row {
      * @param operation current operation
      */
     JdbcRow(ResultSet resultSet, JdbcColumnLayout columns, JdbcOperation operation) {
-        this(resultSet, columns, operation, null);
+        this(resultSet, columns, operation, null, null);
     }
 
     JdbcRow(ResultSet resultSet, JdbcColumnLayout columns, JdbcOperation operation, JdbcStreamScope streamScope) {
-        this.streamScope = streamScope;
+        this(resultSet, columns, operation, streamScope::check, streamScope::record);
+    }
+
+    JdbcRow(ResultSet resultSet, JdbcColumnLayout columns, JdbcOperation operation,
+            Runnable scopeCheck, Consumer<Throwable> failureRecorder) {
+        this.scopeCheck = scopeCheck;
+        this.failureRecorder = failureRecorder;
         this.resultSet = resultSet;
         this.columns = columns;
         this.operation = operation;
@@ -87,7 +95,8 @@ final class JdbcRow implements JdbcClient.Row {
         T value = read(index, type);
         if (value == null) {
             DataException failure = new DataException("The result column " + index + " contains SQL NULL.");
-            throw streamScope == null ? failure : streamScope.fail(failure);
+            record(failure);
+            throw failure;
         }
         return value;
     }
@@ -103,7 +112,8 @@ final class JdbcRow implements JdbcClient.Row {
         T value = read(columnIndex(label), type);
         if (value == null) {
             DataException failure = new DataException("The result column '" + label + "' contains SQL NULL.");
-            throw streamScope == null ? failure : streamScope.fail(failure);
+            record(failure);
+            throw failure;
         }
         return value;
     }
@@ -138,17 +148,17 @@ final class JdbcRow implements JdbcClient.Row {
             return result;
         } catch (SQLException e) {
             RuntimeException failure = JdbcExceptionTranslator.translate(operation, e);
-            throw streamScope == null ? failure : streamScope.fail(failure);
+            record(failure);
+            throw failure;
         } catch (Error failure) {
-            if (streamScope != null) {
-                streamScope.record(failure);
-            }
+            record(failure);
             throw failure;
         } catch (RuntimeException _) {
             // Some drivers report conversion or protocol failures as runtime exceptions. Sanitize them here,
             // while their JDBC origin is known, so exceptions thrown by application row mappers remain unchanged.
             RuntimeException failure = JdbcExceptionTranslator.resultValueFailure();
-            throw streamScope == null ? failure : streamScope.fail(failure);
+            record(failure);
+            throw failure;
         }
     }
 
@@ -156,10 +166,14 @@ final class JdbcRow implements JdbcClient.Row {
         try {
             return columns.index(label);
         } catch (RuntimeException | Error failure) {
-            if (streamScope != null) {
-                throw streamScope.fail(failure);
-            }
+            record(failure);
             throw failure;
+        }
+    }
+
+    private void record(Throwable failure) {
+        if (failureRecorder != null) {
+            failureRecorder.accept(failure);
         }
     }
 
@@ -180,8 +194,8 @@ final class JdbcRow implements JdbcClient.Row {
      * Verifies that the current callback can read this row.
      */
     private void ensureReadable() {
-        if (streamScope != null) {
-            streamScope.check();
+        if (scopeCheck != null) {
+            scopeCheck.run();
         }
         if (!active) {
             throw new IllegalStateException("A JDBC row is valid only during its mapper callback.");

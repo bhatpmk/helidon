@@ -27,16 +27,7 @@ import io.helidon.transaction.Tx;
  */
 @Data.Repository
 @Data.Provider("jdbc")
-public interface StreamingRepository {
-    /**
-     * Streams ordered values with repeated nullable input bindings.
-     *
-     * @param value The input may represent typed SQL NULL.
-     * @param action The consumer owns no JDBC resources.
-     */
-    @Jdbc.Statement("SELECT DATA_VALUE FROM ST_VALUE WHERE :value IS NULL OR DATA_VALUE = :value ORDER BY ID")
-    void values(String value, Consumer<Stream<String>> action);
-
+public interface StreamingRepository extends StreamingInputs<String>, StreamingAlternateInputs<String> {
     /**
      * Streams mapped records with positional binding and a control before the input.
      *

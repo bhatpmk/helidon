@@ -27,6 +27,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import io.helidon.config.Config;
 import io.helidon.config.ConfigSources;
@@ -38,6 +42,7 @@ import io.helidon.data.jdbc.GeneratedJdbcData;
 import io.helidon.service.registry.ServiceRegistryManager;
 import io.helidon.tests.integration.data.jdbc.declarative.repository.CallableRoutineRepository;
 import io.helidon.tests.integration.data.jdbc.support.TestConfigFactory;
+import io.helidon.tests.integration.data.jdbc.support.CallableFailureFixture;
 import io.helidon.transaction.Tx;
 import io.helidon.transaction.TxException;
 
@@ -54,6 +59,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public abstract class AbstractJdbcCallableContract {
     private ServiceRegistryManager manager;
     private JdbcClient client;
+    private Config connectionConfig;
 
     protected abstract Config configuration();
 
@@ -71,7 +77,7 @@ public abstract class AbstractJdbcCallableContract {
         TestConfigFactory.config(Config.just(ConfigSources.create(values)));
         manager = ServiceRegistryManager.start();
         client = manager.registry().get(JdbcClient.class);
-        Config connectionConfig = Config.just(ConfigSources.create(values)).get("data.clients.jdbc.0.connection");
+        connectionConfig = Config.just(ConfigSources.create(values)).get("data.clients.jdbc.0.connection");
         try (Connection connection = DriverManager.getConnection(connectionConfig.get("url").asString().get(),
                 connectionConfig.get("username").asString().get(), connectionConfig.get("password").asString().get())) {
             DatabaseMetaData metadata = connection.getMetaData();
@@ -117,6 +123,10 @@ public abstract class AbstractJdbcCallableContract {
         switch (vendor()) {
         case "oracle" -> {
             client.create("CREATE OR REPLACE PROCEDURE sp_noop AS BEGIN NULL; END;").execute();
+            client.create("CREATE OR REPLACE PROCEDURE sp_pair(first OUT SYS_REFCURSOR, second OUT SYS_REFCURSOR, "
+                                  + "value OUT INTEGER) AS BEGIN value := 7; "
+                                  + "OPEN first FOR SELECT 42 FROM dual UNION ALL SELECT 43 FROM dual ORDER BY 1; "
+                                  + "OPEN second FOR SELECT 44 FROM dual; END;").execute();
             client.create("CREATE OR REPLACE FUNCTION sp_stamp RETURN TIMESTAMP AS BEGIN "
                                   + "RETURN TIMESTAMP '2026-10-28 12:13:14.123456'; END;").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_bundle(p_input IN INTEGER, value OUT INTEGER, "
@@ -339,6 +349,179 @@ public abstract class AbstractJdbcCallableContract {
     }
 
     /**
+     * Streaming consumes each existing row channel and preserves the parent reservation after inner closure.
+     */
+    @Test
+    protected void streamedRowsRespectParentLifetime() {
+        Tx.transaction(Tx.Type.REQUIRED, () -> {
+            for (int mode = 0; mode < 4; mode++) {
+                int selected = mode;
+                AtomicInteger mapped = new AtomicInteger();
+                AtomicReference<Stream<Integer>> escaped = new AtomicReference<>();
+                consumeStreamRows(2, result -> {
+                    Objects.requireNonNull(result, "The callable result must not be null.");
+                    JdbcClient.Rows<Integer> rows = streamRows(result, row -> {
+                        Objects.requireNonNull(row, "The current row must not be null.");
+                        mapped.incrementAndGet();
+                        return row.get(1, Integer.class);
+                    });
+                    rows.useStream(stream -> {
+                        Objects.requireNonNull(stream, "The row stream must not be null.");
+                        escaped.set(stream);
+                        assertThat(mapped.get(), is(0));
+                        switch (selected) {
+                        case 0 -> assertThat(stream.toList(), is(vendor().equals("mysql") ? List.of(42) : List.of(42, 43)));
+                        case 1 -> assertThat(stream.findFirst(), is(Optional.of(42)));
+                        case 2 -> { }
+                        case 3 -> stream.close();
+                        default -> throw new AssertionError("The streaming mode is unknown.");
+                        }
+                        assertThrows(IllegalStateException.class, result::next);
+                        assertThrows(IllegalStateException.class, () -> client.create("SELECT 1").map(Integer.class).one());
+                        assertThrows(IllegalStateException.class, () -> Tx.transaction(Tx.Type.NEW, () -> 1));
+                        assertThrows(IllegalStateException.class, () -> Tx.transaction(Tx.Type.UNSUPPORTED, () -> 1));
+                    });
+                    assertThrows(IllegalStateException.class, escaped.get()::count);
+                    assertThrows(IllegalStateException.class, () -> client.create("UPDATE TX_MATRIX SET DATA_VALUE = DATA_VALUE")
+                            .execute());
+                    assertThrows(IllegalStateException.class, () -> client.create("INSERT INTO TX_MATRIX (DATA_VALUE) VALUES (?)")
+                            .bind(1, "nested").generatedKeys().map(row -> row.get(1, Integer.class)).one());
+                    assertThrows(IllegalStateException.class, () -> client.create("{call sp_noop()}").call().execute());
+                    if (vendor().equals("mysql")) {
+                        result.next();
+                        result.rows(row -> {
+                            Objects.requireNonNull(row, "The current row must not be null.");
+                            return row.get(1, Integer.class);
+                        }).useStream(stream -> {
+                            Objects.requireNonNull(stream, "The row stream must not be null.");
+                            assertThat(stream.toList(), is(List.of(43)));
+                        });
+                    }
+                    result.skipRemainingResults();
+                });
+                assertThat(mapped.get(), is(selected >= 2 ? 0 : selected == 1 || vendor().equals("mysql") ? 1 : 2));
+                assertThrows(IllegalStateException.class, escaped.get()::findFirst);
+            }
+            if (vendor().equals("oracle")) {
+                Consumer<JdbcClient.CallResult> pair = result -> {
+                    Objects.requireNonNull(result, "The callable result must not be null.");
+                    result.skipRemainingResults();
+                    assertThat(result.get("value", Integer.class), is(7));
+                    result.cursor("first", row -> {
+                        Objects.requireNonNull(row, "The current row must not be null.");
+                        return row.get(1, Integer.class);
+                    }).useStream(stream -> {
+                        Objects.requireNonNull(stream, "The row stream must not be null.");
+                        assertThat(stream.findFirst(), is(Optional.of(42)));
+                    });
+                    result.optionalCursor("second", row -> {
+                        Objects.requireNonNull(row, "The current row must not be null.");
+                        return row.get(1, Integer.class);
+                    }).orElseThrow().useStream(stream -> {
+                        Objects.requireNonNull(stream, "The row stream must not be null.");
+                        assertThat(stream.toList(), is(List.of(44)));
+                    });
+                    assertThat(result.get("value", Integer.class), is(7));
+                };
+                if (generated()) {
+                    manager.registry().get(CallableRoutineRepository.class).consumePair(pair);
+                } else {
+                    client.create("{call sp_pair(?, ?, ?)}").call()
+                            .out("first", 1, JDBCType.REF_CURSOR).out("second", 2, JDBCType.REF_CURSOR)
+                            .out("value", 3, JDBCType.INTEGER).consume(pair);
+                }
+            }
+            assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "nested")
+                               .map(Integer.class).one(), is(0));
+            return null;
+        });
+    }
+
+    /**
+     * Streaming retains cursor presence and required NULL semantics, with explicit MySQL capability rejection.
+     */
+    @Test
+    protected void streamedCursorPresenceAndUnsupportedCapability() {
+        if (vendor().equals("mysql")) {
+            AtomicBoolean invoked = new AtomicBoolean();
+            DataException failure = assertThrows(DataException.class, () -> client.create("{? = call sp_add(?)}")
+                    .bind(2, 41).call().out("return", 1, JDBCType.REF_CURSOR).consume(result -> {
+                        Objects.requireNonNull(result, "The callable result must not be null.");
+                        result.skipRemainingResults();
+                        result.cursor("return", row -> {
+                            Objects.requireNonNull(row, "The current row must not be null.");
+                            return row.get(1, Integer.class);
+                        }).useStream(_ -> invoked.set(true));
+                    }));
+            assertThat(invoked.get(), is(false));
+            assertThat(failure.getMessage(), containsString("callable"));
+            assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "nested")
+                               .map(Integer.class).one(), is(0));
+        } else {
+            Tx.transaction(Tx.Type.REQUIRED, () -> {
+                for (int input : new int[] {-1, 0, 1}) {
+                    consumeStreamRows(input, result -> {
+                        Objects.requireNonNull(result, "The callable result must not be null.");
+                        result.skipRemainingResults();
+                        Optional<JdbcClient.Rows<Integer>> cursor = result.optionalCursor("return", row -> {
+                            Objects.requireNonNull(row, "The current row must not be null.");
+                            return row.get(1, Integer.class);
+                        });
+                        assertThat(cursor.isPresent(), is(input >= 0));
+                        cursor.ifPresent(rows -> rows.useStream(stream -> {
+                            Objects.requireNonNull(stream, "The row stream must not be null.");
+                            assertThat(stream.toList(), is(input == 0 ? List.of() : List.of(42)));
+                        }));
+                    });
+                }
+                return null;
+            });
+            assertThrows(TxException.class, () -> Tx.transaction(Tx.Type.REQUIRED, () -> {
+                consumeStreamRows(-1, result -> {
+                    Objects.requireNonNull(result, "The callable result must not be null.");
+                    assertThrows(IllegalArgumentException.class, () -> streamRows(result, row -> {
+                        Objects.requireNonNull(row, "The current row must not be null.");
+                        return row.get(1, Integer.class);
+                    }).useStream(_ -> { throw new AssertionError("The NULL cursor cannot invoke a consumer."); }));
+                });
+                return null;
+            }));
+        }
+    }
+
+    /**
+     * Caught stream failures preserve the first error and require rollback after the call releases its reservation.
+     */
+    @Test
+    protected void streamedFailureRetainsFirstErrorAndRollsBack() {
+        Error first = new AssertionError("The stream mapper failed first.");
+        Error later = new AssertionError("The callable callback failed later.");
+        assertThrows(TxException.class, () -> Tx.transaction(Tx.Type.REQUIRED, () -> {
+            client.create("INSERT INTO TX_MATRIX (DATA_VALUE) VALUES (?)").bind(1, "stream-error").execute();
+            Error observed = assertThrows(Error.class, () -> consumeStreamRows(2, result -> {
+                Objects.requireNonNull(result, "The callable result must not be null.");
+                assertThat(assertThrows(Error.class, () -> streamRows(result, row -> {
+                    Objects.requireNonNull(row, "The current row must not be null.");
+                    row.get(1, Integer.class);
+                    throw first;
+                }).useStream(stream -> {
+                    Objects.requireNonNull(stream, "The row stream must not be null.");
+                    assertThat(assertThrows(Error.class, stream::count), sameInstance(first));
+                    assertThrows(IllegalStateException.class, result::resultKind);
+                })), sameInstance(first));
+                throw later;
+            }));
+            assertThat(observed, sameInstance(first));
+            assertThat(observed.getSuppressed(), is(new Throwable[] {later}));
+            assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "stream-error")
+                               .map(Integer.class).one(), is(1));
+            return null;
+        }));
+        assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "stream-error")
+                           .map(Integer.class).one(), is(0));
+    }
+
+    /**
      * The first mapper error survives a later callback error and forces rollback even when the terminal is caught.
      */
     @Test
@@ -459,6 +642,95 @@ public abstract class AbstractJdbcCallableContract {
         }));
         assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "call-latched")
                            .map(Integer.class).one(), is(0));
+    }
+
+    /**
+     * Real metadata failures caught inside materialized mappers still roll back and release a single pooled connection.
+     */
+    @Test
+    protected void caughtMaterializedMetadataFailureRollsBackAndReleasesPool() throws Exception {
+        try (CallableFailureFixture fixture = new CallableFailureFixture(connectionConfig)) {
+            for (boolean physicalName : new boolean[] {false, true}) {
+                AtomicReference<IllegalStateException> first = new AtomicReference<>();
+                assertThrows(TxException.class, () -> fixture.transactions().transaction(Tx.Type.REQUIRED, () -> {
+                    fixture.client().create("INSERT INTO TX_MATRIX (DATA_VALUE) VALUES (?)").bind(1, "metadata-error").execute();
+                    fixture.failMetadata(physicalName);
+                    IllegalStateException observed = assertThrows(IllegalStateException.class, () ->
+                            fixture.consume(generated(), result -> {
+                                Objects.requireNonNull(result, "The callable result must not be null.");
+                                JdbcClient.Rows<Integer> rows = streamRows(result, row -> {
+                                    Objects.requireNonNull(row, "The current row must not be null.");
+                                    assertThrows(IllegalArgumentException.class, () -> row.get(" ", Integer.class));
+                                    first.set(assertThrows(IllegalStateException.class, () -> row.get("VALUE", Integer.class)));
+                                    assertThrows(IllegalStateException.class, () -> row.get(1, Integer.class));
+                                    return 7;
+                                });
+                                assertThat(assertThrows(IllegalStateException.class, rows::list), sameInstance(first.get()));
+                                assertThrows(IllegalStateException.class, result::resultKind);
+                            }));
+                    assertThat(observed, sameInstance(first.get()));
+                    assertThat(fixture.client().create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?")
+                            .bind(1, "metadata-error").map(Integer.class).one(), is(1));
+                    return null;
+                }));
+                assertThat(fixture.activeConnections(), is(0));
+                assertThat(fixture.client().create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?")
+                        .bind(1, "metadata-error").map(Integer.class).one(), is(0));
+            }
+        }
+    }
+
+    /**
+     * Fatal cleanup retains the application exception while real transaction rollback and pool recovery still complete.
+     */
+    @Test
+    protected void fatalCallableCleanupRetainsApplicationAndReleasesPool() throws Exception {
+        try (CallableFailureFixture fixture = new CallableFailureFixture(connectionConfig)) {
+            RuntimeException application = new IllegalArgumentException("The application failed first.");
+            Error fatal = new AssertionError("The callable statement cleanup failed.");
+            fixture.failCleanup(fatal);
+            assertThat(assertThrows(Error.class, () -> fixture.transactions().transaction(Tx.Type.REQUIRED, () -> {
+                fixture.client().create("INSERT INTO TX_MATRIX (DATA_VALUE) VALUES (?)").bind(1, "cleanup-error").execute();
+                fixture.consume(generated(), _ -> { throw application; });
+                return null;
+            })), sameInstance(fatal));
+            assertThat(fatal.getSuppressed(), is(new Throwable[] {application}));
+            assertThat(fixture.activeConnections(), is(0));
+            assertThat(fixture.client().create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?")
+                    .bind(1, "cleanup-error").map(Integer.class).one(), is(0));
+            fixture.transactions().transaction(Tx.Type.REQUIRED, () -> {
+                fixture.consume(generated(), result -> {
+                    Objects.requireNonNull(result, "The callable result must not be null.");
+                    result.skipRemainingResults();
+                });
+                return null;
+            });
+            assertThat(fixture.activeConnections(), is(0));
+        }
+    }
+
+    private void consumeStreamRows(int input, Consumer<JdbcClient.CallResult> action) {
+        if (generated()) {
+            CallableRoutineRepository repository = manager.registry().get(CallableRoutineRepository.class);
+            if (vendor().equals("mysql")) {
+                repository.consumeDirect(action);
+            } else {
+                repository.consumeCursor(input, action);
+            }
+        } else if (vendor().equals("mysql")) {
+            client.create("{call sp_direct()}").call().consume(action);
+        } else {
+            client.create("{? = call sp_cursor(?)}").bind(2, input).call()
+                    .out("return", 1, JDBCType.REF_CURSOR).consume(action);
+        }
+    }
+
+    private JdbcClient.Rows<Integer> streamRows(JdbcClient.CallResult result, JdbcClient.RowMapper<Integer> mapper) {
+        if (vendor().equals("mysql")) {
+            return result.rows(mapper);
+        }
+        result.skipRemainingResults();
+        return result.cursor("return", mapper);
     }
 
 }

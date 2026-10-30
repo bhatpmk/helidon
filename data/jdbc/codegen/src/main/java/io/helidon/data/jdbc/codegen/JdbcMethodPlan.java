@@ -131,9 +131,9 @@ final class JdbcMethodPlan {
             return JdbcCallablePlan.create(method, roundContext, sql);
         }
 
+        List<TypedElementInfo> inputs = ordinaryParameters(method, roundContext);
         List<TypedElementInfo> controls = method.parameterArguments().stream()
-                .filter(parameter -> roundContext.typeHierarchyResolver()
-                        .resolveSupertype(parameter.typeName(), TypeName.create(Consumer.class)).isPresent())
+                .filter(parameter -> !inputs.contains(parameter))
                 .toList();
         Return result;
         if (controls.isEmpty()) {
@@ -180,8 +180,6 @@ final class JdbcMethodPlan {
                                   result.mappedType(),
                                   rowMapperRequested,
                                   explicitMapper);
-        List<TypedElementInfo> inputs = method.parameterArguments().stream()
-                .filter(parameter -> !controls.contains(parameter)).toList();
         JdbcSqlParameterPlan parameters = reference == null
                 ? JdbcSqlParameterPlan.create(sql, inputs, method)
                 : JdbcSqlParameterPlan.configured(sql,
@@ -201,6 +199,20 @@ final class JdbcMethodPlan {
                                   generatedColumns,
                                   explicitMapper,
                                   mapping.recordComponents());
+    }
+
+    /**
+     * Returns ordinary SQL inputs while excluding streaming callback controls.
+     *
+     * @param method The repository declaration supplies the original parameter objects.
+     * @param context The generation round resolves consumer supertypes.
+     * @return The SQL inputs retain their original method argument identities.
+     */
+    static List<TypedElementInfo> ordinaryParameters(TypedElementInfo method, RoundContext context) {
+        return method.parameterArguments().stream()
+                .filter(parameter -> context.typeHierarchyResolver()
+                        .resolveSupertype(parameter.typeName(), TypeName.create(Consumer.class)).isEmpty())
+                .toList();
     }
 
     static JdbcMethodPlan callableMapping(TypedElementInfo declaration, RoundContext context,
