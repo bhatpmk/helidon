@@ -18,6 +18,7 @@ package io.helidon.tests.integration.data.jdbc.declarative.repository;
 import java.sql.JDBCType;
 import java.util.List;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.function.Consumer;
 
 import io.helidon.data.Data;
@@ -56,6 +57,20 @@ public interface CallableRoutineRepository {
     @Jdbc.Statement("{? = call sp_cursor(:input)}")
     @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
     Optional<List<Integer>> optionalCursor(int input);
+
+    @Jdbc.Statement("{? = call sp_cursor(:input)}")
+    @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
+    void consumeCursor(int input, Consumer<JdbcClient.CallResult> rows);
+
+    @Jdbc.Statement("{call sp_direct()}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    void consumeDirect(Consumer<JdbcClient.CallResult> result);
+
+    @Jdbc.Statement("{call sp_pair(:first, :second, :value)}")
+    @Jdbc.OutParameter(value = "first", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "second", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+    void consumePair(Consumer<JdbcClient.CallResult> statement);
 
     @Jdbc.Statement("{call sp_inout(:input, :value)}")
     @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
@@ -116,6 +131,7 @@ public interface CallableRoutineRepository {
     class IntegerMapper implements JdbcClient.RowMapper<Integer> {
         @Override
         public Integer map(JdbcClient.Row row) {
+            Objects.requireNonNull(row, "The current row must not be null.");
             return row.get(1, Integer.class);
         }
     }

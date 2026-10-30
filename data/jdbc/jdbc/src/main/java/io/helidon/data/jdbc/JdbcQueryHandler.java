@@ -32,12 +32,92 @@ import io.helidon.data.NoResultException;
 import io.helidon.data.NonUniqueResultException;
 
 /**
- * Maps query results within their resource lifetime.
+ * Maps query and callable rows within their resource lifetime.
  * <p>
  * The runner owns every resource. This handler validates the result channel,
  * applies row mapping, and checks cardinality.
  */
 final class JdbcQueryHandler {
+
+    /**
+     * Streams an existing result set without executing or releasing its statement.
+     * The caller owns JDBC cleanup and selects the result channel completion policy.
+     */
+    static <T> void useStream(JdbcOperation operation,
+                              ResultSet resultSet,
+                              JdbcColumnLayout columns,
+                              JdbcClient.RowMapper<T> mapper,
+                              Consumer<Stream<T>> action,
+                              JdbcStreamScope lifetime,
+                              RowEndAction onEnd) {
+        Spliterator<T> source = new Spliterator<>() {
+            private boolean exhausted;
+
+            @Override
+            public boolean tryAdvance(Consumer<? super T> consumer) {
+                Objects.requireNonNull(consumer, "The row consumer must not be null.");
+                lifetime.check();
+                if (exhausted) {
+                    return false;
+                }
+                try {
+                    if (!JdbcExceptionTranslator.invoke("advancing a JDBC result set", resultSet::next)) {
+                        exhausted = true;
+                        onEnd.run();
+                        return false;
+                    }
+                    JdbcRow row = new JdbcRow(resultSet, columns, operation, lifetime);
+                    T value;
+                    try {
+                        value = mapper.map(row);
+                        if (value == null) {
+                            throw new DataException("The JDBC row mapper returned null.");
+                        }
+                        lifetime.check();
+                    } finally {
+                        row.expire();
+                    }
+                    consumer.accept(value);
+                    return true;
+                } catch (SQLException failure) {
+                    throw lifetime.fail(JdbcExceptionTranslator.translate(operation, failure));
+                } catch (RuntimeException | Error failure) {
+                    throw lifetime.fail(failure);
+                }
+            }
+
+            @Override
+            public Spliterator<T> trySplit() {
+                lifetime.check();
+                return null;
+            }
+
+            @Override
+            public long estimateSize() {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public int characteristics() {
+                return Spliterator.ORDERED | Spliterator.NONNULL;
+            }
+        };
+        Stream<T> stream = StreamSupport.stream(source, false)
+                .onClose(lifetime::close).onClose(lifetime::runCloseHandlers);
+        try {
+            action.accept(new JdbcStream<>(stream, lifetime));
+        } catch (RuntimeException | Error failure) {
+            lifetime.record(failure);
+        } finally {
+            try {
+                stream.close();
+            } catch (RuntimeException | Error failure) {
+                lifetime.record(failure);
+            }
+            lifetime.close();
+        }
+        lifetime.rethrow();
+    }
 
     /**
      * Executes a query and returns exactly one mapped value.
@@ -193,72 +273,7 @@ final class JdbcQueryHandler {
         JdbcColumnLayout columns = JdbcColumnLayout.create(
                 JdbcExceptionTranslator.invoke("reading JDBC result metadata", resultSet::getMetaData), scope.operation());
         JdbcStreamScope lifetime = new JdbcStreamScope();
-        Spliterator<T> source = new Spliterator<>() {
-            private boolean exhausted;
-
-            @Override
-            public boolean tryAdvance(Consumer<? super T> consumer) {
-                Objects.requireNonNull(consumer, "The row consumer must not be null.");
-                lifetime.check();
-                if (exhausted) {
-                    return false;
-                }
-                try {
-                    if (!JdbcExceptionTranslator.invoke("advancing a JDBC result set", resultSet::next)) {
-                        exhausted = true;
-                        scope.rejectFollowingResults();
-                        return false;
-                    }
-                    JdbcRow row = new JdbcRow(resultSet, columns, scope.operation(), lifetime);
-                    T value;
-                    try {
-                        value = mapper.map(row);
-                        if (value == null) {
-                            throw new DataException("The JDBC row mapper returned null.");
-                        }
-                        lifetime.check();
-                    } finally {
-                        row.expire();
-                    }
-                    consumer.accept(value);
-                    return true;
-                } catch (SQLException failure) {
-                    throw lifetime.fail(JdbcExceptionTranslator.translate(scope.operation(), failure));
-                } catch (RuntimeException | Error failure) {
-                    throw lifetime.fail(failure);
-                }
-            }
-
-            @Override
-            public Spliterator<T> trySplit() {
-                lifetime.check();
-                return null;
-            }
-
-            @Override
-            public long estimateSize() {
-                return Long.MAX_VALUE;
-            }
-
-            @Override
-            public int characteristics() {
-                return Spliterator.ORDERED | Spliterator.NONNULL;
-            }
-        };
-        Stream<T> stream = StreamSupport.stream(source, false)
-                .onClose(lifetime::close).onClose(lifetime::runCloseHandlers);
-        try {
-            action.accept(new JdbcStream<>(stream, lifetime));
-        } catch (RuntimeException | Error failure) {
-            lifetime.record(failure);
-        } finally {
-            try {
-                stream.close();
-            } catch (RuntimeException | Error failure) {
-                lifetime.record(failure);
-            }
-            lifetime.close();
-        }
+        useStream(scope.operation(), resultSet, columns, mapper, action, lifetime, scope::rejectFollowingResults);
         // Closing early must still detect following result channels without mapping discarded rows.
         if (scope.resultSet() != null && !lifetime.failed()) {
             try {
@@ -315,6 +330,11 @@ final class JdbcQueryHandler {
                 JdbcExceptionTranslator.invoke("reading JDBC result metadata", resultSet::getMetaData),
                 scope.operation());
         return new JdbcResultCursor<>(scope, resultSet, columns, mapper);
+    }
+
+    @FunctionalInterface
+    interface RowEndAction {
+        void run() throws SQLException;
     }
 
     /**
