@@ -249,6 +249,23 @@ final class JdbcExceptionTranslator {
     }
 
     /**
+     * Combines JDBC cleanup with an earlier application or translated operation failure.
+     * Only the additional cleanup failure enters infrastructure sanitization.
+     *
+     * @param primary The earlier failure, or {@code null}.
+     * @param operation The stable cleanup operation label.
+     * @param failure The additional JDBC cleanup failure.
+     * @return The combined failure preserves application identity and fatal precedence.
+     */
+    static Throwable mergeOperationCleanup(Throwable primary, String operation, Throwable failure) {
+        if (primary == failure) {
+            return primary;
+        }
+        Throwable cleanup = mergeInfrastructure(null, operation, failure);
+        return JdbcStreamScope.mergeProcessingFailures(primary, cleanup);
+    }
+
+    /**
      * Creates a provider-owned SQLException whose message contains no SQL or
      * connection configuration and may therefore remain visible.
      *

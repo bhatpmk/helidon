@@ -175,6 +175,8 @@ final class JdbcRunner {
             if (value == null) {
                 throw new DataException("The callable mapper returned null.");
             }
+        } catch (SQLException caught) {
+            failure = JdbcExceptionTranslator.translate(operation, caught);
         } catch (Throwable caught) {
             failure = caught;
         }
@@ -206,7 +208,7 @@ final class JdbcRunner {
         try {
             resource.close();
         } catch (Throwable caught) {
-            return JdbcExceptionTranslator.mergeInfrastructure(failure, operation, caught);
+            return JdbcExceptionTranslator.mergeOperationCleanup(failure, operation, caught);
         }
         return failure;
     }

@@ -1,0 +1,37 @@
+/*
+ * Copyright (c) 2026 Oracle and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.helidon.tests.integration.data.jdbc.declarative;
+
+import java.util.function.Consumer;
+import java.util.stream.Stream;
+
+import io.helidon.data.jdbc.Jdbc;
+
+/**
+ * Declares a generic streaming method inherited from an unrelated repository parent.
+ *
+ * @param <T> The concrete repository supplies the mapped row type.
+ */
+interface StreamingInputs<T> {
+    /**
+     * Streams ordered values with repeated nullable input bindings.
+     *
+     * @param value The input may represent typed SQL NULL.
+     * @param action The consumer processes detached values.
+     */
+    @Jdbc.Statement("SELECT DATA_VALUE FROM ST_VALUE WHERE :value IS NULL OR DATA_VALUE = :value ORDER BY ID")
+    void values(String value, Consumer<Stream<T>> action);
+}

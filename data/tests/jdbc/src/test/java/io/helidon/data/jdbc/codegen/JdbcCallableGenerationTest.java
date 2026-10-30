@@ -247,6 +247,43 @@ import javax.lang.model.element.TypeElement;
         }
     }
 
+    /**
+     * Query streaming and callable callbacks coexist without changing cursor return shapes or control binding.
+     */
+    @Test
+    void compilesQueryStreamsAndCallableStreamsTogether() {
+        TestCompiler.Result result = compile("""
+                @Jdbc.Statement("SELECT :value")
+                void query(String value, Consumer<Stream<String>> jdbcClient);
+                @Jdbc.Statement("{? = call routine(:value)}")
+                @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
+                void cursor(Integer value, Consumer<JdbcClient.CallResult> SQL_CURSOR);
+                @Jdbc.Statement("{call routine(:value)}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void direct(Integer value, Consumer<JdbcClient.CallResult> result);
+                @Jdbc.Statement("{? = call routine(:value)}")
+                @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
+                List<String> materialized(Integer value);
+                """);
+        assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+    }
+
+    /**
+     * Callable declarations retain their scoped result control and cannot return a live stream.
+     */
+    @Test
+    void rejectsQueryStreamControlsAndLiveStreamReturnsForCalls() {
+        for (String declaration : List.of(
+                "void execute(Consumer<Stream<String>> action)",
+                "Stream<String> execute()")) {
+            TestCompiler.Result result = compile("""
+                    @Jdbc.Statement("{? = call routine()}")
+                    @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
+                    """ + declaration + ";");
+            assertThat(String.join("\n", result.diagnostics()), result.success(), is(false));
+        }
+    }
+
     private static TestCompiler.Result compile(String declarations) {
         return compiler().addSource("Repository.java", """
                 package example;
@@ -254,6 +291,9 @@ import javax.lang.model.element.TypeElement;
                 import io.helidon.data.jdbc.Jdbc;
                 import java.sql.JDBCType;
                 import java.util.List;
+                import java.util.function.Consumer;
+                import java.util.stream.Stream;
+                import io.helidon.data.jdbc.JdbcClient;
                 @Data.Repository @Data.Provider("jdbc")
                 public interface Repository {
                 """ + declarations + "\n}").build().compile();

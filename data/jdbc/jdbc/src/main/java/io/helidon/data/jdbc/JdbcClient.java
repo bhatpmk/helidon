@@ -30,8 +30,9 @@ import io.helidon.service.registry.Service;
  * Executes JDBC statements for applications and generated repositories.
  * <p>
  * Creating and binding a statement performs no database work. A terminal
- * operation acquires the JDBC resources, fully materializes any result, and
- * releases every resource before returning. The client is safe to share.
+ * operation acquires JDBC resources, consumes results within its scope, and
+ * releases its operation resources before returning. Materialized terminals
+ * return detached values. The client is safe to share.
  * Statement and result stages are single use and are not safe for concurrent
  * use.
  * <p>
@@ -223,7 +224,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param mapper row mapper
          * @param <T> mapped type
-         * @return terminal stage for materialized rows
+         * @return terminal stage for mapped rows
          * @throws NullPointerException if the mapper is {@code null}
          * @throws IllegalStateException if a terminal operation has started
          */
@@ -243,7 +244,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param scalarType scalar type
          * @param <T> mapped scalar type
-         * @return terminal stage for materialized rows
+         * @return terminal stage for mapped rows
          * @throws NullPointerException if the type is {@code null}
          * @throws IllegalArgumentException if the scalar type is not supported
          * @throws IllegalStateException if a terminal operation has started
@@ -453,7 +454,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
         void skipRemainingResults();
 
         /**
-         * Selects one materialized row stage for the current ROWS event.
+         * Selects one scoped row stage for the current ROWS event.
          *
          * @param mapper The row mapper.
          * @param <T> The mapped type.
@@ -572,7 +573,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
     }
 
     /**
-     * Result terminals for a mapped query or generated key result.
+     * Result terminals for mapped query rows, callable rows, or generated keys.
      * <p>
      * The stage accepts exactly one terminal invocation and is not safe for
      * concurrent use. An exception from an application mapper is propagated
@@ -623,25 +624,31 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
         List<T> list();
 
         /**
-         * Consumes a sequential query stream synchronously within this terminal.
-         * The query executes before the callback begins. Rows are mapped lazily on the
+         * Consumes a sequential stream synchronously within this terminal.
+         * An ordinary query executes before the callback begins. Callable direct rows
+         * and cursor outputs consume their existing result set without executing again.
+         * Rows are mapped lazily on the
          * invocation thread and expire before downstream processing sees their values.
-         * The stream and JDBC resources close before this method returns, including
+         * The stream and its row channel close before this method returns, including
          * when the callback performs no traversal or catches a processing failure.
+         * Callable statements and connection leases remain owned by the enclosing call.
          * Retained streams and iterators cannot extend JDBC resource lifetime.
          * Driver buffering and cleanup latency depend on driver configuration.
          * <p>
          * A participating local transaction reserves its connection through terminal
-         * cleanup, including after stream closure. Nested operations on that connection
+         * cleanup, including after stream closure. For callable rows, this reservation
+         * lasts through enclosing call cleanup. Nested operations on that connection
          * and suspension of the owning transaction fail before changing JDBC state.
          * Processing failures require rollback of the participating local transaction,
-         * even when the callback catches the terminal failure. A transaction is not
-         * required, and streaming does not change automatic commit mode to enable fetching.
+         * even when the callback catches the terminal failure. Ordinary queries can
+         * stream outside a transaction. Driver cursor or fetching modes can require
+         * an explicit transaction. Streaming does not change automatic commit mode to enable fetching.
          * Application and mapper exceptions retain their identity.
          *
          * @param action The consumer processes mapped values within the callback.
          * @throws NullPointerException The action is null.
          * @throws io.helidon.data.DataException JDBC execution or cleanup fails, or the mapper returns null.
+         * @throws IllegalArgumentException A required callable cursor contains SQL NULL.
          * @throws IllegalStateException A terminal has started or access violates the callback scope.
          * @throws UnsupportedOperationException Streaming is unsupported or this stage represents generated keys.
          */

@@ -111,7 +111,7 @@ final class JdbcTypeHierarchy {
         List<TypedElementInfo> parameters = method.parameterArguments();
         JdbcSqlParameterPlan plan = JdbcCallablePlan.selected(method, context)
                 ? JdbcCallablePlan.create(method, context, sql).parameterPlan()
-                : JdbcSqlParameterPlan.create(sql, parameters, method);
+                : JdbcSqlParameterPlan.create(sql, JdbcMethodPlan.ordinaryParameters(method, context), method);
         List<ParameterBinding> bindings = plan.binds()
                 .stream()
                 .map(bind -> new ParameterBinding(parameterIndex(parameters, bind.parameter()),

@@ -94,6 +94,39 @@ class JdbcCallablePoolTest {
                 client.create("{call sp_write(?, ?)}").bind(1, 3).call().out("result", 2, JDBCType.INTEGER).execute();
                 assertThat(pool.getHikariPoolMXBean().getActiveConnections(), is(0));
                 assertThat(client.create("SELECT COUNT(*) FROM ITEMS").map(Integer.class).one(), is(2));
+                client.create("{call sp_write(?, ?)}").bind(1, 5).call().out("result", 2, JDBCType.INTEGER)
+                        .consume(result -> {
+                            Objects.requireNonNull(result, "The callable result must not be null.");
+                            result.rows(row -> {
+                                Objects.requireNonNull(row, "The current row must not be null.");
+                                return row.get(1, Integer.class);
+                            }).useStream(stream -> {
+                                Objects.requireNonNull(stream, "The row stream must not be null.");
+                                assertThat(stream.findFirst().orElseThrow(), is(5));
+                            });
+                            assertThat(pool.getHikariPoolMXBean().getActiveConnections(), is(1));
+                        });
+                assertThat(pool.getHikariPoolMXBean().getActiveConnections(), is(0));
+                IllegalArgumentException closing = new IllegalArgumentException("The stream close handler failed.");
+                assertThrows(TxException.class, () -> registry.support().transaction(Tx.Type.REQUIRED, () -> {
+                    assertThat(assertThrows(IllegalArgumentException.class, () -> client.create("{call sp_write(?, ?)}")
+                            .bind(1, 6).call().out("result", 2, JDBCType.INTEGER).consume(result -> {
+                                Objects.requireNonNull(result, "The callable result must not be null.");
+                                result.rows(row -> {
+                                    Objects.requireNonNull(row, "The current row must not be null.");
+                                    return row.get(1, Integer.class);
+                                }).useStream(stream -> {
+                                    Objects.requireNonNull(stream, "The row stream must not be null.");
+                                    stream.onClose(() -> { throw closing; });
+                                    assertThat(assertThrows(IllegalArgumentException.class, stream::close), sameInstance(closing));
+                                    assertThrows(IllegalStateException.class,
+                                            () -> client.create("SELECT 1").map(Integer.class).one());
+                                });
+                            })), sameInstance(closing));
+                    return null;
+                }));
+                assertThat(pool.getHikariPoolMXBean().getActiveConnections(), is(0));
+                assertThat(client.create("SELECT COUNT(*) FROM ITEMS").map(Integer.class).one(), is(3));
             }
             assertThat(pool.isClosed(), is(false));
         }
