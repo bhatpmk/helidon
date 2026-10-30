@@ -15,10 +15,13 @@
  */
 package io.helidon.data.jdbc;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.sql.JDBCType;
 
 import io.helidon.common.Api;
 
@@ -61,7 +64,12 @@ public final class Jdbc {
         /**
          * Executes the statement as an update.
          */
-        UPDATE
+        UPDATE,
+
+        /**
+         * Executes a callable statement with registered outputs or direct results.
+         */
+        CALL
     }
 
     /**
@@ -97,7 +105,7 @@ public final class Jdbc {
      * database grammar, split scripts, or validate statement boundaries
      * specific to a database. The value must therefore describe exactly one
      * SQL statement. SQL scripts, batches, compound or multiple statement
-     * strings specific to a JDBC driver, stored procedure calls, SQL that
+     * strings specific to a JDBC driver, SQL that
      * controls transactions, and commands that change connection or session
      * state, including auto-commit mode, are not supported.
      * <p>
@@ -172,6 +180,60 @@ public final class Jdbc {
     }
 
     /**
+     * Registers a callable output. A method name selects a named SQL marker.
+     * An empty method name declares the leading return, whose logical name is return.
+     * An empty component name uses the record component name. Types are always explicit.
+     */
+    @Documented
+    @Retention(RetentionPolicy.CLASS)
+    @Target({ElementType.METHOD, ElementType.RECORD_COMPONENT})
+    @Repeatable(OutParameterDeclarations.class)
+    public @interface OutParameter {
+        /**
+         * Returns the marker name, or an empty string for the contextual default.
+         *
+         * @return The output marker name.
+         */
+        String value() default "";
+
+        /**
+         * Returns the explicit JDBC registration type.
+         *
+         * @return The JDBC registration type.
+         */
+        JDBCType type();
+
+        /**
+         * Returns the database type name when named registration is required.
+         *
+         * @return The type name, or an empty string when unspecified.
+         */
+        String typeName() default "";
+
+        /**
+         * Returns the fractional scale for NUMERIC or DECIMAL registration.
+         *
+         * @return A nonnegative scale, or minus one when unspecified.
+         */
+        int scale() default -1;
+    }
+
+    /**
+     * Holds repeated callable output declarations.
+     */
+    @Documented
+    @Retention(RetentionPolicy.CLASS)
+    @Target({ElementType.METHOD, ElementType.RECORD_COMPONENT})
+    public @interface OutParameterDeclarations {
+        /**
+         * Returns the output declarations in source order.
+         *
+         * @return The output declarations.
+         */
+        OutParameter[] value();
+    }
+
+    /**
      * Selects an application row mapper for query or generated key rows.
      * <p>
      * With a mapper class, generated code injects that exact service type.
@@ -185,7 +247,7 @@ public final class Jdbc {
      * concurrent use. The mapper receives a scoped {@link JdbcClient.Row} and
      * never owns JDBC resources.
      */
-    @Target(ElementType.METHOD)
+    @Target({ElementType.METHOD, ElementType.RECORD_COMPONENT})
     @Retention(RetentionPolicy.CLASS)
     public @interface RowMapper {
 

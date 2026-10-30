@@ -15,10 +15,12 @@
  */
 package io.helidon.data.jdbc;
 
+import java.sql.JDBCType;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import io.helidon.builder.api.RuntimeType;
 import io.helidon.common.Api;
@@ -28,8 +30,9 @@ import io.helidon.service.registry.Service;
  * Executes JDBC statements for applications and generated repositories.
  * <p>
  * Creating and binding a statement performs no database work. A terminal
- * operation acquires the JDBC resources, fully materializes any result, and
- * releases every resource before returning. The client is safe to share.
+ * operation acquires JDBC resources, consumes results within its scope, and
+ * releases its operation resources before returning. Materialized terminals
+ * return detached values. The client is safe to share.
  * Statement and result stages are single use and are not safe for concurrent
  * use.
  * <p>
@@ -99,7 +102,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
      * grammar, split scripts, or validate statement boundaries specific to a
      * database. The supported contract therefore requires exactly one SQL
      * statement. SQL scripts, batches, compound or multiple statement strings
-     * specific to a JDBC driver, stored procedure calls, SQL that controls
+     * specific to a JDBC driver, SQL that controls
      * transactions, and commands that change connection or session state,
      * including auto-commit mode, are not supported.
      * <p>
@@ -147,6 +150,25 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
     Statement create(String sql);
 
     /**
+     * Identifies a direct callable result event.
+     */
+    @Api.Incubating
+    enum CallResultKind {
+        /**
+         * The current event contains direct rows.
+         */
+        ROWS,
+        /**
+         * The current event contains an update count, including zero.
+         */
+        UPDATE_COUNT,
+        /**
+         * No direct events remain and registered outputs are accessible.
+         */
+        END
+    }
+
+    /**
      * Describes one prepared JDBC operation.
      * <p>
      * Bind positions use JDBC indexes, which start at one. The stage accepts
@@ -154,6 +176,17 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
      */
     @Api.Incubating
     interface Statement {
+
+        /**
+         * Selects callable execution without acquiring JDBC resources.
+         *
+         * @return A single use callable stage.
+         * @throws UnsupportedOperationException This provider does not support calls.
+         * @throws IllegalStateException A terminal operation has started.
+         */
+        default Call call() {
+            throw new UnsupportedOperationException("Callable execution is unsupported.");
+        }
 
         /**
          * Binds a supported scalar value that is not {@code null}.
@@ -191,7 +224,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param mapper row mapper
          * @param <T> mapped type
-         * @return terminal stage for materialized rows
+         * @return terminal stage for mapped rows
          * @throws NullPointerException if the mapper is {@code null}
          * @throws IllegalStateException if a terminal operation has started
          */
@@ -211,7 +244,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param scalarType scalar type
          * @param <T> mapped scalar type
-         * @return terminal stage for materialized rows
+         * @return terminal stage for mapped rows
          * @throws NullPointerException if the type is {@code null}
          * @throws IllegalArgumentException if the scalar type is not supported
          * @throws IllegalStateException if a terminal operation has started
@@ -228,6 +261,273 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          * @throws IllegalStateException if a terminal operation has started
          */
         GeneratedKeys generatedKeys();
+    }
+
+    /**
+     * Configures outputs and executes one callable statement. Registration performs no JDBC work.
+     * Transaction controlling routines are unsupported within a local JDBC transaction.
+     */
+    @Api.Incubating
+    interface Call {
+        /**
+         * Registers an output or an input and output parameter.
+         *
+         * @param name The unique logical output name.
+         * @param index The unique JDBC position, starting at one.
+         * @param type The explicit JDBC registration type.
+         * @return This call.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration is invalid or duplicated.
+         * @throws IllegalStateException The statement has been consumed.
+         */
+        Call out(String name, int index, JDBCType type);
+
+        /**
+         * Registers an output with a database type name.
+         *
+         * @param name The unique logical output name.
+         * @param index The JDBC position, starting at one.
+         * @param type The JDBC registration type.
+         * @param typeName The nonblank database type name.
+         * @return This call.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration is invalid or duplicated.
+         * @throws IllegalStateException The statement has been consumed.
+         */
+        Call out(String name, int index, JDBCType type, String typeName);
+
+        /**
+         * Registers a NUMERIC or DECIMAL output with a scale.
+         *
+         * @param name The unique logical output name.
+         * @param index The JDBC position, starting at one.
+         * @param type The JDBC registration type.
+         * @param scale The nonnegative fractional scale.
+         * @return This call.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration is invalid or duplicated.
+         * @throws IllegalStateException The statement has been consumed.
+         */
+        Call out(String name, int index, JDBCType type, int scale);
+
+        /**
+         * Executes once and discards all results and outputs.
+         *
+         * @throws io.helidon.data.DataException Execution or cleanup failed.
+         * @throws IllegalStateException A binding is missing or the statement has been consumed.
+         */
+        void execute();
+
+        /**
+         * Captures canonical detached scalar outputs after discarding direct results.
+         * Binary values are copied at capture and on every read. Named types, cursors,
+         * locators, and offset temporal types are outside this snapshot profile.
+         * Driver support is required for the registration and its canonical getter.
+         * <table>
+         * <caption>Canonical detached outputs</caption>
+         * <tr><th>JDBC registrations</th><th>Java class</th></tr>
+         * <tr><td>BOOLEAN, BIT</td><td>{@link Boolean}</td></tr>
+         * <tr><td>TINYINT</td><td>{@link Byte}</td></tr>
+         * <tr><td>SMALLINT</td><td>{@link Short}</td></tr>
+         * <tr><td>INTEGER</td><td>{@link Integer}</td></tr>
+         * <tr><td>BIGINT</td><td>{@link Long}</td></tr>
+         * <tr><td>REAL</td><td>{@link Float}</td></tr>
+         * <tr><td>FLOAT, DOUBLE</td><td>{@link Double}</td></tr>
+         * <tr><td>NUMERIC, DECIMAL</td><td>{@link java.math.BigDecimal}</td></tr>
+         * <tr><td>CHAR, VARCHAR, LONGVARCHAR, NCHAR, NVARCHAR, LONGNVARCHAR</td><td>{@link String}</td></tr>
+         * <tr><td>BINARY, VARBINARY, LONGVARBINARY</td><td>{@code byte[]}</td></tr>
+         * <tr><td>DATE</td><td>{@link java.time.LocalDate}</td></tr>
+         * <tr><td>TIME</td><td>{@link java.time.LocalTime}</td></tr>
+         * <tr><td>TIMESTAMP</td><td>{@link java.time.LocalDateTime}</td></tr>
+         * </table>
+         *
+         * @return An immutable snapshot, which may be empty.
+         * @throws IllegalStateException A registration is outside the snapshot profile or the stage is unusable.
+         * @throws io.helidon.data.DataException Execution, output retrieval, or cleanup failed.
+         */
+        OutParameters outputs();
+
+        /**
+         * Consumes scoped results synchronously on the invocation thread.
+         * Caught provider processing failures are reported again after cleanup.
+         *
+         * @param action The result callback.
+         * @throws NullPointerException The callback is null.
+         * @throws io.helidon.data.DataException JDBC processing or cleanup failed.
+         * @throws IllegalStateException A binding is missing or the statement has been consumed.
+         */
+        void consume(Consumer<CallResult> action);
+
+        /**
+         * Maps scoped results to a detached value synchronously on the invocation thread.
+         * The callback must return a nonnull value. Caught provider processing failures
+         * are reported again after cleanup. A participating connection remains reserved
+         * until cleanup completes, including after a row terminal completes.
+         *
+         * @param mapper The result callback.
+         * @param <T> The detached result type.
+         * @return The detached value.
+         * @throws NullPointerException The mapper is null.
+         * @throws io.helidon.data.DataException JDBC processing or cleanup failed, or the callback returned null.
+         * @throws IllegalStateException A binding is missing or the statement has been consumed.
+         */
+        <T> T map(CallMapper<T> mapper);
+    }
+
+    /**
+     * Holds immutable canonical scalar outputs independently of JDBC resources.
+     */
+    @Api.Incubating
+    interface OutParameters {
+        /**
+         * Reads a required canonical value without conversion.
+         *
+         * @param name The registered logical output name.
+         * @param type The canonical class, allowing primitive and wrapper equivalents.
+         * @param <T> The value type.
+         * @return The detached value.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The name or class is invalid, or the value is SQL NULL.
+         */
+        <T> T get(String name, Class<T> type);
+
+        /**
+         * Reads an optional canonical value without conversion, validating its class even for SQL NULL.
+         *
+         * @param name The registered logical output name.
+         * @param type The canonical class, allowing primitive and wrapper equivalents.
+         * @param <T> The value type.
+         * @return The optional detached value.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The name or class is invalid.
+         */
+        <T> Optional<T> optional(String name, Class<T> type);
+    }
+
+    /**
+     * Maps a scoped call to an application value.
+     *
+     * @param <R> The detached result type.
+     */
+    @Api.Incubating
+    @FunctionalInterface
+    interface CallMapper<R> {
+        /**
+         * Maps results before the provider closes its JDBC resources.
+         *
+         * @param result The scoped result.
+         * @return A nonnull detached value.
+         * @throws NullPointerException The scoped result is null.
+         */
+        R map(CallResult result);
+    }
+
+    /**
+     * Exposes callable events and outputs on the invocation thread during the callback.
+     * Direct row stages also expire when their event advances. Outputs require END.
+     * Finish a selected cursor before accessing another output and read scalars first.
+     */
+    @Api.Incubating
+    interface CallResult {
+        /**
+         * Returns the current direct event.
+         *
+         * @return The current event kind.
+         * @throws IllegalStateException The scope is expired, failed, or accessed from another thread.
+         */
+        CallResultKind resultKind();
+
+        /**
+         * Discards the current event and advances with CLOSE_CURRENT_RESULT. END is idempotent.
+         *
+         * @throws IllegalStateException The scope is unusable or a row terminal is active.
+         * @throws io.helidon.data.DataException JDBC advancement failed.
+         */
+        void next();
+
+        /**
+         * Discards direct events until END without mapping their rows.
+         *
+         * @throws IllegalStateException The scope is unusable or a row terminal is active.
+         * @throws io.helidon.data.DataException JDBC advancement failed.
+         */
+        void skipRemainingResults();
+
+        /**
+         * Selects one scoped row stage for the current ROWS event.
+         *
+         * @param mapper The row mapper.
+         * @param <T> The mapped type.
+         * @return The scoped row stage.
+         * @throws NullPointerException The mapper is null.
+         * @throws IllegalStateException The event is incompatible or has already been selected, or the scope is unusable.
+         */
+        <T> Rows<T> rows(RowMapper<T> mapper);
+
+        /**
+         * Reads the current update count, preserving zero.
+         *
+         * @return The count.
+         * @throws IllegalStateException The event is incompatible or the scope is unusable.
+         */
+        long updateCount();
+
+        /**
+         * Reads a required scalar using JDBC conversion and detaches supported mutable values.
+         *
+         * @param name The registered logical name.
+         * @param type The supported target scalar class.
+         * @param <T> The scalar type.
+         * @return The detached scalar.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The name or type is invalid, or the value is SQL NULL.
+         * @throws IllegalStateException Outputs are unavailable or the scope is unusable.
+         * @throws io.helidon.data.DataException JDBC conversion failed.
+         */
+        <T> T get(String name, Class<T> type);
+
+        /**
+         * Reads an optional scalar using JDBC conversion.
+         *
+         * @param name The registered logical name.
+         * @param type The supported target scalar class.
+         * @param <T> The scalar type.
+         * @return The optional detached scalar.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The name or type is invalid.
+         * @throws IllegalStateException Outputs are unavailable or the scope is unusable.
+         * @throws io.helidon.data.DataException JDBC conversion failed.
+         */
+        <T> Optional<T> optional(String name, Class<T> type);
+
+        /**
+         * Selects a required REF_CURSOR, retrieving it lazily at its row terminal.
+         * That terminal throws {@link IllegalArgumentException} if the output contains SQL NULL.
+         *
+         * @param name The registered logical name.
+         * @param mapper The row mapper.
+         * @param <T> The mapped type.
+         * @return The scoped row stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The name is invalid or the output is not a cursor.
+         * @throws IllegalStateException Outputs are unavailable, already selected, or the scope is unusable.
+         */
+        <T> Rows<T> cursor(String name, RowMapper<T> mapper);
+
+        /**
+         * Retrieves an optional REF_CURSOR immediately. SQL NULL produces an empty optional without invoking the mapper.
+         * A present empty cursor remains present.
+         *
+         * @param name The registered logical name.
+         * @param mapper The row mapper.
+         * @param <T> The mapped type.
+         * @return An optional scoped row stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The name is invalid or the output is not a cursor.
+         * @throws IllegalStateException Outputs are unavailable, already selected, or the scope is unusable.
+         * @throws io.helidon.data.DataException JDBC retrieval failed.
+         */
+        <T> Optional<Rows<T>> optionalCursor(String name, RowMapper<T> mapper);
     }
 
     /**
@@ -273,7 +573,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
     }
 
     /**
-     * Materialized result terminals for a mapped query or generated key result.
+     * Result terminals for mapped query rows, callable rows, or generated keys.
      * <p>
      * The stage accepts exactly one terminal invocation and is not safe for
      * concurrent use. An exception from an application mapper is propagated
@@ -322,6 +622,40 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          * @throws IllegalStateException if a terminal operation has started
          */
         List<T> list();
+
+        /**
+         * Consumes a sequential stream synchronously within this terminal.
+         * An ordinary query executes before the callback begins. Callable direct rows
+         * and cursor outputs consume their existing result set without executing again.
+         * Rows are mapped lazily on the
+         * invocation thread and expire before downstream processing sees their values.
+         * The stream and its row channel close before this method returns, including
+         * when the callback performs no traversal or catches a processing failure.
+         * Callable statements and connection leases remain owned by the enclosing call.
+         * Retained streams and iterators cannot extend JDBC resource lifetime.
+         * Driver buffering and cleanup latency depend on driver configuration.
+         * <p>
+         * A participating local transaction reserves its connection through terminal
+         * cleanup, including after stream closure. For callable rows, this reservation
+         * lasts through enclosing call cleanup. Nested operations on that connection
+         * and suspension of the owning transaction fail before changing JDBC state.
+         * Processing failures require rollback of the participating local transaction,
+         * even when the callback catches the terminal failure. Ordinary queries can
+         * stream outside a transaction. Driver cursor or fetching modes can require
+         * an explicit transaction. Streaming does not change automatic commit mode to enable fetching.
+         * Application and mapper exceptions retain their identity.
+         *
+         * @param action The consumer processes mapped values within the callback.
+         * @throws NullPointerException The action is null.
+         * @throws io.helidon.data.DataException JDBC execution or cleanup fails, or the mapper returns null.
+         * @throws IllegalArgumentException A required callable cursor contains SQL NULL.
+         * @throws IllegalStateException A terminal has started or access violates the callback scope.
+         * @throws UnsupportedOperationException Streaming is unsupported or this stage represents generated keys.
+         */
+        default void useStream(Consumer<Stream<T>> action) {
+            Objects.requireNonNull(action, "The stream consumer must not be null.");
+            throw new UnsupportedOperationException("Streaming is unsupported.");
+        }
     }
 
     /**
@@ -355,6 +689,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param row current row
          * @return mapped value, never {@code null}
+         * @throws NullPointerException The current row is null.
          */
         T map(Row row);
     }

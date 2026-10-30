@@ -19,6 +19,9 @@ import java.sql.JDBCType;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * In-memory description of one JDBC statement assembled by an application or
@@ -28,6 +31,8 @@ import java.util.Optional;
  * the bindings into an immutable operation and hands ownership to the runner.
  */
 final class JdbcStatement implements JdbcClient.Statement {
+
+    private static final Pattern CALL_RETURN = Pattern.compile("\\s*\\{\\s*\\?\\s*=\\s*call\\b", Pattern.CASE_INSENSITIVE);
 
     private final JdbcRunner runner;
     private final String sql;
@@ -126,6 +131,28 @@ final class JdbcStatement implements JdbcClient.Statement {
         return new JdbcGeneratedKeys(this);
     }
 
+    @Override
+    public JdbcClient.Call call() {
+        ensureMutable();
+        return new JdbcCall(this, runner, binds.length);
+    }
+
+    JdbcOperation callOperation(List<JdbcCallOutput> outputs) {
+        ensureMutable();
+        if (CALL_RETURN.matcher(sql).lookingAt()
+                && (binds[0] != null || outputs.stream().noneMatch(output -> output.index() == 1))) {
+            throw new IllegalStateException("A leading callable return must be registered as an output and cannot be an input.");
+        }
+        for (int index = 0; index < binds.length; index++) {
+            int position = index + 1;
+            if (binds[index] == null && outputs.stream().noneMatch(output -> output.index() == position)) {
+                throw new IllegalStateException("A bind or output is missing at JDBC position " + position + ".");
+            }
+        }
+        terminalState = true;
+        return new JdbcOperation(sql, binds.clone(), JdbcPreparationPlan.call());
+    }
+
     /**
      * Stores an explicitly typed SQL null for generated repository code.
      *
@@ -194,9 +221,15 @@ final class JdbcStatement implements JdbcClient.Statement {
         return runner.list(operation(plan), mapper);
     }
 
-    /**
-     * Rejects changes after a terminal operation claims this stage.
-     */
+    <T> void useStream(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan,
+                   Consumer<Stream<T>> action) {
+        ensureMutable();
+        if (plan.resultKind() != JdbcPreparationPlan.ResultKind.QUERY) {
+            throw new UnsupportedOperationException("Generated keys do not support streaming.");
+        }
+        runner.useStream(operation(plan), mapper, action);
+    }
+
     void ensureMutable() {
         if (terminalState) {
             throw new IllegalStateException("A JDBC statement can perform only one terminal operation.");

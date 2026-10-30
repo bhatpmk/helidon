@@ -20,6 +20,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import io.helidon.codegen.CodegenContext;
@@ -65,19 +66,18 @@ final class JdbcMethodGenerator {
         // Validate and name every method first so constructor dependencies and fields are complete before emission.
         List<TypedElementInfo> methods = JdbcTypeHierarchy.abstractMethods(repositoryInfo.interfaceInfo(), roundContext);
         Set<String> generatedNames = new HashSet<>();
+        Set<String> mapperFieldNames = new HashSet<>();
         List<JdbcMethodPlan> plans = new ArrayList<>(methods.size());
         for (TypedElementInfo method : methods) {
             JdbcMethodPlan plan = JdbcMethodPlan.create(method, roundContext);
             String baseSuffix = CodegenUtil.toConstantName(
                     codegenContext.uniqueName(repositoryInfo.interfaceInfo(), method));
-            String suffix = baseSuffix;
             // Constant conversion is lossy: distinct Java names such as findValue and find_Value normalize to the
             // same suffix. Reserve the final identifier as well as relying on signature-aware overload naming.
-            for (int index = 2; !generatedNames.add(suffix); index++) {
-                suffix = baseSuffix + "_" + index;
-            }
+            String suffix = uniqueName(baseSuffix, generatedNames);
             plan.sqlFieldName(JdbcCodegenConstants.SQL_FIELD_PREFIX + suffix);
             plan.mapperFieldName(JdbcCodegenConstants.MAPPER_FIELD_PREFIX + suffix);
+            mapperFieldNames.add(plan.mapperFieldName());
             plans.add(plan);
         }
 
@@ -105,31 +105,52 @@ final class JdbcMethodGenerator {
             bindParameterMethodName = null;
         }
 
-        List<MapperDependency> mapperDependencies = mapperDependencies(plans, classModel);
+        List<JdbcMethodPlan> mappingPlans = new ArrayList<>();
+        for (JdbcMethodPlan plan : plans) {
+            mappingPlans.add(plan);
+            if (plan.callable() != null && plan.callable().aggregate()) {
+                int index = 0;
+                for (JdbcCallablePlan.Output output : plan.callable().components()) {
+                    if (output.mapping() != null) {
+                        output.mapping().mapperFieldName(uniqueName(plan.mapperFieldName() + "_OUTPUT_" + index++,
+                                                                    mapperFieldNames));
+                        mappingPlans.add(output.mapping());
+                    }
+                }
+            }
+        }
+        List<MapperDependency> mapperDependencies = mapperDependencies(mappingPlans, classModel);
         JdbcRepositoryClassGenerator.generateConstructor(classModel, repositoryInfo, mapperDependencies);
         Map<ResolvedType, JdbcMethodPlan> recordMappers = new LinkedHashMap<>();
+        for (JdbcMethodPlan mappingPlan : mappingPlans) {
+            if (mappingPlan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD) {
+                JdbcMethodPlan first = recordMappers.putIfAbsent(ResolvedType.create(mappingPlan.mappedType()), mappingPlan);
+                if (first == null) {
+                    JdbcRecordMapperGenerator.generate(mappingPlan, mappingPlan.mapperFieldName(), classModel);
+                } else {
+                    mappingPlan.mapperFieldName(first.mapperFieldName());
+                }
+            }
+        }
         for (JdbcMethodPlan plan : plans) {
             classModel.addField(field -> field.name(plan.sqlFieldName())
                     .type(TypeNames.STRING)
                     .isStatic(true)
                     .isFinal(true)
                     .addContentLiteral(plan.jdbcSql()));
-            if (plan.mappingKind() == JdbcMethodPlan.MappingKind.RECORD) {
-                // Avoid duplicate record mappers by reusing the first mapper planned for each exact mapped type.
-                // The shared field keeps the variable name derived from that first repository method. ResolvedType
-                // retains nested generic arguments that TypeName equality deliberately omits.
-                JdbcMethodPlan firstPlan = recordMappers.putIfAbsent(ResolvedType.create(plan.mappedType()), plan);
-                if (firstPlan == null) {
-                    JdbcRecordMapperGenerator.generate(plan, plan.mapperFieldName(), classModel);
-                } else {
-                    plan.mapperFieldName(firstPlan.mapperFieldName());
-                }
-            }
             classModel.addMethod(method -> generateMethod(plan, method, bindParameterMethodName));
         }
         if (bindParameterMethodName != null) {
             classModel.addMethod(method -> generateBindParameter(method, bindParameterMethodName));
         }
+    }
+
+    private static String uniqueName(String base, Set<String> names) {
+        String candidate = base;
+        for (int index = 2; !names.add(candidate); index++) {
+            candidate = base + "_" + index;
+        }
+        return candidate;
     }
 
     /**
@@ -223,6 +244,14 @@ final class JdbcMethodGenerator {
         if (plan.mappingKind() != JdbcMethodPlan.MappingKind.SCALAR) {
             generatedFieldNames.add(plan.mapperFieldName());
         }
+        if (plan.callable() != null) {
+            // Component mapper names are final after service resolution and record mapper reuse.
+            for (JdbcCallablePlan.Output output : plan.callable().components()) {
+                if (output.mapping() != null) {
+                    generatedFieldNames.add(output.mapping().mapperFieldName());
+                }
+            }
+        }
         Map<String, String> parameterNames = new LinkedHashMap<>();
         Set<String> generatedParameterNames = new HashSet<>();
         for (TypedElementInfo parameter : plan.method().parameterArguments()) {
@@ -245,6 +274,16 @@ final class JdbcMethodGenerator {
         while (generatedParameterNames.contains(statementName)) {
             statementName = JdbcCodegenConstants.JDBC_STATEMENT_NAME + statementNameSuffix++;
         }
+        if (plan.callable() != null && plan.callable().control() != null) {
+            method.addContent(Objects.class).addContent(".requireNonNull(")
+                    .addContent(parameterNames.get(plan.callable().control().elementName()))
+                    .addContentLine(", \"The callable callback must not be null.\");");
+        } else if (plan.returnShape() == JdbcMethodPlan.ReturnShape.STREAM) {
+            method.addContent(Objects.class)
+                    .addContent(".requireNonNull(")
+                    .addContent(parameterNames.get(plan.streamControl()))
+                    .addContentLine(", \"The stream consumer must not be null.\");");
+        }
         method.addContent(JdbcCodegenTypes.JDBC_CLIENT_STATEMENT)
                 .addContent(" ")
                 .addContent(statementName)
@@ -260,7 +299,11 @@ final class JdbcMethodGenerator {
         for (JdbcSqlParameterPlan.Bind bind : plan.parameterPlan().binds()) {
             addBind(method, statementName, parameterNames, bind, bindParameterMethodName);
         }
-        addTerminal(plan, method, statementName);
+        if (plan.callable() == null) {
+            addTerminal(plan, method, statementName, parameterNames);
+        } else {
+            JdbcCallableGenerator.terminal(plan, method, statementName, parameterNames);
+        }
     }
 
     /**
@@ -367,11 +410,13 @@ final class JdbcMethodGenerator {
      * @param plan method plan
      * @param method generated method
      * @param statementName local statement variable
+     * @param parameterNames The map retains generated names for application controls.
      */
     private static void addTerminal(JdbcMethodPlan plan,
                                     Method.Builder method,
-                                    String statementName) {
-        // Use only terminals that finish JDBC work and materialize results before the repository method returns.
+                                    String statementName,
+                                    Map<String, String> parameterNames) {
+        // Use terminals that finish JDBC work before the repository method returns.
         if (plan.operation() == JdbcMethodPlan.Operation.UPDATE) {
             if (plan.method().typeName().equals(TypeNames.PRIMITIVE_VOID)) {
                 method.addContent(statementName).addContentLine(".execute();");
@@ -387,7 +432,8 @@ final class JdbcMethodGenerator {
             return;
         }
 
-        method.addContent("return ").addContent(statementName);
+        method.addContent(plan.returnShape() == JdbcMethodPlan.ReturnShape.STREAM ? "" : "return ")
+                .addContent(statementName);
         addMapping(plan, method);
         switch (plan.returnShape()) {
         case ITEM -> method.addContentLine(".one();");
@@ -406,6 +452,8 @@ final class JdbcMethodGenerator {
             method.addContentLine(";");
         }
         case LIST -> method.addContentLine(".list();");
+        case STREAM -> method.addContent(".useStream(")
+                .addContent(parameterNames.get(plan.streamControl())).addContentLine(");");
         default -> throw new AssertionError("The JDBC return shape '" + plan.returnShape() + "' is not recognized.");
         }
     }

@@ -16,6 +16,7 @@
 package io.helidon.data.jdbc.codegen;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,12 +53,12 @@ final class JdbcTypeHierarchy {
         return context.typeHierarchyResolver()
                 .effectiveInterfaceMethods(repository)
                 .stream()
-                .map(JdbcTypeHierarchy::validate)
+                .map(method -> validate(method, context))
                 .filter(method -> method.elementModifiers().contains(Modifier.ABSTRACT))
                 .toList();
     }
 
-    private static TypedElementInfo validate(TypeHierarchyResolver.ResolvedMethod resolvedMethod) {
+    private static TypedElementInfo validate(TypeHierarchyResolver.ResolvedMethod resolvedMethod, RoundContext context) {
         TypedElementInfo method = resolvedMethod.method();
         List<TypedElementInfo> declarations = resolvedMethod.declarations();
         ElementSignature signature = TypeHierarchy.methodSignature(method);
@@ -74,12 +75,13 @@ final class JdbcTypeHierarchy {
             }
         }
         if (method.elementModifiers().contains(Modifier.ABSTRACT)) {
-            validateParameterBindings(signature, declarations);
+            validateParameterBindings(signature, declarations, context);
         }
         return method;
     }
 
-    private static void validateParameterBindings(ElementSignature signature, List<TypedElementInfo> declarations) {
+    private static void validateParameterBindings(ElementSignature signature, List<TypedElementInfo> declarations,
+                                                   RoundContext context) {
         if (declarations.size() < 2) {
             return;
         }
@@ -91,10 +93,10 @@ final class JdbcTypeHierarchy {
         }
 
         TypedElementInfo first = declarations.getFirst();
-        ParameterBindingContract firstContract = parameterBindingContract(first, sql.get());
+        ParameterBindingContract firstContract = parameterBindingContract(first, sql.get(), context);
         for (int index = 1; index < declarations.size(); index++) {
             TypedElementInfo declaration = declarations.get(index);
-            ParameterBindingContract declarationContract = parameterBindingContract(declaration, sql.get());
+            ParameterBindingContract declarationContract = parameterBindingContract(declaration, sql.get(), context);
             // The same named SQL must bind the same logical parameter positions across inherited declarations.
             if (!firstContract.equals(declarationContract)) {
                 throw new CodegenException("Inherited repository method '" + signature.text()
@@ -105,9 +107,11 @@ final class JdbcTypeHierarchy {
         }
     }
 
-    private static ParameterBindingContract parameterBindingContract(TypedElementInfo method, String sql) {
+    private static ParameterBindingContract parameterBindingContract(TypedElementInfo method, String sql, RoundContext context) {
         List<TypedElementInfo> parameters = method.parameterArguments();
-        JdbcSqlParameterPlan plan = JdbcSqlParameterPlan.create(sql, parameters, method);
+        JdbcSqlParameterPlan plan = JdbcCallablePlan.selected(method, context)
+                ? JdbcCallablePlan.create(method, context, sql).parameterPlan()
+                : JdbcSqlParameterPlan.create(sql, JdbcMethodPlan.ordinaryParameters(method, context), method);
         List<ParameterBinding> bindings = plan.binds()
                 .stream()
                 .map(bind -> new ParameterBinding(parameterIndex(parameters, bind.parameter()),
@@ -132,7 +136,18 @@ final class JdbcTypeHierarchy {
                 return false;
             }
         }
-        return JdbcExecutionSelection.create(first) == JdbcExecutionSelection.create(second);
+        return JdbcExecutionSelection.create(first) == JdbcExecutionSelection.create(second)
+                && outputContract(first).equals(outputContract(second));
+    }
+
+    private static List<OutputContract> outputContract(TypedElementInfo method) {
+        return JdbcCallablePlan.declarations(method).stream()
+                .map(annotation -> new OutputContract(annotation.stringValue().orElse(""),
+                                                       annotation.stringValue("type").orElse(""),
+                                                       annotation.stringValue("typeName").orElse(""),
+                                                       annotation.intValue("scale").orElse(-1)))
+                .sorted(Comparator.comparing(OutputContract::name))
+                .toList();
     }
 
     private static List<TypeName> exactMethodAnnotations() {
@@ -149,4 +164,7 @@ final class JdbcTypeHierarchy {
 
     private record ParameterBinding(int parameterIndex, boolean nullable, String nullJdbcTypeConstant) {
     }
+    private record OutputContract(String name, String type, String typeName, int scale) {
+    }
+
 }

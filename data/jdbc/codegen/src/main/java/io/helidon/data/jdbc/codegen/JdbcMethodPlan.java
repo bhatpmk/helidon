@@ -19,7 +19,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.BaseStream;
+import java.util.stream.Stream;
 
 import io.helidon.codegen.CodegenException;
 import io.helidon.codegen.RoundContext;
@@ -36,7 +38,7 @@ import io.helidon.common.types.TypedElementInfo;
 /**
  * Validated compile-time plan for one JDBC repository method.
  * <p>
- * Planning resolves execution, materialized cardinality, mapping, generated
+ * Planning resolves execution, result shape, mapping, generated
  * keys, and SQL bindings before source emission. No generated method needs to
  * interpret annotations or SQL structure at runtime.
  */
@@ -45,6 +47,17 @@ final class JdbcMethodPlan {
     private static final Set<TypeName> UNSUPPORTED_RESULT_SUPERTYPES = Set.of(TypeNames.COLLECTION,
                                                                              TypeNames.MAP,
                                                                              TypeName.create(BaseStream.class));
+
+    private static final Set<TypeName> UNSUPPORTED_CALL_ROW_TYPES = Set.of(
+            TypeName.create("io.helidon.data.jdbc.JdbcClient.Rows"),
+            TypeName.create("io.helidon.data.jdbc.JdbcClient.CallResult"),
+            TypeName.create("io.helidon.data.jdbc.JdbcClient.Call"),
+            TypeName.create("io.helidon.data.jdbc.JdbcClient.OutParameters"),
+            TypeName.create("java.sql.ResultSet"), TypeName.create("java.sql.Blob"), TypeName.create("java.sql.Clob"),
+            TypeName.create("java.sql.NClob"), TypeName.create("java.sql.Array"), TypeName.create("java.sql.Ref"),
+            TypeName.create("java.sql.SQLXML"), TypeName.create("java.sql.Statement"),
+            TypeName.create("java.sql.PreparedStatement"), TypeName.create("java.sql.CallableStatement"),
+            TypeName.create("java.sql.Connection"));
 
     private final TypedElementInfo method;
     private final Operation operation;
@@ -55,6 +68,7 @@ final class JdbcMethodPlan {
     private final List<String> generatedColumns;
     private final TypeName explicitMapper;
     private final List<TypedElementInfo> recordComponents;
+    private JdbcCallablePlan callable;
     private String sqlFieldName;
     private String mapperFieldName;
 
@@ -109,7 +123,33 @@ final class JdbcMethodPlan {
             throw failure(method, "The SQL statement declared by @Jdbc.Statement must not be blank.");
         }
 
-        Return result = returnPlan(method);
+        if (JdbcCallablePlan.selected(method, roundContext)) {
+            return JdbcCallablePlan.create(method, roundContext, sql);
+        }
+
+        List<TypedElementInfo> inputs = ordinaryParameters(method, roundContext);
+        List<TypedElementInfo> controls = method.parameterArguments().stream()
+                .filter(parameter -> !inputs.contains(parameter))
+                .toList();
+        Return result;
+        if (controls.isEmpty()) {
+            result = returnPlan(method);
+        } else {
+            if (controls.size() != 1 || !method.typeName().equals(TypeNames.PRIMITIVE_VOID)
+                    || method.hasAnnotation(JdbcCodegenTypes.JDBC_GENERATED_KEYS)
+                    || JdbcExecutionSelection.create(method) == JdbcExecutionSelection.UPDATE) {
+                throw failure(method, "A streaming query must return void, have one consumer, and request no update or keys.");
+            }
+            TypeName control = controls.getFirst().typeName();
+            if (!control.equals(TypeName.create(Consumer.class))) {
+                throw failure(method, "A streaming control must declare Consumer<Stream<T>> directly.");
+            }
+            TypeName stream = singleTypeArgument(method, control);
+            if (!stream.equals(TypeName.create(Stream.class))) {
+                throw failure(method, "A streaming control must declare Consumer<Stream<T>>.");
+            }
+            result = new Return(ReturnShape.STREAM, singleTypeArgument(method, stream));
+        }
         boolean generatedKeys = method.hasAnnotation(JdbcCodegenTypes.JDBC_GENERATED_KEYS);
         Annotation rowMapperAnnotation = method.findAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER).orElse(null);
         boolean rowMapperRequested = rowMapperAnnotation != null;
@@ -136,7 +176,7 @@ final class JdbcMethodPlan {
                                   result.mappedType(),
                                   rowMapperRequested,
                                   explicitMapper);
-        JdbcSqlParameterPlan parameters = JdbcSqlParameterPlan.create(sql, method.parameterArguments(), method);
+        JdbcSqlParameterPlan parameters = JdbcSqlParameterPlan.create(sql, inputs, method);
         return new JdbcMethodPlan(method,
                                   operation,
                                   result.shape(),
@@ -146,6 +186,53 @@ final class JdbcMethodPlan {
                                   generatedColumns,
                                   explicitMapper,
                                   mapping.recordComponents());
+    }
+
+    /**
+     * Returns ordinary SQL inputs while excluding streaming callback controls.
+     *
+     * @param method The repository declaration supplies the original parameter objects.
+     * @param context The generation round resolves consumer supertypes.
+     * @return The SQL inputs retain their original method argument identities.
+     */
+    static List<TypedElementInfo> ordinaryParameters(TypedElementInfo method, RoundContext context) {
+        return method.parameterArguments().stream()
+                .filter(parameter -> context.typeHierarchyResolver()
+                        .resolveSupertype(parameter.typeName(), TypeName.create(Consumer.class)).isEmpty())
+                .toList();
+    }
+
+    static JdbcMethodPlan callableMapping(TypedElementInfo declaration, RoundContext context,
+                                          TypeName resultType, JdbcSqlParameterPlan parameters) {
+        TypeName mapped = resultType;
+        ReturnShape shape = ReturnShape.ITEM;
+        if (mapped.isOptional() || mapped.isList()) {
+            shape = mapped.isList() ? ReturnShape.LIST : ReturnShape.OPTIONAL;
+            mapped = singleTypeArgument(declaration, mapped);
+            if (shape == ReturnShape.OPTIONAL && mapped.isList()) {
+                if (JdbcCallablePlan.declarations(declaration).isEmpty()) {
+                    throw failure(declaration, "Optional<List<T>> requires an explicit cursor output.");
+                }
+                mapped = singleTypeArgument(declaration, mapped);
+            }
+        }
+        if (mapped.isOptional() || UNSUPPORTED_CALL_ROW_TYPES.contains(mapped.genericTypeName())) {
+            throw failure(declaration,
+                          "Callable row mapping cannot return nested containers, snapshots, or live JDBC resources.");
+        }
+        validateReturn(declaration, context.typeHierarchyResolver(), Operation.QUERY, new Return(shape, mapped));
+        boolean mapperRequested = declaration.hasAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER);
+        TypeName explicit = declaration.findAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER)
+                .flatMap(Annotation::typeValue).filter(type -> !JdbcCodegenTypes.ROW_MAPPER.equals(type)).orElse(null);
+        Mapping mapping = mapping(declaration, context, Operation.QUERY, mapped, mapperRequested, explicit);
+        validateMappedTypeParameters(declaration, Operation.QUERY, mapped);
+        return new JdbcMethodPlan(declaration, Operation.CALL, shape, mapping.kind(), mapped,
+                                  parameters, List.of(), explicit, mapping.recordComponents());
+    }
+
+    static JdbcMethodPlan callableUnmapped(TypedElementInfo method, JdbcSqlParameterPlan parameters) {
+        return new JdbcMethodPlan(method, Operation.CALL, ReturnShape.ITEM, MappingKind.NONE,
+                                  method.typeName(), parameters, List.of(), null, List.of());
     }
 
     /**
@@ -159,8 +246,22 @@ final class JdbcMethodPlan {
         return new CodegenException(message, method.originatingElementValue());
     }
 
+    JdbcCallablePlan callable() {
+        return callable;
+    }
+
+    void callable(JdbcCallablePlan plan) {
+        callable = plan;
+    }
+
     TypedElementInfo method() {
         return method;
+    }
+
+    String streamControl() {
+        return method.parameterArguments().stream()
+                .filter(parameter -> parameter.typeName().equals(TypeName.create(Consumer.class)))
+                .findFirst().orElseThrow().elementName();
     }
 
     Operation operation() {
@@ -248,6 +349,9 @@ final class JdbcMethodPlan {
         if (generatedKeys) {
             return Operation.UPDATE;
         }
+        if (result.shape() == ReturnShape.STREAM) {
+            return Operation.QUERY;
+        }
         // AUTO inference uses only the Java method shape because the provider must not parse SQL to guess intent.
         if (rowMapper || result.shape() == ReturnShape.OPTIONAL || result.shape() == ReturnShape.LIST) {
             return Operation.QUERY;
@@ -317,7 +421,7 @@ final class JdbcMethodPlan {
             }
             return;
         }
-        if (method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
+        if (method.typeName().equals(TypeNames.PRIMITIVE_VOID) && result.shape() != ReturnShape.STREAM) {
             throw failure(method, "QUERY and generated keys operations must return a materialized result.");
         }
         TypeName mappedType = result.mappedType();
@@ -539,16 +643,18 @@ final class JdbcMethodPlan {
     enum Operation {
         QUERY,
         UPDATE,
-        GENERATED_KEYS
+        GENERATED_KEYS,
+        CALL
     }
 
     /**
-     * Supported materialized cardinalities.
+     * Supported repository result shapes.
      */
     enum ReturnShape {
         ITEM,
         OPTIONAL,
-        LIST
+        LIST,
+        STREAM
     }
 
     /**
