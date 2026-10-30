@@ -479,6 +479,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param result The scoped result.
          * @return A nonnull detached value.
+         * @throws NullPointerException The scoped result is null.
          */
         R map(CallResult result);
     }
@@ -716,6 +717,7 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
          *
          * @param row current row
          * @return mapped value, never {@code null}
+         * @throws NullPointerException The current row is null.
          */
         T map(Row row);
     }

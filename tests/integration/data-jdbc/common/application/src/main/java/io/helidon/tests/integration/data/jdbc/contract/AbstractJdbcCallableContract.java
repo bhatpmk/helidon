@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.helidon.config.Config;
@@ -46,6 +47,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -119,7 +121,7 @@ public abstract class AbstractJdbcCallableContract {
                                   + "RETURN TIMESTAMP '2026-10-28 12:13:14.123456'; END;").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_bundle(p_input IN INTEGER, value OUT INTEGER, "
                                   + "p_rows OUT SYS_REFCURSOR) AS BEGIN value := p_input + 1; "
-                                  + "IF p_input < 0 THEN p_rows := NULL; ELSE OPEN p_rows FOR SELECT 42 FROM dual "
+                                  + "IF p_input < 0 THEN p_rows := NULL; ELSE OPEN p_rows FOR SELECT 42 AS ID FROM dual "
                                   + "WHERE p_input > 0; END IF; END;").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_inout(p_input IN INTEGER, p_value IN OUT INTEGER) "
                                   + "AS BEGIN p_value := p_value + p_input; END;").execute();
@@ -185,6 +187,8 @@ public abstract class AbstractJdbcCallableContract {
         if (generated()) {
             CallableRoutineRepository repository = manager.registry().get(CallableRoutineRepository.class);
             assertThat(repository.aggregate(41, null, null), is(new CallableRoutineRepository.Values(42, "done")));
+            assertThat(repository.recordBundle_OUTPUT_0("baseline"),
+                       is(new CallableRoutineRepository.QueryProjection("baseline")));
             assertThat(repository.snapshot(41, null, null).get("value", Integer.class), is(42));
             repository.consume(41, null, null, result -> {
                 result.skipRemainingResults();
@@ -302,6 +306,9 @@ public abstract class AbstractJdbcCallableContract {
                 assertThat(repository.optionalCursor(-1), is(Optional.empty()));
                 assertThat(repository.optionalCursor(0), is(Optional.of(List.of())));
                 if (vendor().equals("oracle")) {
+                    assertThat(repository.recordBundle(41),
+                               is(new CallableRoutineRepository.RecordBundle(
+                                       List.of(new CallableRoutineRepository.Projection(42)), 42)));
                     assertThat(repository.aggregateCursor(41), is(new CallableRoutineRepository.Bundle(List.of(42), 42)));
                     assertThat(repository.aggregateOptionalCursor(-1),
                                is(new CallableRoutineRepository.OptionalBundle(Optional.empty(), 0)));
@@ -329,6 +336,51 @@ public abstract class AbstractJdbcCallableContract {
             }
             return null;
         });
+    }
+
+    /**
+     * The first mapper error survives a later callback error and forces rollback even when the terminal is caught.
+     */
+    @Test
+    protected void retainsFirstErrorAndReleasesTransactionReservation() {
+        Error first = new AssertionError("The callable row mapper failed.");
+        Error later = new AssertionError("The callable callback failed later.");
+        assertThrows(TxException.class, () -> Tx.transaction(Tx.Type.REQUIRED, () -> {
+            client.create("INSERT INTO TX_MATRIX (DATA_VALUE) VALUES (?)").bind(1, "call-error").execute();
+            JdbcClient.Call call;
+            if (vendor().equals("mysql")) {
+                call = client.create("{call sp_direct()}").call();
+            } else {
+                call = client.create("{? = call sp_cursor(?)}").bind(2, 1).call()
+                        .out("return", 1, JDBCType.REF_CURSOR);
+            }
+            Error observed = assertThrows(Error.class, () -> call.consume(result -> {
+                Objects.requireNonNull(result, "The callable result must not be null.");
+                JdbcClient.RowMapper<Integer> mapper = row -> {
+                    Objects.requireNonNull(row, "The current row must not be null.");
+                    row.get(1, Integer.class);
+                    throw first;
+                };
+                JdbcClient.Rows<Integer> rows;
+                if (vendor().equals("mysql")) {
+                    rows = result.rows(mapper);
+                } else {
+                    result.skipRemainingResults();
+                    rows = result.cursor("return", mapper);
+                }
+                assertThat(assertThrows(Error.class, rows::list), sameInstance(first));
+                throw later;
+            }));
+            assertThat(observed, sameInstance(first));
+            assertThat(observed.getSuppressed().length, is(1));
+            assertThat(observed.getSuppressed()[0], sameInstance(later));
+            // The terminal has released its reservation while the transaction remains marked for rollback.
+            assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "call-error")
+                               .map(Integer.class).one(), is(1));
+            return null;
+        }));
+        assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "call-error")
+                           .map(Integer.class).one(), is(0));
     }
 
     /**
