@@ -51,13 +51,13 @@ record JdbcSqlParameterPlan(String sql, List<Bind> binds) {
     static JdbcSqlParameterPlan create(String sql,
                                        List<TypedElementInfo> parameters,
                                        TypedElementInfo method) {
-        validateParameters(parameters, method);
         JdbcSqlMarkerLexer.Result parsed;
         try {
             parsed = JdbcSqlMarkerLexer.parse(sql);
         } catch (IllegalArgumentException e) {
             throw failure(method, e.getMessage());
         }
+        validateParameters(parameters, method, parsed.style() == JdbcSqlMarkerLexer.MarkerStyle.NAMED);
         List<Bind> binds = switch (parsed.style()) {
             case NONE -> noMarkers(parameters, method);
             case NAMED -> namedBindings(parsed.markers(), parameters, method);
@@ -81,11 +81,12 @@ record JdbcSqlParameterPlan(String sql, List<Bind> binds) {
      *
      * @param parameters repository parameters
      * @param method enclosing method
+     * @param uniqueNames Whether names must identify distinct logical inputs.
      */
-    private static void validateParameters(List<TypedElementInfo> parameters, TypedElementInfo method) {
+    private static void validateParameters(List<TypedElementInfo> parameters, TypedElementInfo method, boolean uniqueNames) {
         Set<String> names = new HashSet<>();
         for (TypedElementInfo parameter : parameters) {
-            if (!names.add(parameter.elementName())) {
+            if (uniqueNames && !names.add(parameter.elementName())) {
                 throw failure(method, "The repository parameter name '" + parameter.elementName() + "' is duplicated.");
             }
             if (!JdbcScalarTypes.isScalar(parameter.typeName())) {
