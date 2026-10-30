@@ -235,17 +235,7 @@ final class JdbcCallResult implements JdbcClient.CallResult {
     }
 
     Throwable finish(Throwable escaped) {
-        Throwable primary = failure;
-        if (primary == null) {
-            primary = escaped;
-        } else if (escaped != null && escaped != primary) {
-            if (escaped instanceof Error) {
-                escaped.addSuppressed(primary);
-                primary = escaped;
-            } else {
-                primary.addSuppressed(escaped);
-            }
-        }
+        Throwable primary = mergeProcessingFailures(failure, escaped);
         if (primary == null) {
             try {
                 // A selected but unconsumed cursor is discarded with the statement.
@@ -265,6 +255,28 @@ final class JdbcCallResult implements JdbcClient.CallResult {
             lease.processingFailed();
             primary = JdbcExceptionTranslator.mergeInfrastructure(primary, "closing callable rows", caught);
         }
+        return primary;
+    }
+
+    private static Throwable mergeProcessingFailures(Throwable primary, Throwable secondary) {
+        if (primary == null) {
+            return secondary;
+        }
+        if (secondary == null || secondary == primary) {
+            return primary;
+        }
+        if (secondary instanceof Error && !(primary instanceof Error)) {
+            Throwable earlier = primary;
+            primary = secondary;
+            secondary = earlier;
+        }
+        // Nested processing boundaries can observe the same secondary failure more than once.
+        for (Throwable suppressed : primary.getSuppressed()) {
+            if (suppressed == secondary) {
+                return primary;
+            }
+        }
+        primary.addSuppressed(secondary);
         return primary;
     }
 
@@ -353,12 +365,9 @@ final class JdbcCallResult implements JdbcClient.CallResult {
 
     private void retain(Throwable caught) {
         if (failure == null) {
-            failure = caught;
             lease.processingFailed();
-        } else if (caught != failure && caught instanceof Error) {
-            caught.addSuppressed(failure);
-            failure = caught;
         }
+        failure = mergeProcessingFailures(failure, caught);
     }
 
     @FunctionalInterface

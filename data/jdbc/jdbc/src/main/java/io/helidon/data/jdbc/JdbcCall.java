@@ -64,6 +64,7 @@ final class JdbcCall implements JdbcClient.Call {
     @Override
     public void execute() {
         map(result -> {
+            Objects.requireNonNull(result, "The callable result must not be null.");
             result.skipRemainingResults();
             return Boolean.TRUE;
         });
@@ -78,6 +79,7 @@ final class JdbcCall implements JdbcClient.Call {
             }
         }
         return map(result -> {
+            Objects.requireNonNull(result, "The callable result must not be null.");
             result.skipRemainingResults();
             return JdbcOutParameters.capture(result, outputs);
         });
@@ -87,6 +89,7 @@ final class JdbcCall implements JdbcClient.Call {
     public void consume(Consumer<JdbcClient.CallResult> action) {
         Objects.requireNonNull(action, "The call consumer must not be null.");
         map(result -> {
+            Objects.requireNonNull(result, "The callable result must not be null.");
             action.accept(result);
             return Boolean.TRUE;
         });

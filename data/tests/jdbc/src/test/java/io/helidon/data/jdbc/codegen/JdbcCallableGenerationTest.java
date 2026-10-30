@@ -205,12 +205,55 @@ import javax.lang.model.element.TypeElement;
         assertThat(Files.exists(result.classOutput().resolve("example/GeneratedRepository__Jdbc.class")), is(true));
     }
 
+    /**
+     * Component mapper names remain distinct from ordinary repository mapper names in either declaration order.
+     */
+    @Test
+    void reservesComponentMapperNamesAcrossRepositoryMethods() {
+        String aggregate = """
+                @Jdbc.Statement("{call routine(:rows)}")
+                Outputs aggregate();
+                """;
+        String query = """
+                @Jdbc.Statement("SELECT value FROM TEST")
+                Other aggregate_OUTPUT_0();
+                """;
+        String records = """
+                record Outputs(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows) { }
+                record Projection(int value) { }
+                record Other(String value) { }
+                """;
+        for (String methods : List.of(aggregate + query, query + aggregate)) {
+            TestCompiler.Result result = compile(methods + records);
+            assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+        }
+    }
+
+    /**
+     * Parameter renaming reserves both component mapper names and mapper names reused from ordinary queries.
+     */
+    @Test
+    void reservesFinalComponentMapperNamesAgainstInputParameters() {
+        for (String mapper : List.of("MAPPER_AGGREGATE_OUTPUT_0", "MAPPER_PROJECTION")) {
+            String query = mapper.equals("MAPPER_PROJECTION")
+                    ? "@Jdbc.Statement(\"SELECT value FROM TEST\") Projection projection();\n" : "";
+            TestCompiler.Result result = compile(query + """
+                    @Jdbc.Statement("{call routine(:%s, :rows)}")
+                    Outputs aggregate(String %s);
+                    record Outputs(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows) { }
+                    record Projection(int value) { }
+                    """.formatted(mapper, mapper));
+            assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+        }
+    }
+
     private static TestCompiler.Result compile(String declarations) {
         return compiler().addSource("Repository.java", """
                 package example;
                 import io.helidon.data.Data;
                 import io.helidon.data.jdbc.Jdbc;
                 import java.sql.JDBCType;
+                import java.util.List;
                 @Data.Repository @Data.Provider("jdbc")
                 public interface Repository {
                 """ + declarations + "\n}").build().compile();

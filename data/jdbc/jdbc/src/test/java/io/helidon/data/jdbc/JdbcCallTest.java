@@ -378,6 +378,101 @@ class JdbcCallTest {
         verify(connection).close();
     }
 
+    /**
+     * A later callback error cannot replace the first row processing error or prevent cleanup.
+     */
+    @Test
+    void preservesFirstErrorWhenCallbackThrowsAnotherError() throws Exception {
+        rows(1, 42);
+        ResultSet resultSet = statement.getResultSet();
+        Error first = new AssertionError("The first mapper failed.");
+        Error later = new AssertionError("The callback failed later.");
+
+        Error observed = assertThrows(Error.class, () -> client.create("{call routine()}").call().consume(result -> {
+            assertThat(assertThrows(Error.class, () -> result.rows(_ -> { throw first; }).list()), sameInstance(first));
+            throw later;
+        }));
+
+        assertThat(observed, sameInstance(first));
+        assertThat(observed.getSuppressed().length, is(1));
+        assertThat(observed.getSuppressed()[0], sameInstance(later));
+        verify(resultSet).close();
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    /**
+     * Repeated retention through nested row processing boundaries suppresses a later error exactly once.
+     */
+    @Test
+    void preservesFirstReadErrorWhenMapperThrowsAnotherError() throws Exception {
+        rows(1, 42);
+        ResultSet resultSet = statement.getResultSet();
+        Error first = new AssertionError("The row read failed.");
+        Error later = new AssertionError("The mapper failed later.");
+        when(resultSet.getInt(1)).thenThrow(first);
+
+        Error observed = assertThrows(Error.class, () -> client.create("{call routine()}").call().consume(result ->
+                result.rows(row -> {
+                    assertThat(assertThrows(Error.class, () -> row.get(1, Integer.class)), sameInstance(first));
+                    throw later;
+                }).one()));
+
+        assertThat(observed, sameInstance(first));
+        assertThat(observed.getSuppressed().length, is(1));
+        assertThat(observed.getSuppressed()[0], sameInstance(later));
+        verify(resultSet).close();
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    /**
+     * A later fatal error still outranks an earlier recoverable mapper failure.
+     */
+    @Test
+    void promotesCallbackErrorAfterRecoverableMapperFailure() throws Exception {
+        rows(1, 42);
+        IllegalArgumentException first = new IllegalArgumentException("The mapper failed.");
+        Error later = new AssertionError("The callback failed later.");
+
+        Error observed = assertThrows(Error.class, () -> client.create("{call routine()}").call().consume(result -> {
+            assertThat(assertThrows(IllegalArgumentException.class, () -> result.rows(_ -> { throw first; }).list()),
+                       sameInstance(first));
+            throw later;
+        }));
+
+        assertThat(observed, sameInstance(later));
+        assertThat(observed.getSuppressed().length, is(1));
+        assertThat(observed.getSuppressed()[0], sameInstance(first));
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    /**
+     * A recoverable mapper failure never replaces an earlier row read error.
+     */
+    @Test
+    void preservesReadErrorWhenMapperThrowsRecoverableFailure() throws Exception {
+        rows(1, 42);
+        ResultSet resultSet = statement.getResultSet();
+        Error first = new AssertionError("The row read failed.");
+        IllegalStateException later = new IllegalStateException("The mapper failed later.");
+        when(resultSet.getInt(1)).thenThrow(first);
+
+        Error observed = assertThrows(Error.class, () -> client.create("{call routine()}").call().consume(result ->
+                result.rows(row -> {
+                    assertThat(assertThrows(Error.class, () -> row.get(1, Integer.class)), sameInstance(first));
+                    throw later;
+                }).one()));
+
+        assertThat(observed, sameInstance(first));
+        assertThat(observed.getSuppressed().length, is(1));
+        assertThat(observed.getSuppressed()[0], sameInstance(later));
+        verify(resultSet).close();
+        verify(statement).close();
+        verify(connection).close();
+    }
+
     @Test
     void rejectsInputInLeadingReturnSlotWithoutAcquisition() throws Exception {
         JdbcClient.Call call = client.create("{? = call routine()}").bind(1, 1).call().out("return", 1, JDBCType.INTEGER);
