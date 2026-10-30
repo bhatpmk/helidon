@@ -66,19 +66,18 @@ final class JdbcMethodGenerator {
         // Validate and name every method first so constructor dependencies and fields are complete before emission.
         List<TypedElementInfo> methods = JdbcTypeHierarchy.abstractMethods(repositoryInfo.interfaceInfo(), roundContext);
         Set<String> generatedNames = new HashSet<>();
+        Set<String> mapperFieldNames = new HashSet<>();
         List<JdbcMethodPlan> plans = new ArrayList<>(methods.size());
         for (TypedElementInfo method : methods) {
             JdbcMethodPlan plan = JdbcMethodPlan.create(method, roundContext);
             String baseSuffix = CodegenUtil.toConstantName(
                     codegenContext.uniqueName(repositoryInfo.interfaceInfo(), method));
-            String suffix = baseSuffix;
             // Constant conversion is lossy: distinct Java names such as findValue and find_Value normalize to the
             // same suffix. Reserve the final identifier as well as relying on signature-aware overload naming.
-            for (int index = 2; !generatedNames.add(suffix); index++) {
-                suffix = baseSuffix + "_" + index;
-            }
+            String suffix = uniqueName(baseSuffix, generatedNames);
             plan.sqlFieldName(JdbcCodegenConstants.SQL_FIELD_PREFIX + suffix);
             plan.mapperFieldName(JdbcCodegenConstants.MAPPER_FIELD_PREFIX + suffix);
+            mapperFieldNames.add(plan.mapperFieldName());
             plans.add(plan);
         }
 
@@ -113,7 +112,8 @@ final class JdbcMethodGenerator {
                 int index = 0;
                 for (JdbcCallablePlan.Output output : plan.callable().components()) {
                     if (output.mapping() != null) {
-                        output.mapping().mapperFieldName(plan.mapperFieldName() + "_OUTPUT_" + index++);
+                        output.mapping().mapperFieldName(uniqueName(plan.mapperFieldName() + "_OUTPUT_" + index++,
+                                                                    mapperFieldNames));
                         mappingPlans.add(output.mapping());
                     }
                 }
@@ -143,6 +143,14 @@ final class JdbcMethodGenerator {
         if (bindParameterMethodName != null) {
             classModel.addMethod(method -> generateBindParameter(method, bindParameterMethodName));
         }
+    }
+
+    private static String uniqueName(String base, Set<String> names) {
+        String candidate = base;
+        for (int index = 2; !names.add(candidate); index++) {
+            candidate = base + "_" + index;
+        }
+        return candidate;
     }
 
     /**
@@ -235,6 +243,14 @@ final class JdbcMethodGenerator {
         generatedFieldNames.add(plan.sqlFieldName());
         if (plan.mappingKind() != JdbcMethodPlan.MappingKind.SCALAR) {
             generatedFieldNames.add(plan.mapperFieldName());
+        }
+        if (plan.callable() != null) {
+            // Component mapper names are final after service resolution and record mapper reuse.
+            for (JdbcCallablePlan.Output output : plan.callable().components()) {
+                if (output.mapping() != null) {
+                    generatedFieldNames.add(output.mapping().mapperFieldName());
+                }
+            }
         }
         Map<String, String> parameterNames = new LinkedHashMap<>();
         Set<String> generatedParameterNames = new HashSet<>();

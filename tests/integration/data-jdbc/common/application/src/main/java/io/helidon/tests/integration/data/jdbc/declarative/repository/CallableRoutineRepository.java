@@ -87,6 +87,22 @@ public interface CallableRoutineRepository {
     @Jdbc.OutParameter(type = JDBCType.INTEGER)
     String mapped(Integer input, JdbcClient.CallMapper<String> mapper);
 
+    @Jdbc.Statement("{call sp_bundle(:MAPPER_RECORD_BUNDLE_OUTPUT_0_2, :value, :rows)}")
+    RecordBundle recordBundle(int MAPPER_RECORD_BUNDLE_OUTPUT_0_2);
+
+    @Jdbc.Statement("SELECT DATA_VALUE AS label FROM TX_MATRIX WHERE DATA_VALUE = :input")
+    QueryProjection recordBundle_OUTPUT_0(String input);
+
+    record RecordBundle(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows,
+                        @Jdbc.OutParameter(type = JDBCType.INTEGER) int value) {
+    }
+
+    record Projection(int id) {
+    }
+
+    record QueryProjection(String label) {
+    }
+
     record OptionalBundle(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
                           @Jdbc.RowMapper(IntegerMapper.class) Optional<List<Integer>> rows,
                           @Jdbc.OutParameter(type = JDBCType.INTEGER) int value) {

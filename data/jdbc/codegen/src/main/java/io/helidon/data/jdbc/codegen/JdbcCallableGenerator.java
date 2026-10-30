@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import io.helidon.codegen.classmodel.Method;
@@ -64,6 +65,8 @@ final class JdbcCallableGenerator {
         } else {
             method.addContent("return ").addContent(callName).addContent(".map(").addContent(result)
                     .addContentLine(" -> {");
+            method.addContent(Objects.class).addContent(".requireNonNull(").addContent(result)
+                    .addContentLine(", \"The callable result must not be null.\");");
             if (!call.outputs().isEmpty()) {
                 method.addContent(result).addContentLine(".skipRemainingResults();");
                 if (call.aggregate()) {
@@ -137,7 +140,8 @@ final class JdbcCallableGenerator {
 
     private static void mapper(Method.Builder method, JdbcMethodPlan plan, String row, boolean nullable) {
         if (plan.mappingKind() == JdbcMethodPlan.MappingKind.SCALAR) {
-            method.addContent(row).addContent(" -> ").addContent(row)
+            method.addContent(row).addContent(" -> ").addContent(Objects.class).addContent(".requireNonNull(")
+                    .addContent(row).addContent(", \"The current row must not be null.\")")
                     .addContent(nullable ? ".optional(1, " : ".get(1, ")
                     .addContent(plan.mappedType().boxed()).addContent(".class)");
             return;

@@ -16,6 +16,7 @@
 package io.helidon.tests.integration.data.jdbc.imperative.mysql;
 
 import java.sql.JDBCType;
+import java.util.Objects;
 
 import io.helidon.data.jdbc.JdbcClient;
 import io.helidon.tests.integration.data.jdbc.database.mysql.MySqlTestDatabase;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -65,6 +67,26 @@ class JdbcCallablePoolTest {
                                 result.skipRemainingResults();
                                 assertThrows(IllegalArgumentException.class, () -> result.get("result", Integer.class));
                             }));
+                    return null;
+                }));
+                assertThat(pool.getHikariPoolMXBean().getActiveConnections(), is(0));
+                assertThat(client.create("SELECT COUNT(*) FROM ITEMS").map(Integer.class).one(), is(1));
+                Error first = new AssertionError("The callable mapper failed.");
+                Error later = new AssertionError("The callable callback failed later.");
+                assertThrows(TxException.class, () -> registry.support().transaction(Tx.Type.REQUIRED, () -> {
+                    Error observed = assertThrows(Error.class, () -> client.create("{call sp_write(?, ?)}").bind(1, 4)
+                            .call().out("result", 2, JDBCType.INTEGER).consume(result -> {
+                                Objects.requireNonNull(result, "The callable result must not be null.");
+                                assertThat(assertThrows(Error.class, () -> result.rows(row -> {
+                                    Objects.requireNonNull(row, "The current row must not be null.");
+                                    row.get(1, Integer.class);
+                                    throw first;
+                                }).list()), sameInstance(first));
+                                throw later;
+                            }));
+                    assertThat(observed, sameInstance(first));
+                    assertThat(observed.getSuppressed().length, is(1));
+                    assertThat(observed.getSuppressed()[0], sameInstance(later));
                     return null;
                 }));
                 assertThat(pool.getHikariPoolMXBean().getActiveConnections(), is(0));
