@@ -16,6 +16,7 @@
 package io.helidon.tests.integration.data.jdbc.contract;
 
 import java.sql.JDBCType;
+import java.math.BigDecimal;
 import java.sql.DriverManager;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -89,16 +90,20 @@ public abstract class AbstractJdbcCallableContract {
         client.create("DELETE FROM TX_MATRIX WHERE DATA_VALUE <> ?").bind(1, "baseline").execute();
         switch (vendor()) {
         case "oracle" -> {
+            client.create("CREATE OR REPLACE FUNCTION sp_decimal(p_input IN INTEGER) RETURN NUMBER AS BEGIN "
+                                  + "RETURN p_input + 1.25; END;").execute();
             client.create("CREATE OR REPLACE FUNCTION sp_add(p_input IN INTEGER) RETURN INTEGER AS BEGIN "
                                   + "RETURN p_input + 1; END;").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_values(p_input IN INTEGER, value IN OUT INTEGER, "
                                   + "other IN OUT VARCHAR2) AS BEGIN value := p_input + 1; other := 'done'; END;").execute();
             client.create("CREATE OR REPLACE FUNCTION sp_cursor(p_input IN INTEGER) RETURN SYS_REFCURSOR AS "
                                   + "c SYS_REFCURSOR; BEGIN IF p_input < 0 THEN RETURN NULL; END IF; "
-                                  + "OPEN c FOR SELECT 42 FROM dual WHERE p_input > 0 UNION ALL SELECT 43 FROM dual WHERE p_input > 1 "
+                                  + "OPEN c FOR SELECT 42 AS ID FROM dual WHERE p_input > 0 UNION ALL SELECT 43 FROM dual WHERE p_input > 1 "
                                   + "ORDER BY 1; RETURN c; END;").execute();
         }
         case "pgsql" -> {
+            client.create("CREATE OR REPLACE FUNCTION sp_decimal(p_input INTEGER) RETURNS NUMERIC "
+                                  + "LANGUAGE SQL AS $$ SELECT p_input + 1.25 $$").execute();
             client.create("CREATE OR REPLACE FUNCTION sp_add(p_input INTEGER) RETURNS INTEGER "
                                   + "LANGUAGE SQL AS $$ SELECT p_input + 1 $$").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_values(IN p_input INTEGER, INOUT value INTEGER, "
@@ -106,10 +111,13 @@ public abstract class AbstractJdbcCallableContract {
                                   + "other := 'done'; END $$").execute();
             client.create("CREATE OR REPLACE FUNCTION sp_cursor(p_input INTEGER) RETURNS refcursor "
                                   + "LANGUAGE plpgsql AS $$ DECLARE c refcursor; BEGIN IF p_input < 0 THEN RETURN NULL; "
-                                  + "END IF; OPEN c FOR SELECT 42 WHERE p_input > 0 UNION ALL SELECT 43 WHERE p_input > 1 "
+                                  + "END IF; OPEN c FOR SELECT 42 AS ID WHERE p_input > 0 UNION ALL SELECT 43 WHERE p_input > 1 "
                                   + "ORDER BY 1; RETURN c; END $$").execute();
         }
         case "mysql" -> {
+            client.create("DROP FUNCTION IF EXISTS sp_decimal").execute();
+            client.create("CREATE FUNCTION sp_decimal(p_input INTEGER) RETURNS DECIMAL(12, 2) DETERMINISTIC "
+                                  + "RETURN p_input + 1.25").execute();
             client.create("DROP FUNCTION IF EXISTS sp_add").execute();
             client.create("CREATE FUNCTION sp_add(p_input INTEGER) RETURNS INTEGER DETERMINISTIC RETURN p_input + 1").execute();
             client.create("DROP PROCEDURE IF EXISTS sp_values").execute();
@@ -190,6 +198,119 @@ public abstract class AbstractJdbcCallableContract {
                     .out("return", 1, JDBCType.INTEGER).outputs();
             assertThat(outputs.get("return", Integer.class), is(42));
         }
+    }
+
+    /**
+     * Inferred generated registrations preserve scalar, nullable, INOUT, and aggregate behavior across drivers.
+     */
+    @Test
+    protected void inferredScalarOutputsAndTypedNullInout() {
+        if (generated()) {
+            CallableRoutineRepository repository = manager.registry().get(CallableRoutineRepository.class);
+            assertThat(repository.inferredScalar(41), is(repository.scalar(41)));
+            assertThat(repository.inferredNullable(null), is(repository.nullable(null)));
+            assertThat(repository.inferredNullable(41), is(Optional.of(42)));
+            assertThat(repository.inferredInout(2, 40), is(Optional.of(repository.inout(2, 40))));
+            assertThat(repository.inferredInout(2, null), is(Optional.empty()));
+            assertThat(repository.inferredDecimal(41).compareTo(new BigDecimal("42.25")), is(0));
+            assertThat(repository.inferredAggregate(41, null, null),
+                       is(new CallableRoutineRepository.InferredValues(42, "done")));
+        } else {
+            JdbcClient.Statement statement = client.create("{call sp_inout(?, ?)}").bind(1, 2);
+            GeneratedJdbcData.bindNull(statement, 2, JDBCType.INTEGER);
+            assertThat(statement.call().out("value", 2, JDBCType.INTEGER).outputs().optional("value", Integer.class),
+                       is(Optional.empty()));
+            assertThat(client.create("{? = call sp_decimal(?)}").bind(2, 41).call().out("return", 1, JDBCType.DECIMAL, 2)
+                               .outputs().get("return", BigDecimal.class).compareTo(new BigDecimal("42.25")), is(0));
+        }
+        assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX").map(Integer.class).one(), is(1));
+    }
+
+    /**
+     * Inferred cursors retain required and optional presence and report unsupported MySQL registration.
+     */
+    @Test
+    protected void inferredCursorShapesAndUnsupportedCapability() {
+        if (vendor().equals("mysql")) {
+            DataException failure = assertThrows(DataException.class, () -> {
+                if (generated()) {
+                    manager.registry().get(CallableRoutineRepository.class).inferredUnsupportedCursor(41);
+                } else {
+                    client.create("{? = call sp_add(?)}").bind(2, 41).call().out("return", 1, JDBCType.REF_CURSOR)
+                            .consume(result -> {
+                                Objects.requireNonNull(result, "The callable result must not be null.");
+                                result.skipRemainingResults();
+                                result.cursor("return", row -> row.get(1, Integer.class)).list();
+                            });
+                }
+            });
+            assertThat(failure.getMessage(), containsString("callable"));
+        } else {
+            Tx.transaction(Tx.Type.REQUIRED, () -> {
+                if (generated()) {
+                    CallableRoutineRepository repository = manager.registry().get(CallableRoutineRepository.class);
+                    assertThat(repository.inferredCursor(1), is(List.of(new CallableRoutineRepository.Projection(42))));
+                    assertThat(repository.inferredOptionalCursor(-1), is(Optional.empty()));
+                    assertThat(repository.inferredOptionalCursor(0), is(Optional.of(List.of())));
+                    assertThat(repository.inferredOptionalCursor(1),
+                               is(Optional.of(List.of(new CallableRoutineRepository.Projection(42)))));
+                    if (vendor().equals("oracle")) {
+                        assertThat(repository.inferredBundle(-1),
+                                   is(new CallableRoutineRepository.InferredBundle(Optional.empty(), 0)));
+                        assertThat(repository.inferredBundle(0),
+                                   is(new CallableRoutineRepository.InferredBundle(Optional.of(List.of()), 1)));
+                        assertThat(repository.inferredBundle(41),
+                                   is(new CallableRoutineRepository.InferredBundle(
+                                           Optional.of(List.of(new CallableRoutineRepository.Projection(42))), 42)));
+                    }
+                } else {
+                    client.create("{? = call sp_cursor(?)}").bind(2, 1).call().out("return", 1, JDBCType.REF_CURSOR)
+                            .consume(result -> {
+                                Objects.requireNonNull(result, "The callable result must not be null.");
+                                result.skipRemainingResults();
+                                assertThat(result.cursor("return", row -> row.get(1, Integer.class)).list(), is(List.of(42)));
+                            });
+                }
+                return null;
+            });
+        }
+        assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX").map(Integer.class).one(), is(1));
+    }
+
+    /**
+     * Caught inferred cursor mapping failures still roll back the transaction and release the connection reservation.
+     */
+    @Test
+    protected void inferredMappingFailureRollsBackAndReleasesPool() {
+        assertThrows(TxException.class, () -> Tx.transaction(Tx.Type.REQUIRED, () -> {
+            client.create("INSERT INTO TX_MATRIX (DATA_VALUE) VALUES (?)").bind(1, "inferred-failure").execute();
+            if (vendor().equals("mysql")) {
+                assertThrows(DataException.class, () -> {
+                    if (generated()) {
+                        manager.registry().get(CallableRoutineRepository.class).inferredUnsupportedCursor(41);
+                    } else {
+                        client.create("{? = call sp_add(?)}").bind(2, 41).call()
+                                .out("return", 1, JDBCType.REF_CURSOR).execute();
+                    }
+                });
+            } else if (generated()) {
+                assertThrows(IllegalArgumentException.class,
+                             () -> manager.registry().get(CallableRoutineRepository.class).inferredMappingFailure(1));
+            } else {
+                assertThrows(IllegalArgumentException.class, () -> client.create("{? = call sp_cursor(?)}").bind(2, 1).call()
+                        .out("return", 1, JDBCType.REF_CURSOR).consume(result -> {
+                            Objects.requireNonNull(result, "The callable result must not be null.");
+                            result.skipRemainingResults();
+                            result.cursor("return", row -> new CallableRoutineRepository.RejectedProjection(
+                                    row.get(1, Integer.class))).one();
+                        }));
+            }
+            return null;
+        }));
+        assertThat(client.create("SELECT COUNT(*) FROM TX_MATRIX WHERE DATA_VALUE = ?").bind(1, "inferred-failure")
+                           .map(Integer.class).one(), is(0));
+        assertThat(client.create("{? = call sp_add(?)}").bind(2, 41).call().out("return", 1, JDBCType.INTEGER)
+                           .outputs().get("return", Integer.class), is(42));
     }
 
     @Test

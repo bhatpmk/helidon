@@ -17,8 +17,6 @@ package io.helidon.data.jdbc.tests;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Stream;
 
 import io.helidon.data.jdbc.JdbcClient;
 
@@ -54,8 +52,7 @@ class GeneratedRepositoryTest {
         when(client.create(anyString())).thenReturn(statement);
         when(statement.bind(anyInt(), any())).thenReturn(statement);
         when(statement.map(String.class)).thenReturn(rows);
-        var action = new AtomicReference<Stream<String>>();
-        repository.values("input", action::set);
+        repository.values("input", _ -> { });
         verify(statement).bind(1, "input");
         verify(statement).bind(2, "input");
         verify(statement).bind(3, "input");

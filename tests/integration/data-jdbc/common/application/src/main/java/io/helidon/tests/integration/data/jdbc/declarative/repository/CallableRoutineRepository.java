@@ -16,6 +16,7 @@
 package io.helidon.tests.integration.data.jdbc.declarative.repository;
 
 import java.sql.JDBCType;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.Objects;
@@ -28,7 +29,7 @@ import io.helidon.service.registry.Service;
 
 @Data.Repository
 @Data.Provider("jdbc")
-public interface CallableRoutineRepository {
+public interface CallableRoutineRepository extends InferredCallableParent<Integer> {
     @Jdbc.Statement("{? = call sp_add(:jdbcClient)}")
     @Jdbc.OutParameter(type = JDBCType.INTEGER)
     int scalar(Integer jdbcClient);
@@ -108,6 +109,52 @@ public interface CallableRoutineRepository {
     @Jdbc.Statement("SELECT DATA_VALUE AS label FROM TX_MATRIX WHERE DATA_VALUE = :input")
     QueryProjection recordBundle_OUTPUT_0(String input);
 
+    @Jdbc.Statement("{? = call sp_add(:input)}")
+    @Jdbc.OutParameter
+    Optional<Integer> inferredNullable(Integer input);
+
+    @Jdbc.Statement("{call sp_inout(:input, :value)}")
+    @Jdbc.OutParameter("value")
+    Optional<Integer> inferredInout(int input, Integer value);
+
+    @Jdbc.Statement("{? = call sp_decimal(:input)}")
+    @Jdbc.OutParameter(scale = 2)
+    BigDecimal inferredDecimal(Integer input);
+
+    @Jdbc.Statement("{call sp_values(:input, :value, :other)}")
+    InferredValues inferredAggregate(Integer input, Integer value, String other);
+
+    @Jdbc.Statement("{? = call sp_cursor(:input)}")
+    @Jdbc.OutParameter
+    List<Projection> inferredCursor(int input);
+
+    @Jdbc.Statement("{? = call sp_cursor(:input)}")
+    @Jdbc.OutParameter
+    Optional<List<Projection>> inferredOptionalCursor(int input);
+
+    @Jdbc.Statement("{? = call sp_cursor(:input)}")
+    @Jdbc.OutParameter
+    RejectedProjection inferredMappingFailure(int input);
+
+    @Jdbc.Statement("{? = call sp_add(:input)}")
+    @Jdbc.OutParameter
+    List<Projection> inferredUnsupportedCursor(int input);
+
+    @Jdbc.Statement("{call sp_bundle(:input, :value, :rows)}")
+    InferredBundle inferredBundle(int input);
+
+    record InferredValues(@Jdbc.OutParameter int value, @Jdbc.OutParameter String other) {
+    }
+
+    record InferredBundle(@Jdbc.OutParameter Optional<List<Projection>> rows, @Jdbc.OutParameter int value) {
+    }
+
+    record RejectedProjection(int id) {
+        public RejectedProjection {
+            throw new IllegalArgumentException("The test rejects the mapped cursor row.");
+        }
+    }
+
     record RecordBundle(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows,
                         @Jdbc.OutParameter(type = JDBCType.INTEGER) int value) {
     }
@@ -139,4 +186,10 @@ public interface CallableRoutineRepository {
     record Values(@Jdbc.OutParameter(type = JDBCType.INTEGER) int value,
                   @Jdbc.OutParameter(type = JDBCType.VARCHAR) String other) {
     }
+}
+
+interface InferredCallableParent<T> {
+    @Jdbc.Statement("{? = call sp_add(:input)}")
+    @Jdbc.OutParameter
+    T inferredScalar(T input);
 }

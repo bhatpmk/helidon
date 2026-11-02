@@ -194,7 +194,8 @@ public final class Jdbc {
     /**
      * Registers a callable output. A method name selects a named SQL marker.
      * An empty method name declares the leading return, whose logical name is return.
-     * An empty component name uses the record component name. Types are always explicit.
+     * An empty component name uses the record component name.
+     * Omitted types are inferred from automatically mapped Java outputs as described by {@link #type()}.
      */
     @Documented
     @Retention(RetentionPolicy.CLASS)
@@ -209,11 +210,26 @@ public final class Jdbc {
         String value() default "";
 
         /**
-         * Returns the explicit JDBC registration type.
+         * Returns the JDBC registration type. An explicitly supplied value always wins,
+         * including {@link JDBCType#NULL}. When omitted, generation infers the type from
+         * a single automatically mapped method output or an output record component.
+         * <p>
+         * Standard mappings are Boolean to BOOLEAN, Byte to TINYINT, Short to SMALLINT,
+         * Integer to INTEGER, Long to BIGINT, Float to REAL, Double to DOUBLE,
+         * BigDecimal to DECIMAL, String to VARCHAR, byte[] to VARBINARY, LocalDate to DATE,
+         * LocalTime to TIME, and LocalDateTime to TIMESTAMP. Primitive equivalents,
+         * Optional scalar wrappers, and the corresponding java.sql temporal types use
+         * the same registrations. Supported non-scalar materialized cursor shapes
+         * infer REF_CURSOR. A singular scalar cursor requires an explicit REF_CURSOR.
+         * <p>
+         * Callbacks, snapshots, void methods, multiple method outputs, and nonempty
+         * {@link #typeName()} require explicit types. Inference uses resolved output
+         * types at compile time and does not inspect routine metadata or input types.
+         * The default NULL permits omission in Java source and is never an inferred registration.
          *
          * @return The JDBC registration type.
          */
-        JDBCType type();
+        JDBCType type() default JDBCType.NULL;
 
         /**
          * Returns the database type name when named registration is required.

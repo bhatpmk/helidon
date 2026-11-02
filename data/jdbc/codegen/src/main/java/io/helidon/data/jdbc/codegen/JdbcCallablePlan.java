@@ -25,6 +25,7 @@ import java.util.function.Consumer;
 
 import io.helidon.codegen.RoundContext;
 import io.helidon.common.types.Annotation;
+import io.helidon.common.types.AnnotationProperty;
 import io.helidon.common.types.ElementKind;
 import io.helidon.common.types.ResolvedType;
 import io.helidon.common.types.TypeInfo;
@@ -70,6 +71,17 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
         return List.copyOf(result);
     }
 
+    static List<Output> methodOutputs(TypedElementInfo method) {
+        boolean inferred = declarations(method).size() == 1
+                && !method.typeName().equals(TypeNames.PRIMITIVE_VOID)
+                && !method.typeName().equals(JdbcCodegenTypes.OUT_PARAMETERS)
+                && method.parameterArguments().stream().noneMatch(parameter -> {
+                    TypeName type = parameter.typeName().genericTypeName();
+                    return type.equals(TypeName.create(Consumer.class)) || type.equals(JdbcCodegenTypes.CALL_MAPPER);
+                });
+        return outputs(method, "return", inferred);
+    }
+
     static JdbcMethodPlan create(TypedElementInfo method, RoundContext context, String sql) {
         JdbcExecutionSelection execution = JdbcExecutionSelection.create(method);
         if (execution == JdbcExecutionSelection.QUERY || execution == JdbcExecutionSelection.UPDATE
@@ -82,8 +94,9 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
             throw JdbcMethodPlan.failure(method, "An output record cannot accompany method outputs or a method row mapper.");
         }
         List<Output> outputs = aggregate
-                ? recordComponents.stream().flatMap(component -> outputs(component, component.elementName()).stream()).toList()
-                : outputs(method, "return");
+                ? recordComponents.stream()
+                        .flatMap(component -> outputs(component, component.elementName(), true).stream()).toList()
+                : methodOutputs(method);
         TypedElementInfo control = null;
         boolean consumer = false;
         List<TypedElementInfo> inputs = new ArrayList<>();
@@ -219,7 +232,7 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
         return plan;
     }
 
-    private static List<Output> outputs(TypedElementInfo declaration, String fallback) {
+    private static List<Output> outputs(TypedElementInfo declaration, String fallback, boolean inferred) {
         List<Annotation> annotations = declarations(declaration);
         if (declaration.kind() == ElementKind.RECORD_COMPONENT && annotations.size() != 1) {
             throw JdbcMethodPlan.failure(declaration, "Every output record component must declare exactly one output.");
@@ -227,9 +240,31 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
         return annotations.stream().map(annotation -> {
             String marker = annotation.stringValue().orElse("");
             String name = marker.isEmpty() ? fallback : marker;
-            String type = annotation.stringValue("type").orElseThrow(() ->
-                    JdbcMethodPlan.failure(declaration, "Every callable output requires an explicit JDBC type."));
             String typeName = annotation.stringValue("typeName").orElse("");
+            String type;
+            if (annotation.property("type").map(AnnotationProperty::explicit).orElse(false)) {
+                type = annotation.stringValue("type").orElseThrow(() ->
+                        JdbcMethodPlan.failure(declaration, "The callable output requires a JDBC registration type."));
+            } else {
+                if (!inferred || !typeName.isEmpty()) {
+                    throw JdbcMethodPlan.failure(declaration,
+                            "The callable output requires an explicit JDBC type because its registration cannot be inferred.");
+                }
+                TypeName scalar = JdbcScalarTypes.optionalScalarType(declaration.typeName()).orElse(declaration.typeName());
+                if (JdbcScalarTypes.isScalar(scalar)) {
+                    type = JdbcScalarTypes.nullJdbcTypeConstant(scalar);
+                    if (!SNAPSHOT_TYPES.contains(type)) {
+                        throw JdbcMethodPlan.failure(declaration,
+                                "The callable output requires an explicit JDBC type for this scalar type.");
+                    }
+                    if (declaration.hasAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER)) {
+                        throw JdbcMethodPlan.failure(declaration,
+                                "A scalar cursor with a row mapper requires an explicit REF_CURSOR type.");
+                    }
+                } else {
+                    type = "REF_CURSOR";
+                }
+            }
             int scale = annotation.intValue("scale").orElse(-1);
             if (name.isBlank() || (!typeName.isEmpty() && typeName.isBlank()) || scale < -1
                     || (scale >= 0 && (!typeName.isEmpty() || (!type.equals("NUMERIC") && !type.equals("DECIMAL"))))) {

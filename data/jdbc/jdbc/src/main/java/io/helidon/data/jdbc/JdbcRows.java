@@ -87,14 +87,19 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
                 : statement.optionalScalar(optionalScalarType, plan);
     }
 
+    /**
+     * Executes and materializes every row.
+     *
+     * @return mapped values in encounter order
+     */
+    @Override
+    public List<T> list() {
+        return statement.list(mapper, plan);
+    }
+
     @Override
     public void useStream(Consumer<Stream<T>> action) {
         Objects.requireNonNull(action, "The stream consumer must not be null.");
         statement.useStream(mapper, plan, action);
-    }
-
-    @Override
-    public List<T> list() {
-        return statement.list(mapper, plan);
     }
 }

@@ -211,11 +211,8 @@ final class JdbcTypeHierarchy {
     }
 
     private static List<OutputContract> outputContract(TypedElementInfo method) {
-        return JdbcCallablePlan.declarations(method).stream()
-                .map(annotation -> new OutputContract(annotation.stringValue().orElse(""),
-                                                       annotation.stringValue("type").orElse(""),
-                                                       annotation.stringValue("typeName").orElse(""),
-                                                       annotation.intValue("scale").orElse(-1)))
+        return JdbcCallablePlan.methodOutputs(method).stream()
+                .map(output -> new OutputContract(output.marker(), output.type(), output.typeName(), output.scale()))
                 .sorted(Comparator.comparing(OutputContract::name))
                 .toList();
     }
