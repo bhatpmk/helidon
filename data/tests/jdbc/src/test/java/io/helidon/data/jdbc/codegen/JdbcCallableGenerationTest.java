@@ -350,6 +350,10 @@ import javax.lang.model.element.TypeElement;
                         @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
                         @Jdbc.RowMapper(GeneratedMapper.class)
                         List<GeneratedRow> execute();
+                        @Jdbc.Statement("{call routine(:rows)}")
+                        @Jdbc.OutParameter("rows")
+                        @Jdbc.RowMapper(GeneratedMapper.class)
+                        List<GeneratedRow> inferred();
                     }
                     """);
             return false;

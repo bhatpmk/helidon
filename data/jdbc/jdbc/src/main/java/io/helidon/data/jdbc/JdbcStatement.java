@@ -230,6 +230,9 @@ final class JdbcStatement implements JdbcClient.Statement {
         runner.useStream(operation(plan), mapper, action);
     }
 
+    /**
+     * Rejects changes after a terminal operation claims this stage.
+     */
     void ensureMutable() {
         if (terminalState) {
             throw new IllegalStateException("A JDBC statement can perform only one terminal operation.");
