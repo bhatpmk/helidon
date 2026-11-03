@@ -203,6 +203,11 @@ application.
 
 ## Result Mapping
 
+To read a native UUID column, use `map(UUID.class)`. This requires a compatible
+database and JDBC driver, such as PostgreSQL with a `uuid` column. See
+[Supported Scalar Types](declarative.md#supported-scalar-types) for the UUID mapping
+requirements.
+
 The `map` method accepts the class of a supported scalar to read from the first
 selected column:
 

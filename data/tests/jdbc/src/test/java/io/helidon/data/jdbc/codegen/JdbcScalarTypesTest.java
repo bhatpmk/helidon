@@ -15,8 +15,10 @@
  */
 package io.helidon.data.jdbc.codegen;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -25,12 +27,24 @@ import java.time.OffsetTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
+import io.helidon.builder.api.RuntimeType;
+import io.helidon.codegen.apt.AptProcessor;
+import io.helidon.codegen.testing.TestCompiler;
+import io.helidon.common.Generated;
 import io.helidon.common.types.TypeName;
 import io.helidon.common.types.TypeNames;
+import io.helidon.data.Data;
+import io.helidon.data.codegen.DataGeneratorProvider;
+import io.helidon.data.codegen.common.RepositoryCodegenProvider;
+import io.helidon.data.jdbc.JdbcClient;
+import io.helidon.service.registry.Service;
+import io.helidon.transaction.Tx;
 
 import org.junit.jupiter.api.Test;
 
+import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -38,6 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class JdbcScalarTypesTest {
 
     private static final Map<TypeName, String> REFERENCE_TYPES = Map.ofEntries(
+            Map.entry(TypeName.create(UUID.class), "OTHER"),
             Map.entry(TypeName.create(Boolean.class), "BOOLEAN"),
             Map.entry(TypeName.create(Byte.class), "TINYINT"),
             Map.entry(TypeName.create(Short.class), "SMALLINT"),
@@ -116,5 +131,60 @@ class JdbcScalarTypesTest {
         assertThat(JdbcScalarTypes.optionalScalarType(optionalWildcard), is(Optional.empty()));
         assertThat(JdbcScalarTypes.optionalScalarType(optionalList), is(Optional.empty()));
         assertThat(JdbcScalarTypes.optionalScalarType(TypeNames.STRING), is(Optional.empty()));
+    }
+
+    @Test
+    void compilesUuidParametersResultsRecordsAndKeys() throws IOException {
+        String repositorySource = """
+                package example;
+
+                import java.util.List;
+                import java.util.Optional;
+                import java.util.UUID;
+                import io.helidon.data.Data;
+                import io.helidon.data.jdbc.Jdbc;
+
+                @Data.Repository
+                @Data.Provider("jdbc")
+                interface UuidRepository {
+                    record Projection(UUID id, Optional<UUID> related) {}
+                    @Jdbc.Statement("INSERT INTO UUID_VALUE (ID) VALUES (?)")
+                    void insert(UUID id);
+                    @Jdbc.Statement("UPDATE UUID_VALUE SET ID = :id WHERE ID = :id")
+                    @Jdbc.Execution(Jdbc.ExecutionType.UPDATE)
+                    long update(UUID id);
+                    @Jdbc.Statement("SELECT ID FROM UUID_VALUE")
+                    UUID one();
+                    @Jdbc.Statement("SELECT ID FROM UUID_VALUE")
+                    Optional<UUID> optional();
+                    @Jdbc.Statement("SELECT ID FROM UUID_VALUE ORDER BY ID")
+                    List<UUID> list();
+                    @Jdbc.Statement("SELECT ID, RELATED FROM UUID_VALUE")
+                    Projection projection();
+                    @Jdbc.Statement("INSERT INTO UUID_VALUE DEFAULT VALUES")
+                    @Jdbc.GeneratedKeys("ID")
+                    UUID key();
+                    @Jdbc.Statement("INSERT INTO UUID_VALUE DEFAULT VALUES")
+                    @Jdbc.GeneratedKeys
+                    Optional<UUID> optionalKey();
+                    @Jdbc.Statement("INSERT INTO UUID_VALUE DEFAULT VALUES")
+                    @Jdbc.GeneratedKeys("ID")
+                    List<UUID> keys();
+                }
+                """;
+        TestCompiler.Result result = TestCompiler.builder()
+                .currentRelease()
+                .printDiagnostics(false)
+                .addProcessor(AptProcessor::new)
+                .addClasspath(List.of(RuntimeType.class, Data.class, JdbcClient.class, Service.class, Tx.class,
+                                      Generated.class, TypeName.class, DataGeneratorProvider.class,
+                                      RepositoryCodegenProvider.class, JdbcRepositoryGeneratorProvider.class))
+                .addSource("UuidRepository.java", repositorySource)
+                .build().compile();
+        assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+        String source = Files.readString(result.sourceOutput().resolve("example/UuidRepository__Jdbc.java"));
+        assertThat(source, containsString("JDBCType.OTHER"));
+        assertThat(source, containsString("UUID.class"));
+        assertThat(Files.exists(result.classOutput().resolve("example/UuidRepository__Jdbc.class")), is(true));
     }
 }

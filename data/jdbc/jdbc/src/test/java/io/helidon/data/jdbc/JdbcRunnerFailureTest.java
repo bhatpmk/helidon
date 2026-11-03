@@ -25,6 +25,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.sql.DataSource;
@@ -48,6 +49,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -57,6 +59,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class JdbcRunnerFailureTest {
+    private static final UUID UUID_VALUE = UUID.fromString("00112233-4455-6677-8899-aabbccddeeff");
+
     private DataSource dataSource;
     private Connection connection;
     private PreparedStatement statement;
@@ -1151,6 +1155,65 @@ class JdbcRunnerFailureTest {
         order.verify(resultSet).close();
         order.verify(statement).close();
         order.verify(connection).close();
+    }
+
+    @Test
+    void closesResourcesWithoutRetryAfterUuidReadFailure() throws Exception {
+        ResultSet resultSet = prepareSuccessfulQuery();
+        when(resultSet.getObject(1, UUID.class)).thenThrow(new SQLException("The secret UUID conversion failed.", "22000"));
+        doThrow(new SQLException("The secret close operation failed.")).when(resultSet).close();
+        DataException failure = assertThrows(DataException.class,
+                () -> client.create("SELECT VALUE FROM TEST_VALUE").map(UUID.class).one());
+        assertThat(failure.getMessage(), not(containsString("secret")));
+        assertThat(failure.getSuppressed().length, is(1));
+        verify(resultSet).getObject(1, UUID.class);
+        verify(resultSet, never()).getString(1);
+        verify(resultSet).close();
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    @Test
+    void closesLeaseWithoutExecutionAfterUuidBindFailure() throws Exception {
+        when(connection.prepareStatement("UPDATE TEST_VALUE SET VALUE = ?")).thenReturn(statement);
+        doThrow(new SQLException("The secret UUID binding failed.", "22000")).when(statement).setObject(1, UUID_VALUE);
+        assertThrows(DataException.class, () -> client.create("UPDATE TEST_VALUE SET VALUE = ?").bind(1, UUID_VALUE).execute());
+        verify(statement, never()).execute();
+        verify(statement, never()).setString(1, UUID_VALUE.toString());
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    /**
+     * Verifies runtime failures from UUID JDBC access are sanitized and the
+     * same client can execute another operation after cleanup.
+     */
+    @Test
+    void recoversAfterRuntimeUuidConversionFailure() throws Exception {
+        ResultSet resultSet = prepareSuccessfulQuery();
+        when(resultSet.getObject(1, UUID.class))
+                .thenThrow(new IllegalArgumentException("The secret UUID driver value could not be converted."));
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> client.create("SELECT VALUE FROM TEST_VALUE").map(UUID.class).one());
+        assertThat(failure.getMessage(), not(containsString("secret")));
+        verify(resultSet).close();
+        verify(statement).close();
+        verify(connection).close();
+        doReturn(UUID_VALUE).when(resultSet).getObject(1, UUID.class);
+        when(resultSet.next()).thenReturn(true, false);
+        assertThat(client.create("SELECT VALUE FROM TEST_VALUE").map(UUID.class).one(), is(UUID_VALUE));
+    }
+
+    @Test
+    void sanitizesRuntimeUuidBindFailureWithoutExecution() throws Exception {
+        when(connection.prepareStatement("UPDATE TEST_VALUE SET VALUE = ?")).thenReturn(statement);
+        doThrow(new IllegalStateException("The secret UUID binding failed.")).when(statement).setObject(1, UUID_VALUE);
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> client.create("UPDATE TEST_VALUE SET VALUE = ?").bind(1, UUID_VALUE).execute());
+        assertThat(failure.getMessage(), not(containsString("secret")));
+        verify(statement, never()).execute();
+        verify(statement).close();
+        verify(connection).close();
     }
 
     private static void assertCleanupFailure(ThrowingInvocation invocation, SQLException expected) {

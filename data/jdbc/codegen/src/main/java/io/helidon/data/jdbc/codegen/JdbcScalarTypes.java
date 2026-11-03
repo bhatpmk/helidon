@@ -21,6 +21,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 import io.helidon.common.types.TypeName;
 import io.helidon.common.types.TypeNames;
@@ -32,7 +33,8 @@ final class JdbcScalarTypes {
 
     // Defines the scalar types accepted for implicit result mapping and
     // declarative parameters. JDBC permitted parameter types come from the
-    // Appendix B mappings. Generated repositories use the canonical type
+    // Appendix B mappings, except for native UUID, which requires a compatible
+    // driver and schema. Generated repositories use the canonical type
     // shown below to bind a null argument. Keep the runtime scalar list
     // aligned with this table.
     //
@@ -56,12 +58,14 @@ final class JdbcScalarTypes {
     // | java.sql.Time      | TIME                               | TIME                    |
     // | LocalDateTime      | TIMESTAMP                          | TIMESTAMP               |
     // | java.sql.Timestamp | TIMESTAMP                          | TIMESTAMP               |
+    // | UUID               | Database dependent native UUID     | OTHER                   |
     // +--------------------+------------------------------------+-------------------------+
     // OffsetTime and OffsetDateTime are deliberately not scalar types. JDBC time-zone type identifiers do not
     // guarantee a lossless physical representation across the supported databases. Applications can bind supported
     // local temporal fields plus offset seconds, or use an explicitly encoded String representation. Keep this
     // exclusion aligned with JdbcScalarAccess and the documented portable JDBC contract.
     private static final Map<TypeName, String> NULL_TYPE_CONSTANTS = Map.ofEntries(
+            Map.entry(TypeName.create(UUID.class), "OTHER"),
             Map.entry(TypeName.create(Boolean.class), "BOOLEAN"),
             Map.entry(TypeName.create(Byte.class), "TINYINT"),
             Map.entry(TypeName.create(Short.class), "SMALLINT"),

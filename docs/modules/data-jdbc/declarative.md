@@ -358,6 +358,7 @@ application.
 | Text and binary | `String`, `byte[]` |
 | Java time | `LocalDate`, `LocalTime`, `LocalDateTime` |
 | JDBC time | `java.sql.Date`, `java.sql.Time`, `java.sql.Timestamp` |
+| UUID | `java.util.UUID` |
 
 For a null reference argument, Data JDBC uses the following canonical JDBC
 type:
@@ -377,6 +378,7 @@ type:
 | `LocalDate`, `java.sql.Date` | `DATE` |
 | `LocalTime`, `java.sql.Time` | `TIME` |
 | `LocalDateTime`, `java.sql.Timestamp` | `TIMESTAMP` |
+| `java.util.UUID` | `OTHER` |
 
 This mapping applies only to reference parameters because primitive parameters
 cannot be null.
@@ -390,6 +392,16 @@ Data JDBC does not map `OffsetTime` or `OffsetDateTime` implicitly because
 databases do not preserve those values consistently. An application can store
 the local value and offset separately, or store an ISO 8601 value in a character
 column and reconstruct the value in a row mapper.
+
+UUID mapping requires a compatible database and JDBC driver. PostgreSQL native
+`uuid` columns support UUID parameters and results directly. For UUID values stored
+as text or binary data, use `String` or `byte[]` as the repository type and convert
+the values in application code or a row mapper.
+
+A null UUID repository argument uses `OTHER`, which relies on SQL type inference.
+On PostgreSQL, an INSERT, UPDATE, or comparison with a UUID column supplies that
+context. For an expression without that context, supply an explicit cast, such as
+`SELECT CAST(:id AS UUID) IS NULL`.
 
 ### Custom Row Mapping
 

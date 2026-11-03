@@ -41,6 +41,12 @@ import io.helidon.service.registry.Service;
  * ownership of the data source, while the client closes each connection it
  * obtains from it.
  * <p>
+ * Supported scalar mappings also include {@link java.util.UUID} when the JDBC
+ * driver and schema support native UUID object binding and typed reading.
+ * UUID uses {@code PreparedStatement.setObject} and {@code ResultSet.getObject}
+ * with the UUID class token. Conversion from text or binary columns is driver
+ * dependent. No representation fallback or automatic retry is performed.
+ * <p>
  * Annotation based applications inject a registry managed client with the
  * {@code jdbc} {@link io.helidon.data.Data.ProviderType} and a {@link Service.Named}
  * qualifier. A registry managed client uses Helidon's local transaction

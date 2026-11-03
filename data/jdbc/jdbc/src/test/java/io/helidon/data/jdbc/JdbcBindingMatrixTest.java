@@ -30,17 +30,24 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 import javax.sql.DataSource;
 
+import io.helidon.data.DataException;
+import io.helidon.data.NonUniqueResultException;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
@@ -50,6 +57,8 @@ import static org.mockito.Mockito.when;
 
 class JdbcBindingMatrixTest {
     private static final String SQL = "UPDATE TEST_VALUE SET VALUE = ?";
+    private static final String UUID_SQL = "SELECT ID FROM UUID_VALUE WHERE ID = ?";
+    private static final UUID UUID_VALUE = UUID.fromString("00112233-4455-6677-8899-aabbccddeeff");
 
     private DataSource dataSource;
     private Connection connection;
@@ -64,10 +73,11 @@ class JdbcBindingMatrixTest {
 
     /**
      * Verifies that every supported non-null scalar reaches JDBC through its
-     * fixed setter and only Java-time values use {@code setObject}.
+     * fixed setter and only Java time values and UUID use {@code setObject}.
      */
     @Test
     void bindsEverySupportedReferenceScalar() throws Exception {
+        assertBinding(UUID.fromString("00112233-4455-6677-8899-aabbccddeeff"));
         assertBinding(Boolean.TRUE);
         assertBinding((byte) 2);
         assertBinding((short) 3);
@@ -92,6 +102,7 @@ class JdbcBindingMatrixTest {
      */
     @Test
     void bindsEveryCanonicalTypedNull() throws Exception {
+        assertNullBinding(JDBCType.OTHER);
         assertNullBinding(JDBCType.BOOLEAN);
         assertNullBinding(JDBCType.TINYINT);
         assertNullBinding(JDBCType.SMALLINT);
@@ -211,6 +222,62 @@ class JdbcBindingMatrixTest {
         verify(dataSource, never()).getConnection();
     }
 
+    @Test
+    void readsDetachedUuidThroughScalarAndRowAccessors() throws Exception {
+        ResultSet resultSet = prepareUuidQuery();
+        assertThat(uuidRows().one(), is(UUID_VALUE));
+        verify(statement).setObject(1, UUID_VALUE);
+        InOrder cleanup = inOrder(resultSet, statement, connection);
+        // Advancing the JDBC result sequence closes its exhausted current result set.
+        cleanup.verify(statement).getMoreResults();
+        cleanup.verify(statement).close();
+        cleanup.verify(connection).close();
+
+        setUp();
+        prepareUuidQuery();
+        assertThat(JdbcTestClients.create(dataSource).create(UUID_SQL).bind(1, UUID_VALUE)
+                           .map(row -> List.of(row.get(1, UUID.class), row.get("ID", UUID.class),
+                                               row.optional(1, UUID.class).orElseThrow(),
+                                               row.optional("ID", UUID.class).orElseThrow())).one(),
+                   is(List.of(UUID_VALUE, UUID_VALUE, UUID_VALUE, UUID_VALUE)));
+    }
+
+    @Test
+    void preservesUuidNullAndCardinalitySemantics() throws Exception {
+        ResultSet resultSet = prepareUuidQuery();
+        when(resultSet.getObject(1, UUID.class)).thenReturn(null);
+        assertThat(uuidRows().optional(), is(Optional.empty()));
+        setUp();
+        resultSet = prepareUuidQuery();
+        when(resultSet.getObject(1, UUID.class)).thenReturn(null);
+        assertThrows(DataException.class, () -> uuidRows().one());
+
+        setUp();
+        resultSet = prepareUuidQuery();
+        when(resultSet.getObject(1, UUID.class)).thenReturn(null);
+        assertThrows(DataException.class, () -> uuidRows().list());
+
+        setUp();
+        resultSet = prepareUuidQuery();
+        when(resultSet.next()).thenReturn(false);
+        assertThat(uuidRows().optional(), is(Optional.empty()));
+
+        setUp();
+        resultSet = prepareUuidQuery();
+        when(resultSet.next()).thenReturn(true, true, false);
+        assertThrows(NonUniqueResultException.class,
+                     () -> uuidRows().optional());
+    }
+
+    @Test
+    void rejectsNullAndUnsupportedBindingsBeforeAcquisition() throws Exception {
+        JdbcClient client = JdbcTestClients.create(dataSource);
+        assertThrows(NullPointerException.class, () -> client.create(UUID_SQL).bind(1, null));
+        assertThrows(NullPointerException.class, () -> client.create(UUID_SQL).map((Class<UUID>) null));
+        assertThrows(IllegalArgumentException.class, () -> client.create(UUID_SQL).bind(1, new Object()));
+        verify(dataSource, never()).getConnection();
+    }
+
     private void assertBinding(Object value) throws Exception {
         prepareOperation();
         JdbcTestClients.create(dataSource)
@@ -249,7 +316,8 @@ class JdbcBindingMatrixTest {
         verify(statement, never()).setNull(anyInt(), anyInt());
         if (!(value instanceof LocalDate)
                 && !(value instanceof LocalTime)
-                && !(value instanceof LocalDateTime)) {
+                && !(value instanceof LocalDateTime)
+                && !(value instanceof UUID)) {
             verify(statement, never()).setObject(anyInt(), any());
         }
     }
@@ -272,5 +340,26 @@ class JdbcBindingMatrixTest {
         when(statement.execute()).thenReturn(false);
         when(statement.getLargeUpdateCount()).thenReturn(1L, -1L);
         when(statement.getMoreResults()).thenReturn(false);
+    }
+
+    private ResultSet prepareUuidQuery() throws Exception {
+        ResultSet resultSet = mock(ResultSet.class);
+        ResultSetMetaData metadata = mock(ResultSetMetaData.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.getAutoCommit()).thenReturn(true);
+        when(connection.prepareStatement(UUID_SQL)).thenReturn(statement);
+        when(statement.execute()).thenReturn(true);
+        when(statement.getResultSet()).thenReturn(resultSet);
+        when(statement.getLargeUpdateCount()).thenReturn(-1L);
+        when(resultSet.getMetaData()).thenReturn(metadata);
+        when(metadata.getColumnCount()).thenReturn(1);
+        when(metadata.getColumnLabel(1)).thenReturn("ID");
+        when(resultSet.next()).thenReturn(true, false);
+        when(resultSet.getObject(1, UUID.class)).thenReturn(UUID_VALUE);
+        return resultSet;
+    }
+
+    private JdbcClient.Rows<UUID> uuidRows() {
+        return JdbcTestClients.create(dataSource).create(UUID_SQL).bind(1, UUID_VALUE).map(UUID.class);
     }
 }

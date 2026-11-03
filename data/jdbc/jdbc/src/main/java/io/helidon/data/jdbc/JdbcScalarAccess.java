@@ -27,9 +27,10 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
- * Provides the fixed portable JDBC access paths for supported scalar values.
+ * Provides fixed JDBC access paths for supported scalar values.
  */
 final class JdbcScalarAccess {
 
@@ -53,7 +54,8 @@ final class JdbcScalarAccess {
                                                                  LocalDateTime.class,
                                                                  Date.class,
                                                                  Time.class,
-                                                                 Timestamp.class);
+                                                                 Timestamp.class,
+                                                                 UUID.class);
 
     private static final Map<Class<?>, Class<?>> PRIMITIVE_WRAPPERS = Map.of(boolean.class, Boolean.class,
                                                                              byte.class, Byte.class,
@@ -70,7 +72,7 @@ final class JdbcScalarAccess {
     }
 
     /**
-     * Binds one supported non-null scalar through its portable JDBC setter.
+     * Binds one supported non-null scalar through its fixed JDBC setter.
      *
      * @param statement prepared statement
      * @param index one-based parameter index
@@ -106,7 +108,8 @@ final class JdbcScalarAccess {
             statement.setDate(index, dateValue);
         } else if (value instanceof LocalDate
                 || value instanceof LocalTime
-                || value instanceof LocalDateTime) {
+                || value instanceof LocalDateTime
+                || value instanceof UUID) {
             statement.setObject(index, value);
         } else {
             throw new IllegalArgumentException(
@@ -126,7 +129,7 @@ final class JdbcScalarAccess {
     }
 
     /**
-     * Reads one supported scalar through its portable JDBC getter.
+     * Reads one supported scalar through its fixed JDBC getter.
      *
      * @param resultSet current result set
      * @param index one-based column index
@@ -166,7 +169,8 @@ final class JdbcScalarAccess {
             return resultSet.getTimestamp(index);
         } else if (targetType == LocalDate.class
                 || targetType == LocalTime.class
-                || targetType == LocalDateTime.class) {
+                || targetType == LocalDateTime.class
+                || targetType == UUID.class) {
             return resultSet.getObject(index, targetType);
         }
         throw new IllegalArgumentException(

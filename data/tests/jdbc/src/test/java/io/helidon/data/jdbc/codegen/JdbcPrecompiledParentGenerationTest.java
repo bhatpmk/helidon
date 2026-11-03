@@ -210,4 +210,39 @@ class JdbcPrecompiledParentGenerationTest {
         assertThat(childDiagnostics, child.success(), is(true));
         assertThat(Files.exists(child.sourceOutput().resolve("example/Books__Jdbc.java")), is(true));
     }
+
+    @Test
+    void compilesInheritedUuidFromSeparatelyCompiledParent() {
+        TestCompiler.Result parent = TestCompiler.builder()
+                .currentRelease()
+                .addClasspath(List.of(RuntimeType.class, JdbcClient.class))
+                .addSource("UuidParent.java", """
+                        package example;
+                        import io.helidon.data.jdbc.Jdbc;
+                        public interface UuidParent<T> {
+                            @Jdbc.Statement("SELECT ID FROM UUID_VALUE WHERE ID = ?")
+                            T find(T id);
+                        }
+                        """)
+                .build().compile();
+        assertThat(String.join("\n", parent.diagnostics()), parent.success(), is(true));
+        TestCompiler.Result child = TestCompiler.builder()
+                .currentRelease()
+                .printDiagnostics(false)
+                .addProcessor(AptProcessor::new)
+                .addClasspath(List.of(RuntimeType.class, Data.class, JdbcClient.class, Service.class, Tx.class,
+                                      Generated.class, TypeName.class, DataGeneratorProvider.class,
+                                      RepositoryCodegenProvider.class, JdbcRepositoryGeneratorProvider.class))
+                .addClasspathEntry(parent.classOutput())
+                .addSource("UuidChild.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        import java.util.UUID;
+                        @Data.Repository
+                        @Data.Provider("jdbc")
+                        public interface UuidChild extends UuidParent<UUID> {}
+                        """)
+                .build().compile();
+        assertThat(String.join("\n", child.diagnostics()), child.success(), is(true));
+    }
 }

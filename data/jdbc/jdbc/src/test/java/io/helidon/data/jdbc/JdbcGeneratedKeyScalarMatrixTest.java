@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Optional;
+import java.util.UUID;
 
 import javax.sql.DataSource;
 
@@ -72,6 +73,7 @@ class JdbcGeneratedKeyScalarMatrixTest {
      */
     @Test
     void mapsEverySupportedScalarFromGeneratedKeyColumnOne() throws Exception {
+        assertGeneratedKey(UUID.fromString("00112233-4455-6677-8899-aabbccddeeff"), UUID.class);
         assertGeneratedKey(Boolean.TRUE, Boolean.class);
         assertGeneratedKey((byte) 2, Byte.class);
         assertGeneratedKey((short) 3, Short.class);
