@@ -16,8 +16,8 @@ starts them. All Data JDBC operations in a local transaction must use the same d
 source. An operation that selects another data source fails before accessing it.
 
 When a local transaction is active, `REQUIRED`, `MANDATORY`, and `SUPPORTED` operations
-join it. A failure in any joined operation marks the transaction for rollback, even when
-the caller catches the exception.
+join it. A failure escaping a joined transaction boundary marks the transaction for
+rollback, even when an outer caller catches the exception.
 
 A `NEW` operation temporarily suspends the current transaction and starts an independent
 transaction with another connection. It does not create a savepoint. An `UNSUPPORTED`
@@ -152,8 +152,11 @@ resulting diagnostic information.
 
 ## Failure Handling
 
-A failure in a joined operation marks the local transaction for rollback, even when the
-caller catches it. An operation outside a local transaction may already have committed
+A failure escaping a joined transaction boundary marks the local transaction for
+rollback, even when an outer caller catches it. Ordinary imperative client failures
+caught inside the transaction task may not cross such a boundary and can allow a
+commit. Let those failures escape the task when the write and result processing must
+succeed together. An operation outside a local transaction may already have committed
 before result processing fails. Verify database state before retrying when the outcome
 is uncertain. See [Generated Keys](queries.md#generated-keys) for failures while
 processing inserted identifiers and [Errors and JDBC

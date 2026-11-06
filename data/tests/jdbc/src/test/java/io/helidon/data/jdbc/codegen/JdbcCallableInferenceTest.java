@@ -17,19 +17,30 @@
 package io.helidon.data.jdbc.codegen;
 
 import java.io.IOException;
+import java.io.StringWriter;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
+import java.sql.JDBCType;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import io.helidon.builder.api.RuntimeType;
 import io.helidon.codegen.apt.AptProcessor;
+import io.helidon.codegen.classmodel.ClassModel;
 import io.helidon.codegen.testing.TestCompiler;
 import io.helidon.common.Generated;
+import io.helidon.common.types.AccessModifier;
+import io.helidon.common.types.Annotation;
+import io.helidon.common.types.AnnotationProperty;
+import io.helidon.common.types.ElementKind;
+import io.helidon.common.types.EnumValue;
 import io.helidon.common.types.TypeName;
 import io.helidon.data.Data;
 import io.helidon.data.codegen.DataGeneratorProvider;
 import io.helidon.data.codegen.common.RepositoryCodegenProvider;
+import io.helidon.data.jdbc.Jdbc;
 import io.helidon.data.jdbc.JdbcClient;
 import io.helidon.service.registry.Service;
 import io.helidon.transaction.Tx;
@@ -99,13 +110,19 @@ class JdbcCallableInferenceTest {
         TestCompiler.Result result = compile("""
                 record Row(int value) { }
                 record Other(String label) { }
-                record Outputs(@Jdbc.OutParameter List<Row> rows,
-                               @Jdbc.OutParameter(scale = 2) BigDecimal total,
-                               @Jdbc.OutParameter Optional<String> status,
-                               @Jdbc.OutParameter Optional<List<Integer>> checks,
-                               @Jdbc.OutParameter Optional<Row> optionalRow,
-                               @Jdbc.OutParameter Row oneRow) { }
+                record Outputs(List<Row> rows,
+                                BigDecimal total,
+                                Optional<String> status,
+                                Optional<List<Integer>> checks,
+                                Optional<Row> optionalRow,
+                                Row oneRow) { }
                 @Jdbc.Statement("{call routine(:MAPPER_AGGREGATE_OUTPUT_0_2, :rows, :total, :status, :checks, :optionalRow, :oneRow)}")
+                @Jdbc.OutParameter(value = "rows")
+                @Jdbc.OutParameter(value = "total", scale = 2)
+                @Jdbc.OutParameter(value = "status")
+                @Jdbc.OutParameter(value = "checks")
+                @Jdbc.OutParameter(value = "optionalRow")
+                @Jdbc.OutParameter(value = "oneRow")
                 Outputs aggregate(String MAPPER_AGGREGATE_OUTPUT_0_2);
                 @Jdbc.Statement("select 1")
                 Other aggregate_OUTPUT_0();
@@ -219,7 +236,9 @@ class JdbcCallableInferenceTest {
                     public interface Parent<T> {
                         @Jdbc.Statement("{? = call routine(?)}") @Jdbc.OutParameter
                         T value(T value);
-                        @Jdbc.Statement("{call routine(:total)}") Outputs<T> aggregate();
+                        @Jdbc.Statement("{call routine(:total, :count)}")
+                        @Jdbc.OutParameter("total") @Jdbc.OutParameter("count")
+                        Outputs<T> aggregate();
                         @Jdbc.Statement("{? = call routine()}") @Jdbc.OutParameter(type = JDBCType.NULL)
                         String explicitNull();
                     }
@@ -230,11 +249,15 @@ class JdbcCallableInferenceTest {
                     public interface Other {
                         @Jdbc.Statement("{? = call routine(?)}") @Jdbc.OutParameter(type = JDBCType.INTEGER)
                         Integer value(Integer value);
+                        @Jdbc.Statement("{call routine(:total, :count)}")
+                        @Jdbc.OutParameter(value = "count", type = JDBCType.INTEGER)
+                        @Jdbc.OutParameter(value = "total", type = JDBCType.INTEGER)
+                        Outputs<Integer> aggregate();
                     }
                     """).addSource("example/Outputs.java", """
                     package example;
                     import io.helidon.data.jdbc.Jdbc;
-                    public record Outputs<T>(@Jdbc.OutParameter T total) { }
+                    public record Outputs<T>(T total, int count) { }
                     """);
             if (separate) {
                 TestCompiler.Result library = parents.build().compile();
@@ -274,6 +297,186 @@ class JdbcCallableInferenceTest {
                 """).build().compile();
         assertThat(result.diagnostics().toString(), result.success(), is(false));
         assertThat(result.diagnostics().toString(), containsString("conflicting"));
+    }
+
+    @Test
+    void matchesMethodOutputsToComponentsIndependentlyOfDeclarationOrder() throws IOException {
+        TestCompiler.Result result = compile("""
+                record Outputs(List<Row> rows, Optional<String> status, int checks) { }
+                record Row(int id) { }
+                @Jdbc.Statement("{call routine(:checks, :status, :rows)}")
+                @Jdbc.OutParameter("status") @Jdbc.OutParameter("rows") @Jdbc.OutParameter("checks")
+                Outputs aggregate(Integer checks);
+                """);
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+        String source = generated(result);
+        assertThat(source, containsString(".out(\"rows\", 3, JDBCType.REF_CURSOR)"));
+        assertThat(source, containsString(".out(\"checks\", 1, JDBCType.INTEGER)"));
+        assertThat(source.indexOf(".optional(\"status\"") < source.indexOf(".cursor(\"rows\""), is(true));
+        assertThat(source, containsString("GeneratedJdbcData.bindNull(jdbcStatement, 1, JDBCType.INTEGER)"));
+    }
+
+    @Test
+    void rejectsIncompleteAndIncompatibleAutomaticAggregates() {
+        for (String outputs : List.of("@Jdbc.OutParameter(\"first\") @Jdbc.OutParameter(\"missing\")",
+                                      "@Jdbc.OutParameter(\"First\") @Jdbc.OutParameter(\"second\")",
+                                      "@Jdbc.OutParameter(\"first\") @Jdbc.OutParameter(\"first\")",
+                                      "@Jdbc.OutParameter(\"first\") @Jdbc.OutParameter(\"second\") "
+                                              + "@Jdbc.OutParameter(\"extra\")")) {
+            TestCompiler.Result result = compile("""
+                    record Outputs(int first, String second) { }
+                    @Jdbc.Statement("{call routine(:first, :second)}")
+                    """ + outputs + " Outputs execute();");
+            assertThat(result.diagnostics().toString(), result.success(), is(false));
+        }
+        TestCompiler.Result incompatible = compile("""
+                record Outputs(int first, List<Integer> second) { }
+                @Jdbc.Statement("{call routine(:first, :second)}")
+                @Jdbc.OutParameter("first") @Jdbc.OutParameter(value = "second", type = JDBCType.INTEGER)
+                Outputs execute();
+                """);
+        assertThat(incompatible.diagnostics().toString(), incompatible.success(), is(false));
+        assertThat(incompatible.diagnostics().toString(), containsString("scalar return type"));
+        TestCompiler.Result mapper = compile("""
+                record Outputs(int first, List<Integer> second) { }
+                @Jdbc.Statement("{call routine(:first, :second)}") @Jdbc.RowMapper
+                @Jdbc.OutParameter("first") @Jdbc.OutParameter("second")
+                Outputs execute();
+                """);
+        assertThat(mapper.diagnostics().toString(), mapper.success(), is(false));
+        assertThat(mapper.diagnostics().toString(), containsString("Use CallMapper"));
+    }
+
+    @Test
+    void preservesCallbackPrecedenceForRecordReturns() {
+        TestCompiler.Result result = compile("""
+                record Outputs(int first, List<Integer> second) { }
+                @Jdbc.Statement("{call routine(:first, :second)}")
+                @Jdbc.OutParameter(value = "first", type = JDBCType.INTEGER)
+                @Jdbc.OutParameter(value = "second", type = JDBCType.REF_CURSOR)
+                Outputs execute(JdbcClient.CallMapper<Outputs> mapper);
+                """);
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+    }
+
+    @Test
+    void preservesRegistrationThroughSourceCopyAndMetadataReconstruction() throws Exception {
+        for (boolean explicit : List.of(false, true)) {
+            Annotation output = Annotation.builder().type(Jdbc.OutParameter.class)
+                    .putProperty("type", AnnotationProperty.create(EnumValue.create(JDBCType.class, JDBCType.NULL), explicit))
+                    .build();
+            ClassModel metadata = ClassModel.builder().type(TypeName.create("example.Metadata"))
+                    .addMethod(method -> method.name("value").accessModifier(AccessModifier.PUBLIC).isStatic(true)
+                            .returnType(TypeName.create(Annotation.class))
+                            .addContent("return ").addContentCreate(output).addContentLine(";")).build();
+            StringWriter metadataSource = new StringWriter();
+            metadata.write(metadataSource);
+            TestCompiler.Result library = compiler().addSource("example/Metadata.java", metadataSource.toString())
+                    .build().compile();
+            assertThat(library.diagnostics().toString(), library.success(), is(true));
+            try (URLClassLoader loader = new URLClassLoader(new URL[] {library.classOutput().toUri().toURL()},
+                                                            getClass().getClassLoader())) {
+                // The generated public method exercises metadata reconstruction without inspecting private state.
+                Annotation reconstructed = (Annotation) loader.loadClass("example.Metadata").getMethod("value").invoke(null);
+                assertThat(reconstructed.property("type").orElseThrow().explicit(), is(explicit));
+                for (Annotation declaration : List.of(output, reconstructed)) {
+                    StringWriter source = new StringWriter();
+                    ClassModel.builder().type(TypeName.create("example.Repository")).classType(ElementKind.INTERFACE)
+                            .addAnnotation(Annotation.create(Data.Repository.class))
+                            .addAnnotation(Annotation.create(Data.Provider.class, "jdbc"))
+                            .addMethod(method -> method.name("value").returnType(TypeName.create(String.class)).isAbstract(true)
+                                    .addAnnotation(Annotation.create(Jdbc.Statement.class, "{? = call routine()}"))
+                                    .addAnnotation(declaration)).build().write(source);
+                    TestCompiler.Result result = compiler().addSource("example/Repository.java", source.toString())
+                            .build().compile();
+                    assertThat(result.diagnostics().toString(), result.success(), is(true));
+                    assertThat(generated(result), containsString(".out(\"return\", 1, JDBCType."
+                            + (explicit ? "NULL" : "VARCHAR") + ");"));
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesDefaultsInsideCopiedRepeatableOutputContainers() throws IOException {
+        AnnotationProperty omitted = AnnotationProperty.create(EnumValue.create(JDBCType.class, JDBCType.NULL), false);
+        Annotation first = Annotation.builder().type(Jdbc.OutParameter.class).value("text")
+                .putProperty("type", omitted).build();
+        Annotation second = Annotation.builder().type(Jdbc.OutParameter.class).value("count")
+                .putProperty("type", omitted).build();
+        Annotation outputs = Annotation.builder().type(Jdbc.OutParameterDeclarations.class)
+                .property("value", List.of(first, second)).build();
+        StringWriter source = new StringWriter();
+        ClassModel.builder().type(TypeName.create("example.Repository")).classType(ElementKind.INTERFACE)
+                .addAnnotation(Annotation.create(Data.Repository.class))
+                .addAnnotation(Annotation.create(Data.Provider.class, "jdbc"))
+                .addMethod(method -> method.name("value").returnType(TypeName.create("example.Outputs")).isAbstract(true)
+                        .addAnnotation(Annotation.create(Jdbc.Statement.class, "{call routine(:count, :text)}"))
+                        .addAnnotation(outputs)).build().write(source);
+        TestCompiler.Result result = compiler().addSource("example/Repository.java", source.toString())
+                .addSource("example/Outputs.java", "package example; public record Outputs(String text, int count) { }")
+                .build().compile();
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+        assertThat(generated(result), containsString(".out(\"text\", 2, JDBCType.VARCHAR)"));
+        assertThat(generated(result), containsString(".out(\"count\", 1, JDBCType.INTEGER)"));
+        TestCompiler.Result child = compiler().addClasspathEntry(result.classOutput())
+                .addSource("example/Child.java", """
+                        package example;
+                        import io.helidon.data.Data;
+                        @Data.Repository @Data.Provider("jdbc")
+                        public interface Child extends Repository { }
+                        """).build().compile();
+        assertThat(child.diagnostics().toString(), child.success(), is(true));
+        String inherited = Files.readString(child.sourceOutput().resolve("example/Child__Jdbc.java"));
+        assertThat(inherited, containsString(".out(\"text\", 2, JDBCType.VARCHAR)"));
+        assertThat(inherited, containsString(".out(\"count\", 1, JDBCType.INTEGER)"));
+    }
+
+    @Test
+    void diagnosesSourceComponentDeclarationsAfterMethodTargetPropagation() {
+        for (String type : List.of("Legacy", "List<Legacy>", "Optional<Legacy>")) {
+            TestCompiler.Result result = compile("""
+                    record Legacy(@Jdbc.OutParameter int value) { }
+                    @Jdbc.Statement("{call routine(:value)}")
+                    """ + type + " value();");
+            assertThat(result.diagnostics().toString(), result.success(), is(false));
+            assertThat(result.diagnostics().toString(), containsString("Move output declarations"));
+        }
+    }
+
+    @Test
+    void diagnosesLegacyCompiledComponentDeclarations() {
+        for (String declaration : List.of("@Jdbc.OutParameter", "@Jdbc.OutParameterDeclarations({@Jdbc.OutParameter})")) {
+            TestCompiler.Result library = TestCompiler.builder().currentRelease().printDiagnostics(false)
+                    .addSource("io/helidon/data/jdbc/Jdbc.java", """
+                            package io.helidon.data.jdbc;
+                            import java.lang.annotation.*;
+                            public class Jdbc {
+                                @Target(ElementType.METHOD) @Retention(RetentionPolicy.CLASS)
+                                public @interface Statement { String value(); }
+                                @Target(ElementType.RECORD_COMPONENT) @Retention(RetentionPolicy.CLASS)
+                                public @interface OutParameter { }
+                                @Target(ElementType.RECORD_COMPONENT) @Retention(RetentionPolicy.CLASS)
+                                public @interface OutParameterDeclarations { OutParameter[] value(); }
+                            }
+                            """).addSource("example/Legacy.java", """
+                            package example;
+                            import io.helidon.data.jdbc.Jdbc;
+                            public record Legacy(""" + declaration + " int value) { }").build().compile();
+            assertThat(library.diagnostics().toString(), library.success(), is(true));
+            TestCompiler.Result result = compiler().addClasspathEntry(library.classOutput())
+                    .addSource("example/Repository.java", """
+                            package example;
+                            import io.helidon.data.Data;
+                            import io.helidon.data.jdbc.Jdbc;
+                            @Data.Repository @Data.Provider("jdbc")
+                            public interface Repository {
+                                @Jdbc.Statement("{call routine(:value)}") Legacy value();
+                            }
+                            """).build().compile();
+            assertThat(result.diagnostics().toString(), result.success(), is(false));
+            assertThat(result.diagnostics().toString(), containsString("Move output declarations"));
+        }
     }
 
     private static String generated(TestCompiler.Result result) throws IOException {

@@ -180,14 +180,14 @@ public final class Jdbc {
     }
 
     /**
-     * Registers a callable output. A method name selects a named SQL marker.
-     * An empty method name declares the leading return, whose logical name is return.
-     * An empty component name uses the record component name.
+     * Registers an output on a repository method. A nonempty value selects a named SQL marker.
+     * An empty value declares the leading function return, whose logical name is return.
+     * Multiple named method outputs map to unannotated record components with matching names.
      * Omitted types are inferred from automatically mapped Java outputs as described by {@link #type()}.
      */
     @Documented
     @Retention(RetentionPolicy.CLASS)
-    @Target({ElementType.METHOD, ElementType.RECORD_COMPONENT})
+    @Target(ElementType.METHOD)
     @Repeatable(OutParameterDeclarations.class)
     public @interface OutParameter {
         /**
@@ -200,7 +200,7 @@ public final class Jdbc {
         /**
          * Returns the JDBC registration type. An explicitly supplied value always wins,
          * including {@link JDBCType#NULL}. When omitted, generation infers the type from
-         * a single automatically mapped method output or an output record component.
+         * a single automatically mapped method output or a matched aggregate record component.
          * <p>
          * Standard mappings are Boolean to BOOLEAN, Byte to TINYINT, Short to SMALLINT,
          * Integer to INTEGER, Long to BIGINT, Float to REAL, Double to DOUBLE,
@@ -210,7 +210,7 @@ public final class Jdbc {
          * the same registrations. Supported non-scalar materialized cursor shapes
          * infer REF_CURSOR. A singular scalar cursor requires an explicit REF_CURSOR.
          * <p>
-         * Callbacks, snapshots, void methods, multiple method outputs, and nonempty
+         * Callbacks, snapshots, void methods, outputs without an automatic mapping, and nonempty
          * {@link #typeName()} require explicit types. Inference uses resolved output
          * types at compile time and does not inspect routine metadata or input types.
          * The default NULL permits omission in Java source and is never an inferred registration.
@@ -239,7 +239,7 @@ public final class Jdbc {
      */
     @Documented
     @Retention(RetentionPolicy.CLASS)
-    @Target({ElementType.METHOD, ElementType.RECORD_COMPONENT})
+    @Target(ElementType.METHOD)
     public @interface OutParameterDeclarations {
         /**
          * Returns the output declarations in source order.

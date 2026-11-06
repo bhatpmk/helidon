@@ -119,7 +119,7 @@ final class JdbcTypeHierarchy {
             TypedElementInfo declaration = declarations.get(index);
             // Conflicting inherited annotations would make one generated implementation method represent two
             // contracts.
-            if (!sameMethodAnnotations(first, declaration)) {
+            if (!sameMethodAnnotations(first, declaration, context)) {
                 throw new CodegenException("Inherited repository method '" + signature.text()
                                                    + "' has conflicting JDBC or transaction annotations.",
                                            first.originatingElementValue(),
@@ -181,18 +181,18 @@ final class JdbcTypeHierarchy {
         throw new IllegalStateException("The JDBC parameter plan contains a repository parameter that is not recognized.");
     }
 
-    private static boolean sameMethodAnnotations(TypedElementInfo first, TypedElementInfo second) {
+    private static boolean sameMethodAnnotations(TypedElementInfo first, TypedElementInfo second, RoundContext context) {
         for (TypeName annotation : EXACT_METHOD_ANNOTATIONS) {
             if (!first.findAnnotation(annotation).equals(second.findAnnotation(annotation))) {
                 return false;
             }
         }
         return JdbcExecutionSelection.create(first) == JdbcExecutionSelection.create(second)
-                && outputContract(first).equals(outputContract(second));
+                && outputContract(first, context).equals(outputContract(second, context));
     }
 
-    private static List<OutputContract> outputContract(TypedElementInfo method) {
-        return JdbcCallablePlan.methodOutputs(method).stream()
+    private static List<OutputContract> outputContract(TypedElementInfo method, RoundContext context) {
+        return JdbcCallablePlan.methodOutputs(method, context).stream()
                 .map(output -> new OutputContract(output.marker(), output.type(), output.typeName(), output.scale()))
                 .sorted(Comparator.comparing(OutputContract::name))
                 .toList();
