@@ -113,35 +113,26 @@ class JdbcCallableFailureTest {
     }
 
     /**
-     * Argument validation stays recoverable in materialized and streamed callable row mappers.
+     * Argument validation stays recoverable in materialized callable row mappers.
      */
     @Test
     void keepsPureRowValidationRecoverable() throws Exception {
         for (boolean cursor : new boolean[] {false, true}) {
-            for (boolean streaming : new boolean[] {false, true}) {
-                try (Fixture fixture = new Fixture(cursor, true)) {
-                    fixture.call().consume(result -> {
-                        Objects.requireNonNull(result, "The callable result must not be null.");
-                        JdbcClient.Rows<Integer> rows = fixture.rows(result, row -> {
-                            Objects.requireNonNull(row, "The current row must not be null.");
-                            assertThrows(NullPointerException.class, () -> row.get(1, null));
-                            assertThrows(NullPointerException.class, () -> row.optional(null, Integer.class));
-                            assertThrows(IllegalArgumentException.class, () -> row.get(" ", Integer.class));
-                            assertThrows(IllegalArgumentException.class, () -> row.optional(0, Integer.class));
-                            assertThrows(IllegalArgumentException.class, () -> row.get(1, Object.class));
-                            return row.get(1, Integer.class);
-                        });
-                        if (streaming) {
-                            rows.useStream(stream -> {
-                                Objects.requireNonNull(stream, "The row stream must not be null.");
-                                assertThat(stream.toList(), is(List.of(42)));
-                            });
-                        } else {
-                            assertThat(rows.list(), is(List.of(42)));
-                        }
+            try (Fixture fixture = new Fixture(cursor, true)) {
+                fixture.call().consume(result -> {
+                    Objects.requireNonNull(result, "The callable result must not be null.");
+                    JdbcClient.Rows<Integer> rows = fixture.rows(result, row -> {
+                        Objects.requireNonNull(row, "The current row must not be null.");
+                        assertThrows(NullPointerException.class, () -> row.get(1, null));
+                        assertThrows(NullPointerException.class, () -> row.optional(null, Integer.class));
+                        assertThrows(IllegalArgumentException.class, () -> row.get(" ", Integer.class));
+                        assertThrows(IllegalArgumentException.class, () -> row.optional(0, Integer.class));
+                        assertThrows(IllegalArgumentException.class, () -> row.get(1, Object.class));
+                        return row.get(1, Integer.class);
                     });
-                    fixture.complete(false);
-                }
+                    assertThat(rows.list(), is(List.of(42)));
+                });
+                fixture.complete(false);
             }
         }
     }
@@ -172,7 +163,7 @@ class JdbcCallableFailureTest {
     @Test
     void preservesApplicationIdentityDuringFatalCleanup() throws Exception {
         for (String resource : List.of("rows", "statement", "lease")) {
-            for (int mode = 0; mode < 3; mode++) {
+            for (int mode = 0; mode < 2; mode++) {
                 for (boolean dataException : new boolean[] {false, true}) {
                     try (Fixture fixture = new Fixture(false, false)) {
                         Error fatal = new AssertionError("The cleanup failed fatally.");
@@ -191,11 +182,7 @@ class JdbcCallableFailureTest {
                                 throw application;
                             }
                             JdbcClient.Rows<Integer> rows = result.rows(_ -> { throw application; });
-                            if (selected == 1) {
-                                rows.list();
-                            } else {
-                                rows.useStream(_ -> { throw application; });
-                            }
+                            rows.list();
                         }));
                         assertThat(observed, sameInstance(fatal));
                         assertThat(observed.getSuppressed(), is(new Throwable[] {application}));

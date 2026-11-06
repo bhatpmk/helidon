@@ -19,9 +19,7 @@ import java.sql.JDBCType;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * In-memory description of one JDBC statement assembled by an application or
@@ -219,15 +217,6 @@ final class JdbcStatement implements JdbcClient.Statement {
      */
     <T> List<T> list(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan) {
         return runner.list(operation(plan), mapper);
-    }
-
-    <T> void useStream(JdbcClient.RowMapper<T> mapper, JdbcPreparationPlan plan,
-                   Consumer<Stream<T>> action) {
-        ensureMutable();
-        if (plan.resultKind() != JdbcPreparationPlan.ResultKind.QUERY) {
-            throw new UnsupportedOperationException("Generated keys do not support streaming.");
-        }
-        runner.useStream(operation(plan), mapper, action);
     }
 
     /**

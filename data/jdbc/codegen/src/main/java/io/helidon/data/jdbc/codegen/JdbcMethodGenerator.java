@@ -278,11 +278,6 @@ final class JdbcMethodGenerator {
             method.addContent(Objects.class).addContent(".requireNonNull(")
                     .addContent(parameterNames.get(plan.callable().control().elementName()))
                     .addContentLine(", \"The callable callback must not be null.\");");
-        } else if (plan.returnShape() == JdbcMethodPlan.ReturnShape.STREAM) {
-            method.addContent(Objects.class)
-                    .addContent(".requireNonNull(")
-                    .addContent(parameterNames.get(plan.streamControl()))
-                    .addContentLine(", \"The stream consumer must not be null.\");");
         }
         method.addContent(JdbcCodegenTypes.JDBC_CLIENT_STATEMENT)
                 .addContent(" ")
@@ -432,7 +427,7 @@ final class JdbcMethodGenerator {
             return;
         }
 
-        method.addContent(plan.returnShape() == JdbcMethodPlan.ReturnShape.STREAM ? "" : "return ")
+        method.addContent("return ")
                 .addContent(statementName);
         addMapping(plan, method);
         switch (plan.returnShape()) {
@@ -452,8 +447,6 @@ final class JdbcMethodGenerator {
             method.addContentLine(";");
         }
         case LIST -> method.addContentLine(".list();");
-        case STREAM -> method.addContent(".useStream(")
-                .addContent(parameterNames.get(plan.streamControl())).addContentLine(");");
         default -> throw new AssertionError("The JDBC return shape '" + plan.returnShape() + "' is not recognized.");
         }
     }
