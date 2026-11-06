@@ -353,11 +353,6 @@ final class JdbcCallResult implements JdbcClient.CallResult {
         T run() throws SQLException;
     }
 
-    @FunctionalInterface
-    private interface RowAction<R> {
-        R run(JdbcColumnLayout columns) throws SQLException;
-    }
-
     private final class CallRows<T> implements JdbcClient.Rows<T> {
         private final JdbcClient.RowMapper<T> mapper;
         private final JdbcCallOutput cursor;
@@ -386,39 +381,6 @@ final class JdbcCallResult implements JdbcClient.CallResult {
         }
 
         private List<T> materialize(int cardinality) {
-            return consume(columns -> {
-                List<T> values = new ArrayList<>();
-                while (JdbcExceptionTranslator.invoke("advancing callable rows", current::next)) {
-                    if (cardinality >= 0 && !values.isEmpty()) {
-                        throw new NonUniqueResultException("The callable result contains more than one row.");
-                    }
-                    JdbcRow row = new JdbcRow(current, columns, operation,
-                                              JdbcCallResult.this::check, JdbcCallResult.this::retain);
-                    T value;
-                    try {
-                        value = mapper.map(row);
-                        if (failure instanceof RuntimeException runtime) {
-                            throw runtime;
-                        }
-                        if (failure instanceof Error error) {
-                            throw error;
-                        }
-                        if (value == null) {
-                            throw new DataException("The callable row mapper returned null.");
-                        }
-                    } finally {
-                        row.expire();
-                    }
-                    values.add(value);
-                }
-                if (cardinality == 1 && values.isEmpty()) {
-                    throw new NoResultException("The callable result contains no rows.");
-                }
-                return List.copyOf(values);
-            });
-        }
-
-        private <R> R consume(RowAction<R> action) {
             check();
             if (consumed || selectedEvent != event || terminalActive) {
                 throw new IllegalStateException("The callable row stage has already been consumed or expired.");
@@ -435,7 +397,34 @@ final class JdbcCallResult implements JdbcClient.CallResult {
                     }
                     JdbcColumnLayout columns = JdbcColumnLayout.create(
                             JdbcExceptionTranslator.invoke("reading callable column metadata", current::getMetaData), operation);
-                    return action.run(columns);
+                    List<T> values = new ArrayList<>();
+                    while (JdbcExceptionTranslator.invoke("advancing callable rows", current::next)) {
+                        if (cardinality >= 0 && !values.isEmpty()) {
+                            throw new NonUniqueResultException("The callable result contains more than one row.");
+                        }
+                        JdbcRow row = new JdbcRow(current, columns, operation,
+                                                  JdbcCallResult.this::check, JdbcCallResult.this::retain);
+                        T value;
+                        try {
+                            value = mapper.map(row);
+                            if (failure instanceof RuntimeException runtime) {
+                                throw runtime;
+                            }
+                            if (failure instanceof Error error) {
+                                throw error;
+                            }
+                            if (value == null) {
+                                throw new DataException("The callable row mapper returned null.");
+                            }
+                        } finally {
+                            row.expire();
+                        }
+                        values.add(value);
+                    }
+                    if (cardinality == 1 && values.isEmpty()) {
+                        throw new NoResultException("The callable result contains no rows.");
+                    }
+                    return List.copyOf(values);
                 } catch (SQLException caught) {
                     RuntimeException translated = JdbcExceptionTranslator.translate(operation, caught);
                     retain(translated);

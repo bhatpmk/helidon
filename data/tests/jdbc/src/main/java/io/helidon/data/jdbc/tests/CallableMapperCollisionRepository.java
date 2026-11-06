@@ -27,13 +27,17 @@ interface CallableMapperCollisionRepository {
     @Jdbc.Statement("SELECT :input")
     Other aggregate_OUTPUT_0(String input);
 
-    @Jdbc.Statement("{call routine(:MAPPER_AGGREGATE_OUTPUT_0_2, :rows)}")
+    @Jdbc.Statement("{call routine(:MAPPER_AGGREGATE_OUTPUT_0_2, :rows, :count)}")
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "count", type = JDBCType.INTEGER)
     Outputs aggregate(String MAPPER_AGGREGATE_OUTPUT_0_2);
 
-    @Jdbc.Statement("{call routine(:MAPPER_AGGREGATE_OUTPUT_0_2, :rows)}")
+    @Jdbc.Statement("{call routine(:MAPPER_AGGREGATE_OUTPUT_0_2, :rows, :count)}")
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "count", type = JDBCType.INTEGER)
     Outputs reused(String MAPPER_AGGREGATE_OUTPUT_0_2);
 
-    record Outputs(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows) {
+    record Outputs(List<Projection> rows, int count) {
     }
 
     record Projection(int id) {

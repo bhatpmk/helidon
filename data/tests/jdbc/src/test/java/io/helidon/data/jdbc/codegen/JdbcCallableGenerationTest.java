@@ -123,6 +123,8 @@ class JdbcCallableGenerationTest {
                             <E extends Exception> T execute(T value) throws E;
 
                             @Jdbc.Statement("{call routine(:value, :rows)}")
+                            @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+                            @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
                             Outputs<T> aggregate();
                         }
                         """)
@@ -140,9 +142,7 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.TypeElement;
                         import java.sql.JDBCType;
                         import io.helidon.data.jdbc.Jdbc;
-                        public record Outputs<T>(@Jdbc.OutParameter(type = JDBCType.INTEGER) int value,
-                                                 @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
-                                                 @Jdbc.RowMapper(IntegerMapper.class) List<T> rows) {
+                        public record Outputs<T>(int value, List<T> rows) {
                         }
                         """)
                 .addSource("IntegerMapper.java", """
@@ -211,7 +211,9 @@ import javax.lang.model.element.TypeElement;
     @Test
     void reservesComponentMapperNamesAcrossRepositoryMethods() {
         String aggregate = """
-                @Jdbc.Statement("{call routine(:rows)}")
+                @Jdbc.Statement("{call routine(:rows, :count)}")
+                @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+                @Jdbc.OutParameter(value = "count", type = JDBCType.INTEGER)
                 Outputs aggregate();
                 """;
         String query = """
@@ -219,7 +221,7 @@ import javax.lang.model.element.TypeElement;
                 Other aggregate_OUTPUT_0();
                 """;
         String records = """
-                record Outputs(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows) { }
+                record Outputs(List<Projection> rows, int count) { }
                 record Projection(int value) { }
                 record Other(String value) { }
                 """;
@@ -238,9 +240,11 @@ import javax.lang.model.element.TypeElement;
             String query = mapper.equals("MAPPER_PROJECTION")
                     ? "@Jdbc.Statement(\"SELECT value FROM TEST\") Projection projection();\n" : "";
             TestCompiler.Result result = compile(query + """
-                    @Jdbc.Statement("{call routine(:%s, :rows)}")
+                    @Jdbc.Statement("{call routine(:%s, :rows, :count)}")
+                    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+                    @Jdbc.OutParameter(value = "count", type = JDBCType.INTEGER)
                     Outputs aggregate(String %s);
-                    record Outputs(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows) { }
+                    record Outputs(List<Projection> rows, int count) { }
                     record Projection(int value) { }
                     """.formatted(mapper, mapper));
             assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));

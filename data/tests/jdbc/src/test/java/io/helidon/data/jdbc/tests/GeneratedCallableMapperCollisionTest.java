@@ -49,6 +49,7 @@ class GeneratedCallableMapperCollisionTest {
             JdbcClient.CallMapper<?> mapper = invocation.getArgument(0);
             return mapper.map(result);
         });
+        when(result.get("count", Integer.class)).thenReturn(0);
         when(row.get("id", Integer.class)).thenReturn(42);
         when(row.get("value", String.class)).thenReturn("ordinary");
         when(result.cursor(anyString(), any())).thenAnswer(invocation -> {
@@ -63,7 +64,7 @@ class GeneratedCallableMapperCollisionTest {
         });
         CallableMapperCollisionRepository repository = new CallableMapperCollisionRepository__Jdbc(client);
         var expected = new CallableMapperCollisionRepository.Outputs(
-                List.of(new CallableMapperCollisionRepository.Projection(42)));
+                List.of(new CallableMapperCollisionRepository.Projection(42)), 0);
 
         assertThat(repository.aggregate("bound input"), is(expected));
         assertThat(repository.reused("reused input"), is(expected));

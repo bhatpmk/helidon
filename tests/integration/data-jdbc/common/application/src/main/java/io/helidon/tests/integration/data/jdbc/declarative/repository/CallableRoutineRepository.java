@@ -39,6 +39,8 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     Optional<Integer> nullable(Integer value);
 
     @Jdbc.Statement("{call sp_values(:input, :value, :other)}")
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+    @Jdbc.OutParameter(value = "other", type = JDBCType.VARCHAR)
     Values aggregate(Integer input, Integer value, String other);
 
     @Jdbc.Statement("{call sp_values(:input, :value, :other)}")
@@ -86,9 +88,13 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     int noDirect();
 
     @Jdbc.Statement("{call sp_bundle(:input, :value, :rows)}")
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
     Bundle aggregateCursor(int input);
 
     @Jdbc.Statement("{call sp_bundle(:input, :value, :rows)}")
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
     OptionalBundle aggregateOptionalCursor(int input);
 
     @Jdbc.Statement("{? = call sp_cursor(:input)}")
@@ -104,6 +110,8 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     String mapped(Integer input, JdbcClient.CallMapper<String> mapper);
 
     @Jdbc.Statement("{call sp_bundle(:MAPPER_RECORD_BUNDLE_OUTPUT_0_2, :value, :rows)}")
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
     RecordBundle recordBundle(int MAPPER_RECORD_BUNDLE_OUTPUT_0_2);
 
     @Jdbc.Statement("SELECT DATA_VALUE AS label FROM TX_MATRIX WHERE DATA_VALUE = :input")
@@ -122,6 +130,8 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     BigDecimal inferredDecimal(Integer input);
 
     @Jdbc.Statement("{call sp_values(:input, :value, :other)}")
+    @Jdbc.OutParameter(value = "other")
+    @Jdbc.OutParameter(value = "value")
     InferredValues inferredAggregate(Integer input, Integer value, String other);
 
     @Jdbc.Statement("{? = call sp_cursor(:input)}")
@@ -141,12 +151,28 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     List<Projection> inferredUnsupportedCursor(int input);
 
     @Jdbc.Statement("{call sp_bundle(:input, :value, :rows)}")
+    @Jdbc.OutParameter(value = "rows")
+    @Jdbc.OutParameter(value = "value")
     InferredBundle inferredBundle(int input);
 
-    record InferredValues(@Jdbc.OutParameter int value, @Jdbc.OutParameter String other) {
+    @Jdbc.Statement("{call sp_bundle(:input, :value, :rows)}")
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+    Bundle mappedBundle(int input, JdbcClient.CallMapper<Bundle> mapper);
+
+    @Jdbc.Statement("{call sp_pair(:first, :second, :value)}")
+    @Jdbc.OutParameter("value")
+    @Jdbc.OutParameter("first")
+    @Jdbc.OutParameter("second")
+    Pair pair();
+
+    record Pair(List<Projection> second, int value, List<Projection> first) {
     }
 
-    record InferredBundle(@Jdbc.OutParameter Optional<List<Projection>> rows, @Jdbc.OutParameter int value) {
+    record InferredValues(int value, String other) {
+    }
+
+    record InferredBundle(Optional<List<Projection>> rows, int value) {
     }
 
     record RejectedProjection(int id) {
@@ -155,8 +181,7 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
         }
     }
 
-    record RecordBundle(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows,
-                        @Jdbc.OutParameter(type = JDBCType.INTEGER) int value) {
+    record RecordBundle(List<Projection> rows, int value) {
     }
 
     record Projection(int id) {
@@ -165,13 +190,10 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     record QueryProjection(String label) {
     }
 
-    record OptionalBundle(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
-                          @Jdbc.RowMapper(IntegerMapper.class) Optional<List<Integer>> rows,
-                          @Jdbc.OutParameter(type = JDBCType.INTEGER) int value) {
+    record OptionalBundle(Optional<List<Integer>> rows, int value) {
     }
 
-    record Bundle(@Jdbc.OutParameter(type = JDBCType.REF_CURSOR) @Jdbc.RowMapper(IntegerMapper.class) List<Integer> rows,
-                  @Jdbc.OutParameter(type = JDBCType.INTEGER) int value) {
+    record Bundle(List<Integer> rows, int value) {
     }
 
     @Service.Singleton
@@ -183,8 +205,7 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
         }
     }
 
-    record Values(@Jdbc.OutParameter(type = JDBCType.INTEGER) int value,
-                  @Jdbc.OutParameter(type = JDBCType.VARCHAR) String other) {
+    record Values(int value, String other) {
     }
 }
 

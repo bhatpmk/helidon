@@ -77,8 +77,8 @@ final class JdbcCallableGenerator {
                     for (JdbcCallablePlan.Output output : ordered) {
                         String local = unique("__helidonOutput", names);
                         locals.put(output, local);
-                        method.addContent(output.declaration().typeName()).addContent(" ").addContent(local).addContent(" = ");
-                        output(method, output, output.declaration().typeName(), result, row);
+                        method.addContent(output.valueType()).addContent(" ").addContent(local).addContent(" = ");
+                        output(method, output, output.valueType(), result, row);
                         method.addContentLine(";");
                     }
                     method.addContent("return new ").addContent(plan.method().typeName()).addContent("(");

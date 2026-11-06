@@ -169,9 +169,11 @@ column names.
 Outside a local transaction, the driver can commit an update before Helidon finishes
 reading and validating its generated keys. A local transaction keeps the update and key
 processing atomic. If key processing or cleanup fails, allow the exception to leave the
-method that starts the transaction so Helidon can roll back. Catching the exception
-still marks the transaction for rollback, but continuing hides the original failure and
-cannot result in a commit. Such a failure does not establish that a retry is safe.
+method that starts the transaction so Helidon can roll back. An exception crossing a
+joined transaction boundary marks that transaction for rollback, even when an outer
+caller catches it. A failure caught inside the transaction task before crossing that
+boundary does not provide the same guarantee. Such a failure does not establish that a
+retry is safe.
 
 ### Imperative Generated Keys
 
@@ -195,9 +197,9 @@ each supported database and driver returns the requested generated key columns w
 expected column names.
 
 When a client owns its connection, the driver can commit the update before Helidon
-finishes reading and validating the keys. An injected client running in a local
-transaction keeps the update and key processing atomic. If key processing or cleanup
-fails, allow the exception to leave the method that starts the transaction so Helidon
-can roll back. Catching the exception still marks the transaction for rollback, but
-continuing hides the original failure and cannot result in a commit. Such a failure does
-not establish that a retry is safe.
+finishes reading and validating the keys. A managed client uses the transaction
+connection when a local transaction is active. Let a key processing or cleanup failure
+escape the transaction task so Helidon can roll back the update. Catching a direct
+imperative failure inside that task can allow the update to commit. An exception that has already crossed a
+joined transaction boundary marks rollback-only, even if an outer caller catches it.
+Such a failure does not establish that a retry is safe.

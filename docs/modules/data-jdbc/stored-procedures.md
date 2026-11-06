@@ -277,7 +277,7 @@ For a required cursor, SQL `NULL` fails with `IllegalArgumentException`. A missi
 for `one()` raises `NoResultException`, and more than one row for `one()` or
 `optional()` raises `NonUniqueResultException`.
 
-A method or output record component can select a cursor row mapper with
+A method returning one cursor can select a row mapper with
 `@Jdbc.RowMapper`. See [Custom Row Mapping](mapping.md#custom-row-mapping) for service
 registration and mapper selection. A singular scalar cursor, such as an `Integer`
 read from one cursor row, needs an explicit `type = JDBCType.REF_CURSOR` to distinguish
@@ -353,25 +353,29 @@ END;
 /
 ```
 
-Each component of an output record declares one output. An omitted annotation value
-uses the component name as the SQL marker name:
+An unannotated record holds the detached outputs. Declare each output on the repository
+method, using the exact name of its matching record component:
 
 ```java
 record MaterializedOrderStatus(
-        @Jdbc.OutParameter String status,
-        @Jdbc.OutParameter int checks,
-        @Jdbc.OutParameter List<OrderLine> details) {
+        String status,
+        int checks,
+        List<OrderLine> details) {
 }
 ```
 
 ```java
 @Jdbc.Statement("{call READ_ORDER_STATUS(:orderId, :status, :checks, :details)}")
+@Jdbc.OutParameter("status")
+@Jdbc.OutParameter("checks")
+@Jdbc.OutParameter("details")
 MaterializedOrderStatus readStatus(long orderId, int checks);
 ```
 
 `orderId` is IN, `status` and `details` are OUT, and `checks` is INOUT because the method
 argument matches its output marker. The component types infer `VARCHAR`, `INTEGER`,
-and `REF_CURSOR`. There is no method-level output annotation in this form.
+and `REF_CURSOR`. The output annotations supply registrations; the record supplies
+the Java types and constructor order.
 
 ```java
 MaterializedOrderStatus status = repository.readStatus(42L, 0);
@@ -404,11 +408,17 @@ Read scalar outputs before selecting cursors. Materialize each cursor before sel
 another output. Generated output-record mapping follows this order automatically.
 The resulting record contains detached values and does not own a database connection.
 
-Every output record component must have exactly one `@Jdbc.OutParameter`. Supply a
-value such as `@Jdbc.OutParameter("details")` when a component name differs from the
-marker. An output record cannot also declare method-level outputs, a method-level
-row mapper, or a callable callback parameter. A cursor component can select its own
-`@Jdbc.RowMapper`.
+Automatic aggregation requires at least two named method outputs. Their names must
+match every record component exactly, including case, with no missing or extra outputs.
+SQL marker order determines JDBC positions, and record component order determines
+constructor arguments. Annotation order does not change either order.
+
+Result records do not declare outputs or select cursor row mappers. Use a `CallMapper`
+callback when output names differ from component names, when wrapping a single scalar
+in a record, or when aggregate cursors need custom row mappers. Declare those outputs
+on the method and supply each mapper to `result.cursor(...)` inside the callback.
+A leading function return combined with other outputs also uses a callback or a scalar
+snapshot rather than automatic aggregation.
 
 ## Callable APIs and Execution Selection
 
@@ -416,9 +426,9 @@ row mapper, or a callable callback parameter. A cursor component can select its 
 | --- | --- |
 | `@Jdbc.Statement` | Supplies the call SQL, using named markers or positional markers. |
 | `@Jdbc.Execution(Jdbc.ExecutionType.CALL)` | Explicitly selects callable execution, including procedures with only IN parameters. |
-| `@Jdbc.OutParameter` | Declares an output on a method or output record component. Its members are `value`, `type`, `typeName`, and `scale`. |
+| `@Jdbc.OutParameter` | Declares an output on a repository method. Its members are `value`, `type`, `typeName`, and `scale`. |
 | `@Jdbc.OutParameterDeclarations` | Holds repeated output declarations. Repeating `@Jdbc.OutParameter` is equivalent. |
-| `@Jdbc.RowMapper` | Selects a cursor row mapper on a method or output record component. |
+| `@Jdbc.RowMapper` | Selects a row mapper for a method returning one cursor. |
 | `Consumer<JdbcClient.CallResult>` | Gives a `void` method a synchronous callback for processing callable results. |
 | `JdbcClient.CallMapper<R>` | Gives a method returning `R` a callback that constructs its detached result. |
 
@@ -448,10 +458,11 @@ Use `Call.map` when the result combines cursor rows with scalar outputs.
 ### Output Type Inference
 
 For one automatically mapped method output, Helidon derives an omitted JDBC type from
-the resolved return type. For an output record, it derives each registration from its
-component type. `Optional<T>` uses the underlying scalar type; supported cursor shapes
-infer `REF_CURSOR` as shown above. Inference happens during compilation and does not
-inspect routine metadata, callback bodies, or input values.
+the resolved return type. For an automatic output record, it derives each registration
+from the component matched by the method output name. `Optional<T>` uses the underlying
+scalar type; supported cursor shapes infer `REF_CURSOR` as shown above. Inference
+happens during compilation and does not inspect routine metadata, callback bodies, or
+input values.
 
 Scalar outputs use the canonical mappings listed in [Supported Scalar
 Types](mapping.md#supported-scalar-types), including `String` to `VARCHAR`, `int` to
@@ -466,9 +477,10 @@ annotation's default `JDBCType.NULL` marks an omitted type; Helidon does not use
 an inferred registration.
 
 Declare explicit types for callbacks, scalar snapshots, `void` methods, multiple
-method-level outputs, or outputs with a nonempty `typeName`. Those forms do not provide
-one automatically mapped Java output type for each declaration. The imperative
-`out(...)` methods always require a JDBC type. The optional `scale` applies only to
+method-level outputs without an automatic aggregate, or outputs with a nonempty
+`typeName`. Those forms do not provide one automatically mapped Java output type for
+each declaration. The imperative `out(...)` methods always require a JDBC type.
+The optional `scale` applies only to
 `NUMERIC` or `DECIMAL` and cannot be combined with `typeName`.
 
 ### Repository Result Selection
@@ -479,13 +491,13 @@ one automatically mapped Java output type for each declaration. The imperative
 | `Consumer<JdbcClient.CallResult>` parameter | Processes results in the callback; the method returns `void`. |
 | `JdbcClient.CallMapper<R>` parameter | Returns the callback's detached value of type `R`. |
 | `JdbcClient.OutParameters` return | Captures explicit scalar registrations in a snapshot. |
-| Annotated output record | Reads its declared scalar and cursor components. |
+| Record with at least two named method outputs | Matches output names to components and reads scalar and cursor values. |
 | One method-level output | Maps that scalar or cursor to the method return type. |
 | No output declarations and a mapped return | Maps the first direct result set after any initial update counts. |
 
 A callable method accepts at most one fully typed callback parameter. That parameter
-is a control argument, not an SQL input. Multiple method-level outputs require a
-snapshot or callback; the annotated output-record form is another way to return them.
+is a control argument, not an SQL input. Multiple method-level outputs return through
+a scalar snapshot, a callback, or an automatic record aggregate.
 SQL inputs must be supported scalar types. Reference arguments can be null and are
 bound as typed SQL `NULL`; imperative `bind` arguments must be nonnull.
 
@@ -567,7 +579,11 @@ Oracle supports the `SYS_REFCURSOR` examples on this page. PostgreSQL refcursor 
 requires an active database transaction; use a managed client in a Helidon local
 transaction. For PostgreSQL routines that mix procedure and function calls, the driver
 setting `escapeSyntaxCallMode=callIfNoReturn` distinguishes calls by their leading
-return slot. See the [pgJDBC routine guide](https://jdbc.postgresql.org/documentation/callproc/).
+return slot. A PostgreSQL function with multiple OUT parameters instead uses
+`escapeSyntaxCallMode=select` and a call without a leading return slot. Use a client
+configured for that function profile; `callIfNoReturn` sends the same call form to a
+procedure. These are driver connection settings. See the
+[pgJDBC routine guide](https://jdbc.postgresql.org/documentation/callproc/).
 MySQL Connector/J does not support
 `REF_CURSOR` output registration. Use the routine's direct result sets when it provides
 them; Data JDBC does not substitute direct results for an unsupported cursor output.

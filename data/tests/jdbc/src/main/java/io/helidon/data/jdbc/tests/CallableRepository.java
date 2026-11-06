@@ -56,11 +56,14 @@ interface CallableRepository extends CallableParent<Integer> {
     Optional<String> direct(String rows);
 
     @Jdbc.Statement("{call routine(:value, :rows, :result)}")
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    @Jdbc.OutParameter(value = "result", type = JDBCType.VARCHAR)
     Outputs aggregate(Integer value);
 
-    record Outputs(@Jdbc.OutParameter(type = JDBCType.INTEGER) int value,
-                   @Jdbc.OutParameter(type = JDBCType.REF_CURSOR) List<Projection> rows,
-                   @Jdbc.OutParameter(type = JDBCType.VARCHAR) Optional<String> result) {
+    record Outputs(int value,
+                    List<Projection> rows,
+                    Optional<String> result) {
     }
 
     record Projection(int id) {

@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -132,8 +133,8 @@ public abstract class AbstractJdbcCallableContract {
             client.create("CREATE OR REPLACE PROCEDURE sp_noop AS BEGIN NULL; END;").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_pair(first OUT SYS_REFCURSOR, second OUT SYS_REFCURSOR, "
                                   + "value OUT INTEGER) AS BEGIN value := 7; "
-                                  + "OPEN first FOR SELECT 42 FROM dual UNION ALL SELECT 43 FROM dual ORDER BY 1; "
-                                  + "OPEN second FOR SELECT 44 FROM dual; END;").execute();
+                                  + "OPEN first FOR SELECT 42 AS ID FROM dual UNION ALL SELECT 43 FROM dual ORDER BY 1; "
+                                  + "OPEN second FOR SELECT 44 AS ID FROM dual; END;").execute();
             client.create("CREATE OR REPLACE FUNCTION sp_stamp RETURN TIMESTAMP AS BEGIN "
                                   + "RETURN TIMESTAMP '2026-10-28 12:13:14.123456'; END;").execute();
             client.create("CREATE OR REPLACE PROCEDURE sp_bundle(p_input IN INTEGER, value OUT INTEGER, "
@@ -180,6 +181,97 @@ public abstract class AbstractJdbcCallableContract {
             manager.shutdown();
         }
         TestConfigFactory.reset();
+    }
+
+    @Test
+    protected void distinguishesCaughtClientFailuresFromJoinedBoundaryFailures() {
+        for (boolean joined : List.of(false, true)) {
+            String name = joined ? "caught_joined_keys" : "caught_direct_keys";
+            client.create("DELETE FROM CONTACT WHERE NAME = ?").bind(1, name).execute();
+            IllegalStateException failure = new IllegalStateException("The test rejects a generated key row.");
+            Runnable operation = () -> {
+                JdbcClient.GeneratedKeys keys = client.create("INSERT INTO CONTACT (NAME) VALUES (?)")
+                        .bind(1, name).generatedKeys();
+                if (vendor().equals("oracle")) {
+                    keys.addColumn("ID");
+                }
+                keys.map(_ -> { throw failure; }).one();
+            };
+            Callable<Boolean> task = () -> {
+                if (joined) {
+                    assertThrows(TxException.class, () -> Tx.transaction(() -> {
+                        operation.run();
+                        return Boolean.TRUE;
+                    }));
+                } else {
+                    assertThat(assertThrows(IllegalStateException.class, operation::run), sameInstance(failure));
+                }
+                return Boolean.TRUE;
+            };
+            if (joined) {
+                assertThrows(TxException.class, () -> Tx.transaction(task));
+            } else {
+                assertThat(Tx.transaction(task), is(true));
+            }
+            assertThat(client.create("SELECT COUNT(*) FROM CONTACT WHERE NAME = ?").bind(1, name)
+                               .map(Long.class).one(), is(joined ? 0L : 1L));
+        }
+    }
+
+    @Test
+    protected void materializesAggregatesWithTheDriverFunctionProfile() {
+        if (vendor().equals("mysql")) {
+            assertThrows(DataException.class, () -> client.create("{? = call sp_add(?)}").bind(2, 41).call()
+                    .out("return", 1, JDBCType.REF_CURSOR).consume(result -> {
+                        result.skipRemainingResults();
+                        result.cursor("return", row -> row.get(1, Integer.class)).list();
+                    }));
+            return;
+        }
+        if (vendor().equals("pgsql")) {
+            manager.shutdown();
+            TestConfigFactory.reset();
+            Map<String, String> values = new HashMap<>(configuration().asMap().get());
+            values.compute("data.clients.jdbc.0.connection.url", (_, url) -> url + "?escapeSyntaxCallMode=select");
+            TestConfigFactory.config(Config.just(ConfigSources.create(values)));
+            manager = ServiceRegistryManager.start();
+            client = manager.registry().get(JdbcClient.class);
+            // PostgreSQL OUT functions need select mode. Procedure mode requires bindings for every INOUT input.
+            client.create("CREATE OR REPLACE FUNCTION sp_bundle(p_input INTEGER, OUT value INTEGER, OUT p_rows refcursor) "
+                                  + "LANGUAGE plpgsql AS $$ BEGIN value := p_input + 1; "
+                                  + "IF p_input < 0 THEN p_rows := NULL; ELSE OPEN p_rows FOR SELECT 42 AS ID "
+                                  + "WHERE p_input > 0; END IF; END $$").execute();
+        }
+        Tx.transaction(() -> {
+            if (generated()) {
+                CallableRoutineRepository repository = manager.registry().get(CallableRoutineRepository.class);
+                assertThat(repository.recordBundle(41), is(new CallableRoutineRepository.RecordBundle(
+                        List.of(new CallableRoutineRepository.Projection(42)), 42)));
+                assertThat(repository.aggregateOptionalCursor(-1),
+                           is(new CallableRoutineRepository.OptionalBundle(Optional.empty(), 0)));
+                assertThat(repository.aggregateOptionalCursor(0),
+                           is(new CallableRoutineRepository.OptionalBundle(Optional.of(List.of()), 1)));
+                assertThat(repository.mappedBundle(41, result -> {
+                    result.skipRemainingResults();
+                    int value = result.get("value", Integer.class);
+                    List<Integer> rows = result.cursor("rows", new CallableRoutineRepository.IntegerMapper()).list();
+                    return new CallableRoutineRepository.Bundle(rows, value);
+                }), is(new CallableRoutineRepository.Bundle(List.of(42), 42)));
+            } else {
+                CallableRoutineRepository.RecordBundle bundle = client.create("{call sp_bundle(?, ?, ?)}")
+                        .bind(1, 41).call().out("value", 2, JDBCType.INTEGER).out("rows", 3, JDBCType.REF_CURSOR)
+                        .map(result -> {
+                            result.skipRemainingResults();
+                            int value = result.get("value", Integer.class);
+                            List<CallableRoutineRepository.Projection> rows = result.cursor("rows", row ->
+                                    new CallableRoutineRepository.Projection(row.get("id", Integer.class))).list();
+                            return new CallableRoutineRepository.RecordBundle(rows, value);
+                        });
+                assertThat(bundle, is(new CallableRoutineRepository.RecordBundle(
+                        List.of(new CallableRoutineRepository.Projection(42)), 42)));
+            }
+            return Boolean.TRUE;
+        });
     }
 
     @Test
@@ -440,6 +532,16 @@ public abstract class AbstractJdbcCallableContract {
                                is(new CallableRoutineRepository.RecordBundle(
                                        List.of(new CallableRoutineRepository.Projection(42)), 42)));
                     assertThat(repository.aggregateCursor(41), is(new CallableRoutineRepository.Bundle(List.of(42), 42)));
+                    assertThat(repository.pair(), is(new CallableRoutineRepository.Pair(
+                            List.of(new CallableRoutineRepository.Projection(44)), 7,
+                            List.of(new CallableRoutineRepository.Projection(42),
+                                    new CallableRoutineRepository.Projection(43)))));
+                    assertThat(repository.mappedBundle(41, result -> {
+                        result.skipRemainingResults();
+                        int value = result.get("value", Integer.class);
+                        List<Integer> rows = result.cursor("rows", new CallableRoutineRepository.IntegerMapper()).list();
+                        return new CallableRoutineRepository.Bundle(rows, value);
+                    }), is(new CallableRoutineRepository.Bundle(List.of(42), 42)));
                     assertThat(repository.aggregateOptionalCursor(-1),
                                is(new CallableRoutineRepository.OptionalBundle(Optional.empty(), 0)));
                     assertThat(repository.aggregateOptionalCursor(0),

@@ -154,7 +154,7 @@ The following annotations describe a JDBC repository and its methods:
 | `@Jdbc.Execution` | Selects `AUTO`, `QUERY`, `UPDATE`, or `CALL` execution. |
 | `@Jdbc.GeneratedKeys` | Requests generated keys from an update. |
 | `@Jdbc.RowMapper` | Selects a row mapper service supplied by the application. |
-| `@Jdbc.OutParameter` | Declares a callable output on a method or output record component. |
+| `@Jdbc.OutParameter` | Declares a callable output on a repository method. |
 | `@Jdbc.OutParameterDeclarations` | Holds repeated callable output declarations. |
 
 Each method executes one SQL statement. The shared [SQL
@@ -215,7 +215,7 @@ Declare call SQL with `@Jdbc.Statement` and outputs with `@Jdbc.OutParameter`.
 Output declarations select callable execution automatically. A procedure with only IN
 parameters uses `@Jdbc.Execution(Jdbc.ExecutionType.CALL)` explicitly.
 
-Methods can return scalar outputs, materialized cursor rows, annotated output records,
+Methods can return scalar outputs, materialized cursor rows, output records with matching method declarations,
 or detached scalar snapshots. A callable callback supports application-controlled
 result processing. [Stored Procedures and Functions](stored-procedures.md) provides
 matching Oracle definitions and Java examples, including INOUT parameters and output
