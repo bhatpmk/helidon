@@ -37,8 +37,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TimeZone;
-import java.util.function.Consumer;
-import java.util.stream.Stream;
 
 import io.helidon.data.DataException;
 import io.helidon.data.NoResultException;
@@ -237,7 +235,7 @@ final class JdbcCallResult implements JdbcClient.CallResult {
     }
 
     Throwable finish(Throwable escaped) {
-        Throwable primary = JdbcStreamScope.mergeProcessingFailures(failure, escaped);
+        Throwable primary = JdbcExceptionTranslator.mergeProcessingFailures(failure, escaped);
         if (primary == null) {
             try {
                 // A selected but unconsumed cursor is discarded with the statement.
@@ -347,7 +345,7 @@ final class JdbcCallResult implements JdbcClient.CallResult {
         if (failure == null) {
             lease.processingFailed();
         }
-        failure = JdbcStreamScope.mergeProcessingFailures(failure, caught);
+        failure = JdbcExceptionTranslator.mergeProcessingFailures(failure, caught);
     }
 
     @FunctionalInterface
@@ -385,16 +383,6 @@ final class JdbcCallResult implements JdbcClient.CallResult {
         @Override
         public List<T> list() {
             return materialize(-1);
-        }
-
-        @Override
-        public void useStream(Consumer<Stream<T>> action) {
-            Objects.requireNonNull(action, "The stream consumer must not be null.");
-            consume(columns -> {
-                JdbcStreamScope lifetime = new JdbcStreamScope(JdbcCallResult.this::check, JdbcCallResult.this::retain);
-                JdbcQueryHandler.useStream(operation, current, columns, mapper, action, lifetime, () -> { });
-                return Boolean.TRUE;
-            });
         }
 
         private List<T> materialize(int cardinality) {

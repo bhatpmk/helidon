@@ -16,10 +16,7 @@
 package io.helidon.data.jdbc;
 
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
-import java.util.stream.Stream;
 
 /**
  * Result stage for a mapped JDBC query or generated keys.
@@ -97,9 +94,4 @@ final class JdbcRows<T> implements JdbcClient.Rows<T> {
         return statement.list(mapper, plan);
     }
 
-    @Override
-    public void useStream(Consumer<Stream<T>> action) {
-        Objects.requireNonNull(action, "The stream consumer must not be null.");
-        statement.useStream(mapper, plan, action);
-    }
 }

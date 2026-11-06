@@ -262,7 +262,36 @@ final class JdbcExceptionTranslator {
             return primary;
         }
         Throwable cleanup = mergeInfrastructure(null, operation, failure);
-        return JdbcStreamScope.mergeProcessingFailures(primary, cleanup);
+        return mergeProcessingFailures(primary, cleanup);
+    }
+
+    /**
+     * Retains the first processing failure while preserving fatal precedence and suppression identity.
+     *
+     * @param primary The earlier failure, or null.
+     * @param secondary The later failure, or null.
+     * @return The combined failure, or null when neither failure is present.
+     */
+    static Throwable mergeProcessingFailures(Throwable primary, Throwable secondary) {
+        if (primary == null) {
+            return secondary;
+        }
+        if (secondary == null || secondary == primary) {
+            return primary;
+        }
+        if (secondary instanceof Error && !(primary instanceof Error)) {
+            Throwable earlier = primary;
+            primary = secondary;
+            secondary = earlier;
+        }
+        // Nested processing boundaries can observe the same secondary failure more than once.
+        for (Throwable suppressed : primary.getSuppressed()) {
+            if (suppressed == secondary) {
+                return primary;
+            }
+        }
+        primary.addSuppressed(secondary);
+        return primary;
     }
 
     /**

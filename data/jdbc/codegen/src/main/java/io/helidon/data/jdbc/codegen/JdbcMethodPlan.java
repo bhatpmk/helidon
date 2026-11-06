@@ -19,9 +19,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.function.Consumer;
 import java.util.stream.BaseStream;
-import java.util.stream.Stream;
 
 import io.helidon.codegen.CodegenException;
 import io.helidon.codegen.RoundContext;
@@ -131,29 +129,7 @@ final class JdbcMethodPlan {
             return JdbcCallablePlan.create(method, roundContext, sql);
         }
 
-        List<TypedElementInfo> inputs = ordinaryParameters(method, roundContext);
-        List<TypedElementInfo> controls = method.parameterArguments().stream()
-                .filter(parameter -> !inputs.contains(parameter))
-                .toList();
-        Return result;
-        if (controls.isEmpty()) {
-            result = returnPlan(method);
-        } else {
-            if (controls.size() != 1 || !method.typeName().equals(TypeNames.PRIMITIVE_VOID)
-                    || method.hasAnnotation(JdbcCodegenTypes.JDBC_GENERATED_KEYS)
-                    || JdbcExecutionSelection.create(method) == JdbcExecutionSelection.UPDATE) {
-                throw failure(method, "A streaming query must return void, have one consumer, and request no update or keys.");
-            }
-            TypeName control = controls.getFirst().typeName();
-            if (!control.equals(TypeName.create(Consumer.class))) {
-                throw failure(method, "A streaming control must declare Consumer<Stream<T>> directly.");
-            }
-            TypeName stream = singleTypeArgument(method, control);
-            if (!stream.equals(TypeName.create(Stream.class))) {
-                throw failure(method, "A streaming control must declare Consumer<Stream<T>>.");
-            }
-            result = new Return(ReturnShape.STREAM, singleTypeArgument(method, stream));
-        }
+        Return result = returnPlan(method);
         boolean generatedKeys = method.hasAnnotation(JdbcCodegenTypes.JDBC_GENERATED_KEYS);
         Annotation rowMapperAnnotation = method.findAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER).orElse(null);
         boolean rowMapperRequested = rowMapperAnnotation != null;
@@ -181,13 +157,13 @@ final class JdbcMethodPlan {
                                   rowMapperRequested,
                                   explicitMapper);
         JdbcSqlParameterPlan parameters = reference == null
-                ? JdbcSqlParameterPlan.create(sql, inputs, method)
+                ? JdbcSqlParameterPlan.create(sql, method.parameterArguments(), method)
                 : JdbcSqlParameterPlan.configured(sql,
-                                                  inputs,
+                                                  method.parameterArguments(),
                                                   method,
                                                   roundContext.typeHierarchyResolver());
         if (reference != null && reference.defaultSql() != null) {
-            JdbcSqlParameterPlan.create(reference.defaultSql(), inputs, method);
+            JdbcSqlParameterPlan.create(reference.defaultSql(), method.parameterArguments(), method);
         }
         return new JdbcMethodPlan(method,
                                   operation,
@@ -199,20 +175,6 @@ final class JdbcMethodPlan {
                                   generatedColumns,
                                   explicitMapper,
                                   mapping.recordComponents());
-    }
-
-    /**
-     * Returns ordinary SQL inputs while excluding streaming callback controls.
-     *
-     * @param method The repository declaration supplies the original parameter objects.
-     * @param context The generation round resolves consumer supertypes.
-     * @return The SQL inputs retain their original method argument identities.
-     */
-    static List<TypedElementInfo> ordinaryParameters(TypedElementInfo method, RoundContext context) {
-        return method.parameterArguments().stream()
-                .filter(parameter -> context.typeHierarchyResolver()
-                        .resolveSupertype(parameter.typeName(), TypeName.create(Consumer.class)).isEmpty())
-                .toList();
     }
 
     static JdbcMethodPlan callableMapping(TypedElementInfo declaration, RoundContext context,
@@ -269,12 +231,6 @@ final class JdbcMethodPlan {
 
     TypedElementInfo method() {
         return method;
-    }
-
-    String streamControl() {
-        return method.parameterArguments().stream()
-                .filter(parameter -> parameter.typeName().equals(TypeName.create(Consumer.class)))
-                .findFirst().orElseThrow().elementName();
     }
 
     Operation operation() {
@@ -370,9 +326,6 @@ final class JdbcMethodPlan {
         if (generatedKeys) {
             return Operation.UPDATE;
         }
-        if (result.shape() == ReturnShape.STREAM) {
-            return Operation.QUERY;
-        }
         // AUTO inference uses only the Java method shape because the provider must not parse SQL to guess intent.
         if (rowMapper || result.shape() == ReturnShape.OPTIONAL || result.shape() == ReturnShape.LIST) {
             return Operation.QUERY;
@@ -442,7 +395,7 @@ final class JdbcMethodPlan {
             }
             return;
         }
-        if (method.typeName().equals(TypeNames.PRIMITIVE_VOID) && result.shape() != ReturnShape.STREAM) {
+        if (method.typeName().equals(TypeNames.PRIMITIVE_VOID)) {
             throw failure(method, "QUERY and generated keys operations must return a materialized result.");
         }
         TypeName mappedType = result.mappedType();
@@ -674,8 +627,7 @@ final class JdbcMethodPlan {
     enum ReturnShape {
         ITEM,
         OPTIONAL,
-        LIST,
-        STREAM
+        LIST
     }
 
     /**

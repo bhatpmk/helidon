@@ -54,10 +54,6 @@ final class JdbcRow implements JdbcClient.Row {
         this(resultSet, columns, operation, null, null);
     }
 
-    JdbcRow(ResultSet resultSet, JdbcColumnLayout columns, JdbcOperation operation, JdbcStreamScope streamScope) {
-        this(resultSet, columns, operation, streamScope::check, streamScope::record);
-    }
-
     JdbcRow(ResultSet resultSet, JdbcColumnLayout columns, JdbcOperation operation,
             Runnable scopeCheck, Consumer<Throwable> failureRecorder) {
         this.scopeCheck = scopeCheck;

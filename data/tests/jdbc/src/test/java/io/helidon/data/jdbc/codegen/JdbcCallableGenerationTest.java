@@ -248,13 +248,11 @@ import javax.lang.model.element.TypeElement;
     }
 
     /**
-     * Query streaming and callable callbacks coexist without changing cursor return shapes or control binding.
+     * Callable callbacks and materialized cursors preserve their result shapes and control binding.
      */
     @Test
-    void compilesQueryStreamsAndCallableStreamsTogether() {
+    void compilesCallableCallbacksAndMaterializedCursorsTogether() {
         TestCompiler.Result result = compile("""
-                @Jdbc.Statement("SELECT :value")
-                void query(String value, Consumer<Stream<String>> jdbcClient);
                 @Jdbc.Statement("{? = call routine(:value)}")
                 @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
                 void cursor(Integer value, Consumer<JdbcClient.CallResult> SQL_CURSOR);
@@ -282,6 +280,18 @@ import javax.lang.model.element.TypeElement;
                     """ + declaration + ";");
             assertThat(String.join("\n", result.diagnostics()), result.success(), is(false));
         }
+    }
+
+    /**
+     * Ordinary queries reject JDBC streaming controls while callable callbacks remain available.
+     */
+    @Test
+    void rejectsStreamingControlsForQueries() {
+        TestCompiler.Result result = compile("""
+                @Jdbc.Statement("SELECT :value")
+                void query(String value, Consumer<Stream<String>> action);
+                """);
+        assertThat(String.join("\n", result.diagnostics()), result.success(), is(false));
     }
 
     private static TestCompiler.Result compile(String declarations) {
