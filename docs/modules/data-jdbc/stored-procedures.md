@@ -17,11 +17,12 @@ Oracle and run against the schema owned by the configured database user.
 
 ## Prepare the Examples
 
-Use the runtime dependencies and annotation processors described in [Getting
-Started](getting-started.md#dependencies), with an Oracle JDBC driver instead of the
-MySQL driver. Configure an `orders` client connected to the example schema as described
-in [Clients and Data Sources](configuration.md). Calls use the same client configuration
-as queries and updates; no additional callable settings are required.
+Use the runtime dependencies described in [Maven Coordinates](data-jdbc.md#maven-coordinates)
+and the compiler setup in [Annotation Processing](declarative.md#annotation-processing),
+with an Oracle JDBC driver instead of the MySQL driver. Configure an `orders` client
+connected to the example schema as described in [Configuration](data-jdbc.md#configuration).
+Calls use the same client configuration as queries and updates; no additional callable
+settings are required.
 
 Create these tables and rows once, outside an application data transaction:
 
@@ -278,7 +279,7 @@ for `one()` raises `NoResultException`, and more than one row for `one()` or
 `optional()` raises `NonUniqueResultException`.
 
 A method returning one cursor can select a row mapper with
-`@Jdbc.RowMapper`. See [Custom Row Mapping](mapping.md#custom-row-mapping) for service
+`@Jdbc.RowMapper`. See [Custom Row Mapping](declarative.md#custom-row-mapping) for service
 registration and mapper selection. A singular scalar cursor, such as an `Integer`
 read from one cursor row, needs an explicit `type = JDBCType.REF_CURSOR` to distinguish
 it from a scalar OUT value.
@@ -465,7 +466,7 @@ happens during compilation and does not inspect routine metadata, callback bodie
 input values.
 
 Scalar outputs use the canonical mappings listed in [Supported Scalar
-Types](mapping.md#supported-scalar-types), including `String` to `VARCHAR`, `int` to
+Types](declarative.md#supported-scalar-types), including `String` to `VARCHAR`, `int` to
 `INTEGER`, and `BigDecimal` to `DECIMAL`. Primitive and wrapper equivalents use the
 same registration. An explicit `type` overrides inference, even when it is
 `JDBCType.NULL`.
@@ -506,7 +507,7 @@ result types before generation. Conflicting JDBC contracts from unrelated parent
 fail compilation. Separately compiled parents using named callable markers must
 retain their Java argument names with `-parameters`. See [Repository Interface
 Inheritance](declarative.md#repository-interface-inheritance) and [Declarative
-Transactions](transactions.md#declarative-transactions) for the general inheritance
+Transactions](declarative.md#transactions) for the general inheritance
 and transaction-annotation rules.
 
 ## Scoped Callbacks and Result Traversal
@@ -567,8 +568,12 @@ that transaction from inside the callback.
 JDBC and mapping failures retained during callable processing still fail the operation
 when a callback catches them. In a joined local transaction, they mark it for rollback.
 Ordinary argument-validation errors that occur before processing are recoverable.
-See [Failure Handling](transactions.md#failure-handling) for transaction consequences
-and [Errors and JDBC Warnings](data-jdbc.md#errors-and-jdbc-warnings) for diagnostics.
+See [Errors and JDBC Warnings](data-jdbc.md#errors-and-jdbc-warnings) for diagnostics.
+
+Callable failure retention differs from ordinary imperative queries and generated-key
+processing. Catching those direct client failures inside a transaction task can allow
+the transaction to commit. A failure that escapes a joined transaction boundary marks
+the transaction for rollback, even if an outer caller catches it afterward.
 
 Stored routines that commit, roll back, or implicitly end a transaction are unsupported
 inside a Helidon local JDBC transaction. Helidon cannot reliably detect or reverse
