@@ -160,7 +160,7 @@ class JdbcCallableInferenceTest {
         assertThat(result.diagnostics().toString(), result.success(), is(true));
         String generated = generated(result);
         for (String type : List.of("NULL", "NUMERIC", "NVARCHAR", "REF_CURSOR")) {
-            assertThat(generated, containsString(".out(\"return\", 1, JDBCType." + type + ");"));
+            assertThat(generated, containsString(".returns(JDBCType." + type + ");"));
         }
         assertThat(generated, containsString(".out(\"value\", 1, JDBCType.DECIMAL, 2);"));
         assertThat(generated, containsString("GeneratedJdbcData.bindNull(jdbcStatement, 1, JDBCType.DECIMAL);"));
@@ -272,7 +272,7 @@ class JdbcCallableInferenceTest {
                     """).build().compile();
             assertThat("separate=" + separate + result.diagnostics(), result.success(), is(true));
             assertThat(generated(result), containsString(".out(\"total\", 1, JDBCType.INTEGER);"));
-            assertThat(generated(result), containsString(".out(\"return\", 1, JDBCType.NULL);"));
+            assertThat(generated(result), containsString(".returns(JDBCType.NULL);"));
         }
     }
 
@@ -365,10 +365,15 @@ class JdbcCallableInferenceTest {
             Annotation output = Annotation.builder().type(Jdbc.OutParameter.class)
                     .putProperty("type", AnnotationProperty.create(EnumValue.create(JDBCType.class, JDBCType.NULL), explicit))
                     .build();
+            Annotation statement = Annotation.builder().type(Jdbc.Statement.class).value("{? = call routine()}")
+                    .build();
             ClassModel metadata = ClassModel.builder().type(TypeName.create("example.Metadata"))
                     .addMethod(method -> method.name("value").accessModifier(AccessModifier.PUBLIC).isStatic(true)
                             .returnType(TypeName.create(Annotation.class))
-                            .addContent("return ").addContentCreate(output).addContentLine(";")).build();
+                            .addContent("return ").addContentCreate(output).addContentLine(";"))
+                    .addMethod(method -> method.name("statement").accessModifier(AccessModifier.PUBLIC).isStatic(true)
+                            .returnType(TypeName.create(Annotation.class))
+                            .addContent("return ").addContentCreate(statement).addContentLine(";")).build();
             StringWriter metadataSource = new StringWriter();
             metadata.write(metadataSource);
             TestCompiler.Result library = compiler().addSource("example/Metadata.java", metadataSource.toString())
@@ -379,18 +384,21 @@ class JdbcCallableInferenceTest {
                 // The generated public method exercises metadata reconstruction without inspecting private state.
                 Annotation reconstructed = (Annotation) loader.loadClass("example.Metadata").getMethod("value").invoke(null);
                 assertThat(reconstructed.property("type").orElseThrow().explicit(), is(explicit));
+                Annotation copiedStatement = (Annotation) loader.loadClass("example.Metadata")
+                        .getMethod("statement").invoke(null);
+                assertThat(copiedStatement.stringValue(), is(statement.stringValue()));
                 for (Annotation declaration : List.of(output, reconstructed)) {
                     StringWriter source = new StringWriter();
                     ClassModel.builder().type(TypeName.create("example.Repository")).classType(ElementKind.INTERFACE)
                             .addAnnotation(Annotation.create(Data.Repository.class))
                             .addAnnotation(Annotation.create(Data.Provider.class, "jdbc"))
                             .addMethod(method -> method.name("value").returnType(TypeName.create(String.class)).isAbstract(true)
-                                    .addAnnotation(Annotation.create(Jdbc.Statement.class, "{? = call routine()}"))
+                                    .addAnnotation(copiedStatement)
                                     .addAnnotation(declaration)).build().write(source);
                     TestCompiler.Result result = compiler().addSource("example/Repository.java", source.toString())
                             .build().compile();
                     assertThat(result.diagnostics().toString(), result.success(), is(true));
-                    assertThat(generated(result), containsString(".out(\"return\", 1, JDBCType."
+                    assertThat(generated(result), containsString(".returns(JDBCType."
                             + (explicit ? "NULL" : "VARCHAR") + ");"));
                 }
             }

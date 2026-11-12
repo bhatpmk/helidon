@@ -62,6 +62,47 @@ final class JdbcCall implements JdbcClient.Call {
     }
 
     @Override
+    public JdbcClient.Call out(String name, JDBCType type) {
+        Objects.requireNonNull(name, "The output name must not be null.");
+        Objects.requireNonNull(type, "The output type must not be null.");
+        return out(name, statement.outputPosition(name), type);
+    }
+
+    @Override
+    public JdbcClient.Call out(String name, JDBCType type, String typeName) {
+        Objects.requireNonNull(name, "The output name must not be null.");
+        Objects.requireNonNull(type, "The output type must not be null.");
+        Objects.requireNonNull(typeName, "The database type name must not be null.");
+        return out(name, statement.outputPosition(name), type, typeName);
+    }
+
+    @Override
+    public JdbcClient.Call out(String name, JDBCType type, int scale) {
+        Objects.requireNonNull(name, "The output name must not be null.");
+        Objects.requireNonNull(type, "The output type must not be null.");
+        return out(name, statement.outputPosition(name), type, scale);
+    }
+
+    @Override
+    public JdbcClient.Call returns(JDBCType type) {
+        Objects.requireNonNull(type, "The output type must not be null.");
+        return out("return", statement.returnPosition(), type);
+    }
+
+    @Override
+    public JdbcClient.Call returns(JDBCType type, String typeName) {
+        Objects.requireNonNull(type, "The output type must not be null.");
+        Objects.requireNonNull(typeName, "The database type name must not be null.");
+        return out("return", statement.returnPosition(), type, typeName);
+    }
+
+    @Override
+    public JdbcClient.Call returns(JDBCType type, int scale) {
+        Objects.requireNonNull(type, "The output type must not be null.");
+        return out("return", statement.returnPosition(), type, scale);
+    }
+
+    @Override
     public void execute() {
         map(result -> {
             Objects.requireNonNull(result, "The callable result must not be null.");
@@ -111,6 +152,7 @@ final class JdbcCall implements JdbcClient.Call {
                 throw new IllegalArgumentException("Output names and positions must be unique.");
             }
         }
+        statement.validateOutputPosition(output.index());
         outputs.add(output);
         return this;
     }

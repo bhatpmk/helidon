@@ -11,6 +11,22 @@ Both programming models use JDBC `CallableStatement`. SQL syntax, available outp
 types, and cursor support depend on the database and driver. The examples below use
 Oracle and run against the schema owned by the configured database user.
 
+Helidon supports two JDBC escape forms. It does not determine whether the target
+routine is a database procedure or function. The application supplies the SQL and
+driver connection settings that its database requires.
+
+| Escape form | Parameter positions |
+| --- | --- |
+| `{call ROUTINE(...)}` | Arguments begin at JDBC position one. There is no leading return registration. |
+| `{? = call ROUTINE(...)}` | The leading return is OUT at JDBC position one. Arguments begin at position two. |
+
+A leading return must be registered even when the application discards its value.
+For example, `Call.execute()` discards a registered return, while `Call.outputs()`
+captures it. Without a leading return, values exposed by the driver as direct result
+sets follow the normal result mapping rules. Support for a particular routine and
+escape form depends on the driver. Helidon preserves the selected form and reports
+driver failures without trying another form.
+
 > [!NOTE]
 > Helidon Data JDBC is incubating. Its APIs and behavior may change incompatibly
 > or be removed in any release.
@@ -21,7 +37,7 @@ Use the runtime dependencies described in [Maven Coordinates](data-jdbc.md#maven
 and the compiler setup in [Annotation Processing](declarative.md#annotation-processing),
 with an Oracle JDBC driver instead of the MySQL driver. Configure an `orders` client
 connected to the example schema as described in [Configuration](data-jdbc.md#configuration).
-Calls use the same client configuration as queries and updates; no additional callable
+Calls use the same client configuration as queries and updates; no additional Helidon callable
 settings are required.
 
 Create these tables and rows once, outside an application data transaction:
@@ -119,6 +135,7 @@ JdbcClient.OutParameters outputs = client.create("{call READ_STATUS(?, ?)}")
         .out("status", 2, JDBCType.VARCHAR)
         .outputs();
 
+// Read the captured value after callable cleanup, without accessing JDBC.
 String status = outputs.get("status", String.class);
 ```
 
@@ -164,11 +181,13 @@ int updatedChecks = client.create("{call INCREMENT_CHECKS(?)}")
         .get("checks", Integer.class);
 ```
 
-For declarative calls, an ordinary SQL-bound argument is IN, a declared output without
-a matching argument is OUT, and a named marker with both is INOUT. Output markers must
-occur exactly once. Use named markers matching Java argument names for declarative
-INOUT calls. Helidon validates that the input type is compatible with the output
-registration.
+For declarative calls, an SQL-bound argument supplies an IN value. A declared output
+without a matching input is OUT. An input and output with the same effective name form
+INOUT. The effective input name comes from `@Data.Param` when present, or the Java
+argument name otherwise. Output markers must occur exactly once. Ordinary declarative OUT and INOUT
+arguments require named SQL markers, including when SQL comes from configuration.
+Imperative calls retain explicit positional registration. Helidon validates that the
+input type is compatible with the output registration.
 
 ## REF_CURSOR Results
 
@@ -217,6 +236,7 @@ the record components without regard to case. Each cursor row produces one `Orde
 
 ```java
 List<OrderLine> lines = repository.details(42L);
+// Process detached rows after the repository method returns.
 lines.forEach(System.out::println);
 ```
 
@@ -329,8 +349,8 @@ Optional<BigDecimal> total = client.create("{? = call ORDER_TOTAL(?)}")
         .optional("return", BigDecimal.class);
 ```
 
-An unnamed method output is valid only when the SQL has a leading return slot. An OUT
-parameter of a procedure instead names its marker, as in `@Jdbc.OutParameter("status")`.
+An unnamed method output is valid only when the SQL has a leading return slot. An
+ordinary OUT parameter names its marker, as in `@Jdbc.OutParameter("status")`.
 
 ## Multiple Outputs in a Record
 
@@ -418,15 +438,16 @@ Result records do not declare outputs or select cursor row mappers. Use a `CallM
 callback when output names differ from component names, when wrapping a single scalar
 in a record, or when aggregate cursors need custom row mappers. Declare those outputs
 on the method and supply each mapper to `result.cursor(...)` inside the callback.
-A leading function return combined with other outputs also uses a callback or a scalar
-snapshot rather than automatic aggregation.
+A declarative leading callable return must be the only output declaration. Imperative
+callbacks and snapshots can still combine explicitly registered outputs where the
+database and driver support them.
 
 ## Callable APIs and Execution Selection
 
 | Declarative API | Purpose |
 | --- | --- |
-| `@Jdbc.Statement` | Supplies the call SQL, using named markers or positional markers. |
-| `@Jdbc.Execution(Jdbc.ExecutionType.CALL)` | Explicitly selects callable execution, including procedures with only IN parameters. |
+| `@Jdbc.Statement` | Supplies literal or configured call SQL. Ordinary argument outputs require named markers. |
+| `@Jdbc.Execution(Jdbc.ExecutionType.CALL)` | Explicitly selects callable execution, including calls with only IN parameters. |
 | `@Jdbc.OutParameter` | Declares an output on a repository method. Its members are `value`, `type`, `typeName`, and `scale`. |
 | `@Jdbc.OutParameterDeclarations` | Holds repeated output declarations. Repeating `@Jdbc.OutParameter` is equivalent. |
 | `@Jdbc.RowMapper` | Selects a row mapper for a method returning one cursor. |
@@ -443,6 +464,23 @@ Neither operation accesses the database. Additional `out` overloads accept a dat
 type name or a nonnegative `NUMERIC` or `DECIMAL` scale. Output names and positions
 must be unique. Bind only the IN side of each parameter, including every INOUT value.
 
+Prepared definitions also support `out(name, type)`. The name resolves a named SQL
+marker or a name supplied through the explicit list passed to `prepare(sql, names)`.
+`returns(type)` registers a leading callable return at position one with the lookup
+name `"return"`. It also works with literal positional calls. Both registration
+forms provide overloads for a database type name or a nonnegative `NUMERIC` or `DECIMAL`
+scale. See [SQL In Configuration](configured-statements.md#stored-procedures-and-functions)
+for parameter-style rules and matching declarative and imperative examples.
+
+Configured repository SQL must match the method's declaration of a leading return.
+Helidon rejects a missing or unexpected leading return during repository activation,
+even when marker counts or logical names otherwise match. Ordinary arguments and
+outputs named `return` remain valid when there is no leading return slot.
+
+To obtain leading return validation during activation, regenerate repositories using
+matching versions of the JDBC code generator and runtime. Existing compiled
+repositories retain their generated preparation behavior.
+
 | Call terminal | Behavior |
 | --- | --- |
 | `execute()` | Executes once and discards direct results and outputs. It returns no update count. |
@@ -455,6 +493,52 @@ values. It excludes cursors, named database types, JDBC locators, and offset tem
 values. Its getters require the canonical Java class for the registration, such as
 `BigDecimal.class` for `DECIMAL`; they do not convert a captured value to another type.
 Use `Call.map` when the result combines cursor rows with scalar outputs.
+
+### Result Ownership and Lifetime
+
+Detached results remain usable after callable cleanup. Scoped views require the
+active call and must stay on the invocation thread inside its callback.
+
+| Result form | Contents | Lifetime and cleanup |
+| --- | --- | --- |
+| `JdbcClient.OutParameters` | Captured canonical scalar values. | Reads perform no JDBC work and remain valid after the call. Helidon releases the callable resources; the caller does not close the snapshot. |
+| `JdbcClient.CallResult` | Scoped access to direct results, counts, scalar outputs, and cursors. | Use it only during the synchronous callback. Helidon owns cleanup. Row views and row stages also have limited lifetimes. |
+| Materialized scalars, records, and cursor lists | Java values read or constructed before the call ends. | Detached contents can be retained and processed after the call. The caller does not close them to release JDBC resources. |
+
+For example, `Call.map` can construct an application record inside the callback and
+return it for later use:
+
+```java
+record StatusResult(String status) {
+}
+
+StatusResult status = client.create("{call READ_STATUS(?, ?)}")
+        .bind(1, 42L)
+        .call()
+        .out("status", 2, JDBCType.VARCHAR)
+        .map(result -> {
+            result.skipRemainingResults();
+            return new StatusResult(result.get("status", String.class));
+        });
+
+// The record contains a detached String and remains usable after callable cleanup.
+System.out.println(status.status());
+```
+
+Cursor materialization follows the same rule. The `list()` terminal in the
+[REF_CURSOR example](#ref_cursor-results) maps every row to an `OrderLine` before
+closing the selected cursor. The returned list contains application values rather
+than an open cursor.
+
+Capturing a reference to `CallResult` does not extend its lifetime. Access after the
+callback returns, or from another thread, fails with `IllegalStateException`. Row
+views expire when their mapper returns, and direct row stages expire when the call
+advances to another event.
+
+Detachment does not make an application object graph deeply immutable. Custom
+mappers must return detached values and must not retain `CallResult`, row views,
+or row stages inside returned records or collections. Helidon does not recursively
+inspect application objects to remove borrowed resources.
 
 ### Output Type Inference
 
@@ -504,10 +588,20 @@ bound as typed SQL `NULL`; imperative `bind` arguments must be nonnull.
 
 Inherited declarations retain their callable annotations and resolve generic input and
 result types before generation. Conflicting JDBC contracts from unrelated parents
-fail compilation. Separately compiled parents using named callable markers must
-retain their Java argument names with `-parameters`. See [Repository Interface
-Inheritance](declarative.md#repository-interface-inheritance) and [Declarative
-Transactions](declarative.md#transactions) for the general inheritance
+fail compilation. An explicit or inherited `@Data.Param` alias supplies an input name
+without requiring `-parameters`. Each unaliased input needs a reliable Java name for
+named or configured SQL. For separately compiled
+parents, preserve those names with `-parameters` or redeclare the method in the
+repository with explicit names or aliases and the required callable annotations.
+Partially aliased methods still need reliable names for their unaliased inputs.
+
+Literal positional calls without output declarations and calls with one
+leading return need no parameter name metadata. Their IN arguments bind in declaration
+order, starting at position one without a leading return and position two with one.
+Aliases apply to input and INOUT matching and do not rename output declarations or the
+leading return. Aliased inputs require named SQL.
+See [Repository Interface Inheritance](declarative.md#repository-interface-inheritance)
+and [Declarative Transactions](declarative.md#transactions) for the general inheritance
 and transaction-annotation rules.
 
 ## Scoped Callbacks and Result Traversal
@@ -557,7 +651,12 @@ sequentially.
 Helidon owns the callable statement and its result sets. It closes them on success
 and failure. Outside a local transaction, it also closes the operation's connection.
 A managed local transaction retains its connection until completion. Returned scalars,
-records, lists, and snapshots are independent of those JDBC resources.
+records, lists, and snapshots must have detached contents as described in
+[Result Ownership and Lifetime](#result-ownership-and-lifetime).
+
+Callable cleanup is separate from transaction completion. A detached result can be
+returned before the surrounding transaction commits. Having the result does not
+establish that database changes have been committed.
 
 Callable callbacks run synchronously on the invocation thread. Each row view expires
 when its row mapper returns. The call retains its connection reservation until the

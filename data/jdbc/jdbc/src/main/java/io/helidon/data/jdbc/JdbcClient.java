@@ -153,7 +153,8 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
      * Prepares an immutable SQL definition without acquiring JDBC resources.
      * The returned supplier is safe to share and creates a fresh single-use statement
      * on each invocation without rescanning SQL. Statements are not safe for concurrent mutation.
-     * Named, positional, and marker-free SQL are supported. Mixed marker styles are rejected.
+     * Named, positional, and marker-free SQL are supported. A leading callable return
+     * may precede named arguments for CALL execution. Other mixed marker styles are rejected.
      * Statement boundaries, trusted input, resource ownership, and transaction
      * restrictions described by {@link #create(String)} apply.
      * Preparation captures no transaction context. Registry managed clients determine transaction
@@ -172,16 +173,19 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
     }
 
     /**
-     * Prepares a reusable SQL definition with input names supplied in order.
+     * Prepares a reusable SQL definition with logical parameter names supplied in order.
      * Names must be unique and follow Java identifier character rules, without a colon prefix.
      * Named SQL must use exactly these names and may repeat markers. Positional SQL
-     * must have one marker per input and associates names with positions in list order.
+     * must have one marker per name and associates names with positions in list order.
+     * For CALL, include every IN, OUT, and INOUT parameter once. Include return first
+     * for a leading callable return. Bind only inputs and register outputs through the call stage.
+     * A leading return cannot be bound as an input. Repeated OUT or INOUT markers are rejected.
      * SQL without markers requires an empty list. Indexed bindings always address JDBC
      * positions. The list is defensively copied. Each supplier invocation creates a new
      * statement with independent bindings. Other preparation rules match {@link #prepare(String)}.
      *
      * @param sql The SQL text defines one trusted statement.
-     * @param inputNames The names identify inputs in list order.
+     * @param inputNames The names identify logical parameters in list order.
      * @return The supplier creates new statements with independent bindings.
      * @throws NullPointerException The SQL, list, or a list entry is null.
      * @throws IllegalArgumentException The SQL or input contract is invalid.
@@ -328,10 +332,123 @@ public interface JdbcClient extends RuntimeType.Api<JdbcClientConfig> {
 
     /**
      * Configures outputs and executes one callable statement. Registration performs no JDBC work.
+     * Both escape forms may invoke procedures or functions as supported by the driver.
+     * The application supplies compatible SQL and driver connection settings.
+     * A leading return must be registered as an output even when its value is discarded.
      * Transaction controlling routines are unsupported within a local JDBC transaction.
      */
     @Api.Incubating
     interface Call {
+
+        /**
+         * Registers one ordinary output by its marker name or positional layout name.
+         * The definition must retain a unique position for this name. Use returns for a leading return.
+         *
+         * @param name The marker or layout name also identifies the output value.
+         * @param type The JDBC registration type.
+         * @return This callable stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration or parameter position is invalid.
+         * @throws IllegalStateException The statement is consumed or lacks logical parameter metadata.
+         * @throws UnsupportedOperationException The provider does not support this registration.
+         */
+        default Call out(String name, JDBCType type) {
+            Objects.requireNonNull(name, "The output name must not be null.");
+            Objects.requireNonNull(type, "The output type must not be null.");
+            throw new UnsupportedOperationException("Logical callable registration is unsupported.");
+        }
+
+        /**
+         * Registers one ordinary output by its marker name or positional layout name.
+         * The definition must retain a unique position for this name. Use returns for a leading return.
+         *
+         * @param name The marker or layout name also identifies the output value.
+         * @param type The JDBC registration type.
+         * @param typeName The nonblank database type name.
+         * @return This callable stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration or parameter position is invalid.
+         * @throws IllegalStateException The statement is consumed or lacks logical parameter metadata.
+         * @throws UnsupportedOperationException The provider does not support this registration.
+         */
+        default Call out(String name, JDBCType type, String typeName) {
+            Objects.requireNonNull(name, "The output name must not be null.");
+            Objects.requireNonNull(type, "The output type must not be null.");
+            Objects.requireNonNull(typeName, "The database type name must not be null.");
+            throw new UnsupportedOperationException("Logical callable registration is unsupported.");
+        }
+
+        /**
+         * Registers one ordinary output by its marker name or positional layout name.
+         * The definition must retain a unique position for this name. Use returns for a leading return.
+         *
+         * @param name The marker or layout name also identifies the output value.
+         * @param type The JDBC registration type.
+         * @param scale The nonnegative scale requires NUMERIC or DECIMAL.
+         * @return This callable stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration or parameter position is invalid.
+         * @throws IllegalStateException The statement is consumed or lacks logical parameter metadata.
+         * @throws UnsupportedOperationException The provider does not support this registration.
+         */
+        default Call out(String name, JDBCType type, int scale) {
+            Objects.requireNonNull(name, "The output name must not be null.");
+            Objects.requireNonNull(type, "The output type must not be null.");
+            throw new UnsupportedOperationException("Logical callable registration is unsupported.");
+        }
+
+        /**
+         * Registers the leading callable return at JDBC position one with the logical name return.
+         * The SQL must contain a leading {@code ? = call} return slot.
+         *
+         * @param type The JDBC registration type.
+         * @return This callable stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration or parameter position is invalid.
+         * @throws IllegalStateException The statement is consumed or lacks logical parameter metadata.
+         * @throws UnsupportedOperationException The provider does not support this registration.
+         */
+        default Call returns(JDBCType type) {
+            Objects.requireNonNull(type, "The output type must not be null.");
+            throw new UnsupportedOperationException("Logical callable registration is unsupported.");
+        }
+
+        /**
+         * Registers the leading callable return at JDBC position one with the logical name return.
+         * The SQL must contain a leading {@code ? = call} return slot.
+         *
+         * @param type The JDBC registration type.
+         * @param typeName The nonblank database type name.
+         * @return This callable stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration or parameter position is invalid.
+         * @throws IllegalStateException The statement is consumed or lacks logical parameter metadata.
+         * @throws UnsupportedOperationException The provider does not support this registration.
+         */
+        default Call returns(JDBCType type, String typeName) {
+            Objects.requireNonNull(type, "The output type must not be null.");
+            Objects.requireNonNull(typeName, "The database type name must not be null.");
+            throw new UnsupportedOperationException("Logical callable registration is unsupported.");
+        }
+
+        /**
+         * Registers the leading callable return at JDBC position one with the logical name return.
+         * The SQL must contain a leading {@code ? = call} return slot.
+         *
+         * @param type The JDBC registration type.
+         * @param scale The nonnegative scale requires NUMERIC or DECIMAL.
+         * @return This callable stage.
+         * @throws NullPointerException A reference argument is null.
+         * @throws IllegalArgumentException The registration or parameter position is invalid.
+         * @throws IllegalStateException The statement is consumed or lacks logical parameter metadata.
+         * @throws UnsupportedOperationException The provider does not support this registration.
+         */
+        default Call returns(JDBCType type, int scale) {
+            Objects.requireNonNull(type, "The output type must not be null.");
+            throw new UnsupportedOperationException("Logical callable registration is unsupported.");
+        }
+
+
         /**
          * Registers an output or an input and output parameter.
          *

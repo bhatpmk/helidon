@@ -31,6 +31,8 @@ import io.helidon.codegen.apt.AptProcessor;
 import io.helidon.codegen.testing.TestCompiler;
 import io.helidon.common.Generated;
 import io.helidon.common.types.TypeName;
+import io.helidon.config.Config;
+import io.helidon.common.mapper.OptionalValue;
 import io.helidon.data.Data;
 import io.helidon.data.codegen.DataGeneratorProvider;
 import io.helidon.data.codegen.common.RepositoryCodegenProvider;
@@ -110,17 +112,22 @@ class JdbcCallableGenerationTest {
      * CLASS retained outputs and generic input types survive separate parent compilation.
      */
     @Test
-    void generatesFromSeparatelyCompiledParent() {
+    void generatesFromSeparatelyCompiledParent() throws IOException {
         TestCompiler.Result parent = TestCompiler.builder().currentRelease().printDiagnostics(false)
-                .addClasspath(List.of(RuntimeType.class, JdbcClient.class))
+                .addClasspath(List.of(RuntimeType.class, JdbcClient.class, Data.class))
                 .addSource("Parent.java", """
                         package example;
                         import io.helidon.data.jdbc.Jdbc;
+                        import io.helidon.data.Data;
                         import java.sql.JDBCType;
                         public interface Parent<T> {
                             @Jdbc.Statement("{? = call routine(?)}")
                             @Jdbc.OutParameter(type = JDBCType.INTEGER)
                             <E extends Exception> T execute(T value) throws E;
+
+                            @Jdbc.Statement("${application.total:{? = call routine(:input)}}")
+                            @Jdbc.OutParameter
+                            T configured(@Data.Param("input") T value);
 
                             @Jdbc.Statement("{call routine(:value, :rows)}")
                             @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
@@ -162,6 +169,9 @@ import javax.lang.model.element.TypeElement;
                         }
                         """).build().compile();
         assertThat(String.join("\n", child.diagnostics()), child.success(), is(true));
+        String generated = Files.readString(child.sourceOutput().resolve("example/Child__Jdbc.java"));
+        assertThat(generated, containsString("GeneratedJdbcData.prepareCall("));
+        assertThat(generated, containsString("true, true)"));
     }
 
     /**
@@ -298,6 +308,316 @@ import javax.lang.model.element.TypeElement;
         assertThat(String.join("\n", result.diagnostics()), result.success(), is(false));
     }
 
+    @Test
+    void bindsEffectiveCallableInputsAndInout() {
+        TestCompiler.Result result = compile("""
+                @Jdbc.Statement("{call routine(:id, :id, :counter)}")
+                @Jdbc.OutParameter("counter")
+                int execute(@Data.Param("id") Integer renamed, @Data.Param("counter") int seed);
+                """);
+        assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+    }
+
+    @Test
+    void rejectsInvalidCallableAliasesAndCallbackAliases() {
+        for (String declaration : List.of(
+                """
+                @Jdbc.Statement("{call routine(:value)}") @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void execute(@Data.Param("different") Integer value);
+                """,
+                """
+                @Jdbc.Statement("{call routine(?)}") @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void execute(@Data.Param("value") Integer value);
+                """,
+                """
+                @Jdbc.Statement("{call routine(:value)}") @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void execute(@Data.Param("value") Integer renamed, Integer value);
+                """,
+                """
+                @Jdbc.Statement("{call routine()}") @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void execute(@Data.Param("action") Consumer<JdbcClient.CallResult> action);
+                """,
+                """
+                @Jdbc.Statement("{call routine(:value)}") @Jdbc.OutParameter("value")
+                int execute(@Data.Param(":value") int seed);
+                """)) {
+            TestCompiler.Result result = compile(declaration);
+            assertThat(String.join("\n", result.diagnostics()), result.success(), is(false));
+        }
+    }
+
+    @Test
+    void compilesNamedConfiguredCallsWithInferredOutputs() {
+        for (String sql : List.of("${application.call}",
+                                  "${application.call:{call routine(:value, :input, :rows)}}",
+                                  "{call routine(:value, :input, :rows)}")) {
+            TestCompiler.Result result = compile("""
+                    @Jdbc.Statement("%s")
+                    @Jdbc.OutParameter("rows") @Jdbc.OutParameter("value")
+                    Outputs execute(Integer input, Integer value);
+                    record Outputs(List<Integer> rows, int value) { }
+                    """.formatted(sql));
+            assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+        }
+    }
+
+    @Test
+    void compilesConfiguredReturnAndCallbackForms() {
+        TestCompiler.Result result = compile("""
+                @Jdbc.Statement("${application.command:{call routine()}}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void command();
+
+                @Jdbc.Statement("${application.total:{? = call routine(:id)}}")
+                @Jdbc.OutParameter
+                Integer total(@Data.Param("id") Integer renamed);
+
+                @Jdbc.Statement("${application.mixed:{call routine(:output, :input)}}")
+                @Jdbc.OutParameter(value = "output", type = JDBCType.INTEGER)
+                void mixed(Integer input, Consumer<JdbcClient.CallResult> action);
+
+                @Jdbc.Statement("${application.cursor:{? = call routine(?)}}")
+                @Jdbc.OutParameter
+                List<Projection> cursor(int id);
+                record Projection(int value) { }
+                """);
+        assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+    }
+
+    @Test
+    void rejectsPositionalOutputsAndIncompatibleConfiguredDefaults() {
+        for (String sql : List.of("{call routine(?, ?)}", "${sql:{call routine(?, ?)}}")) {
+            TestCompiler.Result result = compile("""
+                    @Jdbc.Statement("%s")
+                    @Jdbc.OutParameter("output") int execute(int input);
+                    """.formatted(sql));
+            assertThat(result.diagnostics().toString(), result.success(), is(false));
+            assertThat(result.diagnostics().toString(), containsString("Use named SQL markers"));
+        }
+        for (String declaration : List.of(
+                """
+                @Jdbc.Statement("{call routine(?)}")
+                @Jdbc.OutParameter("output") int execute();
+                """,
+                """
+                @Jdbc.Statement("${sql:{? = call routine(:input)}}")
+                @Jdbc.OutParameter("output") int execute(int input);
+                """,
+                """
+                @Jdbc.Statement("{? = call routine(:input, ?)}")
+                @Jdbc.OutParameter int execute(int input, int other);
+                """,
+                """
+                @Jdbc.Statement("{call routine(:input, ?)}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL) void execute(int input, int other);
+                """,
+                """
+                @Jdbc.Statement("{? = call routine(?)}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL) int execute(int input);
+                """,
+                """
+                @Jdbc.Statement("${sql:{? = call routine(?)}}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL) int execute(int input);
+                """)) {
+            TestCompiler.Result result = compile(declaration);
+            assertThat(declaration + "\n" + result.diagnostics(), result.success(), is(false));
+        }
+    }
+
+    @Test
+    void rejectsAdditionalOutputsOnLeadingReturns() {
+        for (String sql : List.of("{? = call routine(:value)}", "${sql}", "${sql:{? = call routine(?)}}")) {
+            for (String shape : List.of("void execute(Consumer<JdbcClient.CallResult> action)",
+                                        "JdbcClient.OutParameters execute()")) {
+                TestCompiler.Result result = compile("""
+                        @Jdbc.Statement("%s")
+                        @Jdbc.OutParameterDeclarations({
+                            @Jdbc.OutParameter(type = JDBCType.INTEGER),
+                            @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+                        })
+                        %s;
+                        """.formatted(sql, shape));
+                assertThat(result.diagnostics().toString(), result.success(), is(false));
+                assertThat(result.diagnostics().toString(), containsString("only output declaration"));
+            }
+        }
+    }
+
+    @Test
+    void compilesPositionalInputsAndSpecialLeadingReturns() {
+        TestCompiler.Result result = compile("""
+                @Jdbc.Statement("{call routine(?, ?)}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void command(Integer first, String second, Consumer<JdbcClient.CallResult> action);
+                @Jdbc.Statement("${sql:{call routine(?, ?)}}")
+                @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                void configured(Integer first, String second);
+                @Jdbc.Statement("{?=call routine(?)}")
+                @Jdbc.OutParameter Integer positional(Integer input);
+                @Jdbc.Statement("{ ? = CALL routine(:input)}")
+                @Jdbc.OutParameter Integer named(Integer input);
+                @Jdbc.Statement("{? = call routine()}")
+                @Jdbc.OutParameter Integer noArguments();
+                """);
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+    }
+
+    @Test
+    void compilesBothEscapeFormsAcrossLiteralAndConfiguredDeclarations() {
+        for (String source : List.of("literal", "default", "configured")) {
+            String direct = "{call function(?)}";
+            String leading = "{? = call procedure(?)}";
+            if (source.equals("default")) {
+                direct = "${application.direct:" + direct + "}";
+                leading = "${application.leading:" + leading + "}";
+            } else if (source.equals("configured")) {
+                direct = "${application.direct}";
+                leading = "${application.leading}";
+            }
+            TestCompiler.Result result = compile("""
+                    @Jdbc.Statement("%s")
+                    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+                    int direct(int input);
+                    @Jdbc.Statement("%s")
+                    @Jdbc.OutParameter
+                    Integer leading(int input);
+                    @Jdbc.Statement("%s")
+                    @Jdbc.OutParameter(type = JDBCType.INTEGER)
+                    void discard(int input);
+                    """.formatted(direct, leading, leading));
+            assertThat(result.diagnostics().toString(), result.success(), is(true));
+        }
+    }
+
+    @Test
+    void normalizesInferredAndExplicitInheritedCallableOutputs() {
+        for (boolean configured : List.of(false, true)) {
+            String sql = configured ? "${application.total:{? = call routine(?)}}" : "{? = call routine(?)}";
+            TestCompiler.Result result = compiler().addSource("Repository.java", """
+                    package example;
+                    import io.helidon.data.Data;
+                    import io.helidon.data.jdbc.Jdbc;
+                import java.sql.JDBCType;
+                    interface First {
+                        @Jdbc.Statement("%s") @Jdbc.OutParameter Integer total(int input);
+                    }
+                    interface Second {
+                        @Jdbc.Statement("%s")
+                        @Jdbc.OutParameter(type = JDBCType.INTEGER) Integer total(int input);
+                    }
+                    @Data.Repository @Data.Provider("jdbc")
+                    public interface Repository extends First, Second { }
+                    """.formatted(sql, sql)).build().compile();
+            assertThat(String.join("\n", result.diagnostics()), result.success(), is(true));
+        }
+    }
+
+    @Test
+    void retainsAliasesAndCallableOutputsFromBinaryParents() {
+        for (boolean configured : List.of(false, true)) {
+            String sql = configured ? "${application.value:{call routine(:input, :value)}}" : "{call routine(:input, :value)}";
+            TestCompiler.Result parent = TestCompiler.builder().currentRelease().printDiagnostics(false)
+                    .addClasspath(List.of(RuntimeType.class, Data.class, JdbcClient.class))
+                    .addSource("Parent.java", """
+                            package example;
+                            import io.helidon.data.Data;
+                            import io.helidon.data.jdbc.Jdbc;
+                            public interface Parent<T> {
+                                @Jdbc.Statement("%s")
+                                @Jdbc.OutParameter("value")
+                                T execute(@Data.Param("input") T renamed, @Data.Param("value") T seed);
+                            }
+                            """.formatted(sql)).build().compile();
+            assertThat(String.join("\n", parent.diagnostics()), parent.success(), is(true));
+            TestCompiler.Result child = compiler().addClasspathEntry(parent.classOutput()).addSource("Repository.java", """
+                    package example;
+                    import io.helidon.data.Data;
+                    @Data.Repository @Data.Provider("jdbc")
+                    public interface Repository extends Parent<Integer> { }
+                    """).build().compile();
+            assertThat(String.join("\n", child.diagnostics()), child.success(), is(true));
+        }
+    }
+
+    @Test
+    void rejectsConflictingInheritedCallableOutputTypes() {
+        TestCompiler.Result result = compiler().addSource("Repository.java", """
+                package example;
+                import io.helidon.data.Data;
+                import io.helidon.data.jdbc.Jdbc;
+                import java.sql.JDBCType;
+                interface First {
+                    @Jdbc.Statement("${application.value}")
+                    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER) int execute(int input);
+                }
+                interface Second {
+                    @Jdbc.Statement("${application.value}")
+                    @Jdbc.OutParameter(value = "value", type = JDBCType.BIGINT) int execute(int input);
+                }
+                @Data.Repository @Data.Provider("jdbc")
+                public interface Repository extends First, Second { }
+                """).build().compile();
+        assertThat(result.diagnostics().toString(), result.success(), is(false));
+        assertThat(result.diagnostics().toString(), containsString("conflicting"));
+    }
+
+    @Test
+    void preservesInheritedDefaultBodiesWithOutputMetadata() {
+        TestCompiler.Result result = compiler().addSource("Repository.java", """
+                package example;
+                import io.helidon.data.Data;
+                import io.helidon.data.jdbc.Jdbc;
+                interface Root {
+                    @Jdbc.OutParameter default int value() { return 42; }
+                }
+                interface Parent extends Root {
+                    @Override @Jdbc.OutParameter default int value() { return 43; }
+                }
+                @Data.Repository @Data.Provider("jdbc")
+                public interface Repository extends Parent { }
+                """).build().compile();
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+    }
+
+    @Test
+    void preservesJavaNameDifferencesForInheritedLiteralPositionalCalls() {
+        TestCompiler.Result result = compiler().addSource("Repository.java", """
+                package example;
+                import io.helidon.data.Data;
+                import io.helidon.data.jdbc.Jdbc;
+                interface First {
+                    @Jdbc.Statement("{? = call routine(?)}") @Jdbc.OutParameter int value(int input);
+                }
+                interface Second {
+                    @Jdbc.Statement("{? = call routine(?)}") @Jdbc.OutParameter int value(int renamed);
+                }
+                @Data.Repository @Data.Provider("jdbc")
+                public interface Repository extends First, Second { }
+                """).build().compile();
+        assertThat(result.diagnostics().toString(), result.success(), is(true));
+    }
+
+    @Test
+    void rejectsInheritedLiteralCallsWithDifferentInputPositions() {
+        TestCompiler.Result result = compiler().addSource("Repository.java", """
+                package example;
+                import io.helidon.data.Data;
+                import io.helidon.data.jdbc.Jdbc;
+                interface First {
+                    @Jdbc.Statement("{call routine(:first, :second, :value)}")
+                    @Jdbc.OutParameter("value") int value(int first, int second);
+                }
+                interface Second {
+                    @Jdbc.Statement("{call routine(:first, :second, :value)}")
+                    @Jdbc.OutParameter("value") int value(int second, int first);
+                }
+                @Data.Repository @Data.Provider("jdbc")
+                public interface Repository extends First, Second { }
+                """).build().compile();
+        assertThat(result.diagnostics().toString(), result.success(), is(false));
+        assertThat(result.diagnostics().toString(), containsString("incompatible named SQL"));
+    }
+
     private static TestCompiler.Result compile(String declarations) {
         return compiler().addSource("Repository.java", """
                 package example;
@@ -316,6 +636,7 @@ import javax.lang.model.element.TypeElement;
     private static TestCompiler.Builder compiler() {
         return TestCompiler.builder().currentRelease().printDiagnostics(false).addProcessor(AptProcessor::new)
                 .addClasspath(List.of(RuntimeType.class, Data.class, JdbcClient.class, Service.class, Tx.class,
+                                      Config.class, OptionalValue.class,
                                       Generated.class, TypeName.class, DataGeneratorProvider.class,
                                       RepositoryCodegenProvider.class, JdbcRepositoryGeneratorProvider.class));
     }

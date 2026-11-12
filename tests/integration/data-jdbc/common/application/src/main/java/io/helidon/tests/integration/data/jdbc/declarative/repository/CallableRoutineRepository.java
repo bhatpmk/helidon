@@ -166,6 +166,221 @@ public interface CallableRoutineRepository extends InferredCallableParent<Intege
     @Jdbc.OutParameter("second")
     Pair pair();
 
+    @Jdbc.Statement("{? = call sp_sum(:input, :input)}")
+    @Jdbc.OutParameter
+    Optional<Integer> aliasedRepeated(@Data.Param("input") Integer renamed);
+
+    @Jdbc.Statement("{call sp_inout(:input, :value)}")
+    @Jdbc.OutParameter("value")
+    Optional<Integer> aliasedInout(@Data.Param("input") int renamed, @Data.Param("value") Integer seed);
+
+    @Jdbc.Statement("${application.calls.command:{call sp_noop()}}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    void configuredCommand();
+
+    @Jdbc.Statement("${application.calls.input:{call sp_write(:input)}}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    void configuredInput(String input);
+
+    @Jdbc.Statement("${application.calls.output:{call sp_out(:value)}}")
+    @Jdbc.OutParameter("value")
+    int configuredOutput();
+
+    @Jdbc.Statement("${application.calls.values:{call sp_values(:input, :value, :other)}}")
+    @Jdbc.OutParameter("other")
+    @Jdbc.OutParameter("value")
+    ConfiguredValues configuredValues(String other, Integer value, Integer input);
+
+    @Jdbc.Statement("${application.calls.inout:{call sp_inout(:input, :value)}}")
+    @Jdbc.OutParameter("value")
+    Optional<Integer> configuredInout(Integer value, int input);
+
+    @Jdbc.Statement("${application.calls.aliased-inout:{call sp_inout(:input, :value)}}")
+    @Jdbc.OutParameter("value")
+    Optional<Integer> configuredAliasedInout(@Data.Param("value") Integer seed, @Data.Param("input") int renamed);
+
+    @Jdbc.Statement("${application.calls.total:{? = call sp_add(?)}}")
+    @Jdbc.OutParameter
+    Optional<Integer> configuredTotal(Integer input);
+
+    @Jdbc.Statement("${application.calls.ordinary-return:{call sp_inout(:input, :return)}}")
+    @Jdbc.OutParameter("return")
+    Optional<Integer> configuredOrdinaryReturn(@Data.Param("input") int input, @Data.Param("return") Integer seed);
+
+    @Jdbc.Statement("{call sp_form_procedure(?)}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    void formProcedure(int input);
+
+    @Jdbc.Statement("{? = call sp_form_procedure(?)}")
+    @Jdbc.OutParameter
+    int formProcedureReturn(int input);
+
+    @Jdbc.Statement("{call sp_add(?)}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    int formFunction(int input);
+
+    @Jdbc.Statement("{? = call sp_add(?)}")
+    @Jdbc.OutParameter
+    int formFunctionReturn(int input);
+
+    @Jdbc.Statement("{? = call sp_add(?)}")
+    @Jdbc.OutParameter(type = JDBCType.INTEGER)
+    void discardFormReturn(int input);
+
+    @Jdbc.Statement("${application.calls.form-procedure:{call sp_form_procedure(?)}}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    void configuredFormProcedure(int input);
+
+    @Jdbc.Statement("${application.calls.form-procedure-return:{? = call sp_form_procedure(?)}}")
+    @Jdbc.OutParameter
+    int configuredFormProcedureReturn(int input);
+
+    @Jdbc.Statement("${application.calls.form-function:{call sp_add(?)}}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    int configuredFormFunction(int input);
+
+    @Jdbc.Statement("${application.calls.form-function-return:{? = call sp_add(?)}}")
+    @Jdbc.OutParameter
+    int configuredFormFunctionReturn(int input);
+
+    @Jdbc.Statement("${application.calls.form-discard:{? = call sp_add(?)}}")
+    @Jdbc.OutParameter(type = JDBCType.INTEGER)
+    void configuredDiscardFormReturn(int input);
+
+    @Jdbc.Statement("{? = call sp_stamp()}")
+    @Jdbc.OutParameter(type = JDBCType.TIMESTAMP)
+    JdbcClient.OutParameters stamp();
+
+    @Jdbc.Statement("${application.calls.stamp:{? = call sp_stamp()}}")
+    @Jdbc.OutParameter(type = JDBCType.TIMESTAMP)
+    JdbcClient.OutParameters configuredStamp();
+
+    @Jdbc.Statement("${application.calls.repeated:{? = call sp_sum(:input, :input)}}")
+    @Jdbc.OutParameter
+    Optional<Integer> configuredRepeated(@Data.Param("input") Integer renamed);
+
+    @Jdbc.Statement("${application.calls.cursor:{? = call sp_cursor(?)}}")
+    @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
+    Optional<List<Integer>> configuredCursor(int input);
+
+    @Jdbc.Statement("${application.calls.cursor:{? = call sp_cursor(?)}}")
+    @Jdbc.OutParameter(type = JDBCType.REF_CURSOR)
+    void configuredCursorCallback(int input, Consumer<JdbcClient.CallResult> action);
+
+    @Jdbc.Statement("${application.calls.direct:{call sp_direct()}}")
+    @Jdbc.Execution(Jdbc.ExecutionType.CALL)
+    void configuredDirect(Consumer<JdbcClient.CallResult> action);
+
+    @Jdbc.Statement("${application.calls.bundle:{call sp_bundle(:input, :value, :rows)}}")
+    @Jdbc.OutParameter("value")
+    @Jdbc.OutParameter("rows")
+    InferredBundle configuredBundle(int input);
+
+    @Jdbc.Statement("${application.calls.bundle:{call sp_bundle(:input, :value, :rows)}}")
+    @Jdbc.OutParameter(value = "value", type = JDBCType.INTEGER)
+    @Jdbc.OutParameter(value = "rows", type = JDBCType.REF_CURSOR)
+    Bundle configuredMappedBundle(int input, JdbcClient.CallMapper<Bundle> mapper);
+
+    @Jdbc.Statement("${application.calls.leading-outputs:{call sp_values_reordered(:other, :value, :input)}}")
+    @Jdbc.OutParameter("value")
+    @Jdbc.OutParameter("other")
+    ConfiguredValues configuredLeadingOutputs(Integer input, String other, Integer value);
+
+    @Jdbc.Statement("{? = call sp_snap_boolean(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.BOOLEAN)
+    JdbcClient.OutParameters snapshotBoolean(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_bit(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.BIT)
+    JdbcClient.OutParameters snapshotBit(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_tinyint(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.TINYINT)
+    JdbcClient.OutParameters snapshotTinyint(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_smallint(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.SMALLINT)
+    JdbcClient.OutParameters snapshotSmallint(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_integer(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.INTEGER)
+    JdbcClient.OutParameters snapshotInteger(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_bigint(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.BIGINT)
+    JdbcClient.OutParameters snapshotBigint(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_real(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.REAL)
+    JdbcClient.OutParameters snapshotReal(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_float(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.FLOAT)
+    JdbcClient.OutParameters snapshotFloat(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_double(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.DOUBLE)
+    JdbcClient.OutParameters snapshotDouble(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_numeric(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.NUMERIC)
+    JdbcClient.OutParameters snapshotNumeric(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_decimal(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.DECIMAL)
+    JdbcClient.OutParameters snapshotDecimal(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_char(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.CHAR)
+    JdbcClient.OutParameters snapshotChar(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_varchar(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.VARCHAR)
+    JdbcClient.OutParameters snapshotVarchar(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_longvarchar(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.LONGVARCHAR)
+    JdbcClient.OutParameters snapshotLongvarchar(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_nchar(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.NCHAR)
+    JdbcClient.OutParameters snapshotNchar(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_nvarchar(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.NVARCHAR)
+    JdbcClient.OutParameters snapshotNvarchar(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_longnvarchar(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.LONGNVARCHAR)
+    JdbcClient.OutParameters snapshotLongnvarchar(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_binary(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.BINARY)
+    JdbcClient.OutParameters snapshotBinary(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_varbinary(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.VARBINARY)
+    JdbcClient.OutParameters snapshotVarbinary(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_longvarbinary(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.LONGVARBINARY)
+    JdbcClient.OutParameters snapshotLongvarbinary(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_date(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.DATE)
+    JdbcClient.OutParameters snapshotDate(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_time(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.TIME)
+    JdbcClient.OutParameters snapshotTime(int nullMode);
+
+    @Jdbc.Statement("{? = call sp_snap_timestamp(:nullMode)}")
+    @Jdbc.OutParameter(type = JDBCType.TIMESTAMP)
+    JdbcClient.OutParameters snapshotTimestamp(int nullMode);
+
+    record ConfiguredValues(String other, int value) {
+    }
+
     record Pair(List<Projection> second, int value, List<Projection> first) {
     }
 
@@ -213,4 +428,8 @@ interface InferredCallableParent<T> {
     @Jdbc.Statement("{? = call sp_add(:input)}")
     @Jdbc.OutParameter
     T inferredScalar(T input);
+
+    @Jdbc.Statement("${application.calls.inherited-total:{? = call sp_add(:input)}}")
+    @Jdbc.OutParameter
+    T inheritedConfiguredTotal(@Data.Param("input") T value);
 }

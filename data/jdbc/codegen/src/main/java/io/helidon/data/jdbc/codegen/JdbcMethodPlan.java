@@ -63,10 +63,10 @@ final class JdbcMethodPlan {
     private final MappingKind mappingKind;
     private final TypeName mappedType;
     private final JdbcSqlParameterPlan parameterPlan;
-    private final JdbcSqlReference reference;
     private final List<String> generatedColumns;
     private final TypeName explicitMapper;
     private final List<TypedElementInfo> recordComponents;
+    private JdbcSqlReference reference;
     private JdbcCallablePlan callable;
     private String sqlFieldName;
     private String mapperFieldName;
@@ -227,6 +227,10 @@ final class JdbcMethodPlan {
 
     void callable(JdbcCallablePlan plan) {
         callable = plan;
+    }
+
+    void reference(JdbcSqlReference sqlReference) {
+        reference = sqlReference;
     }
 
     TypedElementInfo method() {

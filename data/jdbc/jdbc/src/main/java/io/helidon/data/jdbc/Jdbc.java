@@ -103,6 +103,7 @@ public final class Jdbc {
      * {@link io.helidon.data.Data.Param} aliases or reliable Java parameter names.
      * A method with any explicit or inherited alias requires named SQL. Positional
      * markers bind arguments in declaration order with an exact marker count.
+     * A leading callable return is handled separately and may precede named IN markers.
      * <p>
      * A repository invocation supplies the SQL, after rewriting any named bind
      * markers, to the driver as one {@link java.sql.PreparedStatement}. Helidon
@@ -140,8 +141,13 @@ public final class Jdbc {
          * Returns literal SQL or one complete configuration reference with an optional default.
          * A reference uses the owning registry's root configuration at repository activation.
          * Resolved SQL remains fixed until a new repository is created. Named or positional
-         * markers are supported, but they must not be mixed. Positional markers bind method
-         * arguments in declaration order. Methods with effective {@link io.helidon.data.Data.Param}
+         * markers are supported. Only CALL permits a leading return followed by named arguments.
+         * Positional arguments without a leading return follow declaration order and cannot accompany output declarations.
+         * A leading callable return requires one unnamed output declaration. Its inputs
+         * may be named or positional, with positional inputs starting at JDBC position two.
+         * Either escape form may invoke a procedure or function when the driver supports it.
+         * The application supplies the SQL and driver connection settings.
+         * Methods with effective {@link io.helidon.data.Data.Param}
          * aliases require named markers. SQL and inline defaults are trusted application input.
          * Inline defaults remain visible in source, classfiles, and generated literals.
          *
@@ -193,7 +199,10 @@ public final class Jdbc {
 
     /**
      * Registers an output on a repository method. A nonempty value selects a named SQL marker.
-     * An empty value declares the leading function return, whose logical name is return.
+     * An empty value declares the leading callable return, whose logical name is return.
+     * The leading return must be the only output declaration. Other output declarations
+     * require named SQL markers, while the leading return may precede named or positional inputs.
+     * A leading return requires registration even when its value is discarded.
      * Multiple named method outputs map to unannotated record components with matching names.
      * Omitted types are inferred from automatically mapped Java outputs as described by {@link #type()}.
      */

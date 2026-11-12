@@ -42,9 +42,16 @@ final class JdbcCallableGenerator {
         method.addContent(JdbcCodegenTypes.CALL).addContent(" ").addContent(callName)
                 .addContent(" = ").addContent(statement).addContentLine(".call();");
         for (JdbcCallablePlan.Output output : call.outputs()) {
-            method.addContent(callName).addContent(".out(").addContentLiteral(output.name()).addContent(", ")
-                    .addContent(String.valueOf(output.index())).addContent(", ").addContent(JdbcCodegenTypes.JDBC_TYPE)
-                    .addContent(".").addContent(output.type());
+            method.addContent(callName);
+            if (output.marker().isEmpty()) {
+                method.addContent(".returns(");
+            } else {
+                method.addContent(".out(").addContentLiteral(output.name()).addContent(", ");
+                if (!plan.configured()) {
+                    method.addContent(String.valueOf(output.index())).addContent(", ");
+                }
+            }
+            method.addContent(JdbcCodegenTypes.JDBC_TYPE).addContent(".").addContent(output.type());
             if (!output.typeName().isEmpty()) {
                 method.addContent(", ").addContentLiteral(output.typeName());
             } else if (output.scale() >= 0) {

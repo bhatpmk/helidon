@@ -34,7 +34,8 @@ import io.helidon.common.types.TypeNames;
 import io.helidon.common.types.TypedElementInfo;
 
 record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElementInfo control,
-                        boolean consumer, boolean snapshot, boolean aggregate) {
+                        boolean consumer, boolean snapshot, boolean aggregate,
+                        List<String> names, boolean namedOnly) {
     private static final Set<String> SNAPSHOT_TYPES = Set.of("BOOLEAN", "BIT", "TINYINT", "SMALLINT", "INTEGER",
             "BIGINT", "REAL", "FLOAT", "DOUBLE", "NUMERIC", "DECIMAL", "CHAR", "VARCHAR", "LONGVARCHAR",
             "NCHAR", "NVARCHAR", "LONGNVARCHAR", "BINARY", "VARBINARY", "LONGVARBINARY", "DATE", "TIME", "TIMESTAMP");
@@ -74,6 +75,10 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
 
     static List<Output> methodOutputs(TypedElementInfo method, RoundContext context) {
         List<Annotation> annotations = declarations(method);
+        if (annotations.size() > 1
+                && annotations.stream().anyMatch(annotation -> annotation.stringValue().orElse("").isEmpty())) {
+            throw JdbcMethodPlan.failure(method, "An unnamed callable return must be the only output declaration.");
+        }
         List<TypedElementInfo> recordComponents = components(method.typeName(), context);
         for (TypedElementInfo component : resultComponents(method.typeName(), context)) {
             if (!declarations(component).isEmpty()) {
@@ -177,6 +182,9 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
             boolean isConsumer = type.genericTypeName().equals(TypeName.create(Consumer.class));
             boolean isMapper = type.genericTypeName().equals(JdbcCodegenTypes.CALL_MAPPER);
             if (isConsumer || isMapper) {
+                if (parameter.hasAnnotation(JdbcCodegenTypes.DATA_PARAM)) {
+                    throw JdbcMethodPlan.failure(parameter, "A callable callback cannot declare @Data.Param.");
+                }
                 if (control != null || type.typeArguments().size() != 1) {
                     throw JdbcMethodPlan.failure(parameter, "A callable method requires at most one fully typed callback.");
                 }
@@ -200,77 +208,17 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
         if (control != null && method.hasAnnotation(JdbcCodegenTypes.JDBC_ROW_MAPPER)) {
             throw JdbcMethodPlan.failure(method, "A callable callback cannot accompany a method row mapper.");
         }
-        JdbcSqlMarkerLexer.Result parsed;
-        try {
-            parsed = JdbcSqlMarkerLexer.parse(sql, true);
-        } catch (IllegalArgumentException failure) {
-            throw JdbcMethodPlan.failure(method, failure.getMessage());
+        JdbcSqlReference reference = JdbcSqlReference.parse(sql, method);
+        JdbcSqlParameterPlan.validateParameters(inputs, method);
+        if (reference != null) {
+            JdbcSqlParameterPlan.configured(sql, inputs, method, context.typeHierarchyResolver());
         }
-        Set<String> names = new HashSet<>();
-        Set<Integer> positions = new HashSet<>();
-        Map<String, Output> byName = new HashMap<>();
-        List<Output> positioned = new ArrayList<>();
-        for (Output output : outputs) {
-            if (!names.add(output.name())) {
-                throw JdbcMethodPlan.failure(output.declaration(), "Callable output names must be unique.");
-            }
-            int index;
-            if (output.marker().isEmpty()) {
-                if (!parsed.leadingReturn() || aggregate) {
-                    throw JdbcMethodPlan.failure(method, "An unnamed method output requires a leading callable return slot.");
-                }
-                index = 1;
-            } else {
-                index = parsed.markers().indexOf(output.marker()) + 1;
-                if (index == 0 || parsed.markers().lastIndexOf(output.marker()) != index - 1) {
-                    throw JdbcMethodPlan.failure(output.declaration(),
-                            "An OUT or INOUT marker must occur exactly once. Output " + output.name()
-                                    + " has first and last JDBC positions " + index + " and "
-                                    + (parsed.markers().lastIndexOf(output.marker()) + 1) + ".");
-                }
-                if (parsed.leadingReturn() && output.name().equals("return")) {
-                    throw JdbcMethodPlan.failure(method, "The leading return reserves the logical output name return.");
-                }
-            }
-            positions.add(index);
-            Output located = new Output(output.name(), output.marker(), output.type(), output.typeName(), output.scale(),
-                                        index, output.declaration(), output.valueType(), null);
-            positioned.add(located);
-            byName.put(output.marker(), located);
+        if (reference != null && reference.defaultSql() != null) {
+            parameters(method, context, reference.defaultSql(), inputs, outputs);
         }
-        if (parsed.leadingReturn() && !positions.contains(1)) {
-            throw JdbcMethodPlan.failure(method, "A leading callable return requires an unnamed method output declaration.");
-        }
-        List<JdbcSqlParameterPlan.Bind> binds = new ArrayList<>();
-        Set<String> used = new HashSet<>();
-        int inputIndex = 0;
-        for (int index = 0; index < parsed.markers().size(); index++) {
-            String marker = parsed.markers().get(index);
-            TypedElementInfo input = null;
-            if (index == 0 && parsed.leadingReturn()) {
-                continue;
-            }
-            if (parsed.style() == JdbcSqlMarkerLexer.MarkerStyle.NAMED) {
-                input = inputs.stream().filter(parameter -> parameter.elementName().equals(marker)).findFirst().orElse(null);
-            } else if (!positions.contains(index + 1) && inputIndex < inputs.size()) {
-                input = inputs.get(inputIndex++);
-            }
-            if (input != null) {
-                used.add(input.elementName());
-                Output output = parsed.style() == JdbcSqlMarkerLexer.MarkerStyle.NAMED ? byName.get(marker) : null;
-                if (output != null && !INPUT_TYPES.getOrDefault(output.type(), Set.of(output.type()))
-                        .contains(JdbcScalarTypes.nullJdbcTypeConstant(input.typeName()))) {
-                    throw JdbcMethodPlan.failure(input, "The input type is incompatible with its INOUT registration.");
-                }
-                binds.add(JdbcSqlParameterPlan.binding(index + 1, input));
-            } else if (!positions.contains(index + 1)) {
-                throw JdbcMethodPlan.failure(method, "A callable SQL marker has no input or output declaration.");
-            }
-        }
-        if (used.size() != inputs.size()) {
-            throw JdbcMethodPlan.failure(method, "Every callable input must be used by its SQL markers.");
-        }
-        JdbcSqlParameterPlan parameters = new JdbcSqlParameterPlan(parsed.sql(), binds, parsed.markers().size());
+        Parameters callParameters = parameters(method, context, reference == null ? sql : null, inputs, outputs);
+        List<Output> positioned = callParameters.outputs();
+        JdbcSqlParameterPlan parameters = callParameters.plan();
         boolean snapshot = method.typeName().equals(JdbcCodegenTypes.OUT_PARAMETERS);
         JdbcMethodPlan plan = JdbcMethodPlan.callableUnmapped(method, parameters);
         List<Output> mappedOutputs = new ArrayList<>();
@@ -305,8 +253,97 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
                 .map(component -> mappedOutputs.stream().filter(output -> output.name().equals(component.elementName()))
                         .findFirst().orElseThrow()).toList() : List.of();
         plan.callable(new JdbcCallablePlan(List.copyOf(mappedOutputs), componentOutputs,
-                                           control, consumer, snapshot, aggregate));
+                                           control, consumer, snapshot, aggregate,
+                                           callParameters.names(), callParameters.namedOnly()));
+        plan.reference(reference);
         return plan;
+    }
+
+    private static Parameters parameters(TypedElementInfo method, RoundContext context, String sql,
+                                         List<TypedElementInfo> inputs, List<Output> outputs) {
+        Map<String, TypedElementInfo> inputNames = new HashMap<>();
+        inputs.forEach(input -> inputNames.put(JdbcSqlParameterPlan.effectiveName(input), input));
+        Map<String, Output> outputNames = new HashMap<>();
+        boolean returns = outputs.stream().anyMatch(output -> output.marker().isEmpty());
+        if (returns && inputNames.containsKey("return")) {
+            throw JdbcMethodPlan.failure(method, "A leading callable return cannot be an input or INOUT parameter.");
+        }
+        List<String> names = new ArrayList<>();
+        if (returns) {
+            names.add("return");
+        }
+        names.addAll(inputs.stream().map(JdbcSqlParameterPlan::effectiveName).toList());
+        for (Output output : outputs) {
+            if (outputNames.putIfAbsent(output.name(), output) != null) {
+                throw JdbcMethodPlan.failure(method, "Callable output names must be unique.");
+            }
+            if (!names.contains(output.name())) {
+                names.add(output.name());
+            }
+            TypedElementInfo input = inputNames.get(output.name());
+            if (input != null && !INPUT_TYPES.getOrDefault(output.type(), Set.of(output.type()))
+                    .contains(JdbcScalarTypes.nullJdbcTypeConstant(input.typeName()))) {
+                throw JdbcMethodPlan.failure(input, "The input type is incompatible with its INOUT registration.");
+            }
+        }
+        boolean aliases = inputs.stream().anyMatch(input -> input.hasAnnotation(JdbcCodegenTypes.DATA_PARAM));
+        boolean namedOnly = aliases || outputs.stream().anyMatch(output -> !output.marker().isEmpty());
+        if (sql == null) {
+            return new Parameters(new JdbcSqlParameterPlan("", inputs.stream()
+                    .map(input -> JdbcSqlParameterPlan.binding(0, input)).toList(), names.size()),
+                                  outputs, List.copyOf(names), namedOnly);
+        }
+        JdbcSqlMarkerLexer.Result parsed;
+        try {
+            parsed = JdbcSqlMarkerLexer.parse(sql, true);
+        } catch (IllegalArgumentException failure) {
+            throw JdbcMethodPlan.failure(method, failure.getMessage());
+        }
+        if (parsed.style() == JdbcSqlMarkerLexer.MarkerStyle.NAMED) {
+            JdbcSqlParameterPlan.configured(sql, inputs, method, context.typeHierarchyResolver());
+        }
+        if (parsed.leadingReturn() != returns) {
+            throw JdbcMethodPlan.failure(method, "A leading callable return requires exactly one unnamed method output.");
+        }
+        if (parsed.style() == JdbcSqlMarkerLexer.MarkerStyle.POSITIONAL && namedOnly) {
+            throw JdbcMethodPlan.failure(method, aliases
+                    ? "@Data.Param requires named SQL markers and cannot be used with positional SQL."
+                    : "Positional callable arguments cannot declare ordinary outputs. Use named SQL markers.");
+        }
+        List<String> markers = new ArrayList<>(parsed.markers());
+        if (parsed.style() == JdbcSqlMarkerLexer.MarkerStyle.POSITIONAL) {
+            if (markers.size() != names.size()) {
+                throw JdbcMethodPlan.failure(method,
+                        "The positional callable marker count must match its inputs and optional leading return.");
+            }
+            markers = names;
+        } else if (parsed.leadingReturn()) {
+            markers.set(0, "return");
+            if (markers.subList(1, markers.size()).contains("return")) {
+                throw JdbcMethodPlan.failure(method, "A leading callable return reserves the logical name return.");
+            }
+        }
+        if (!new HashSet<>(markers).equals(new HashSet<>(names))) {
+            throw JdbcMethodPlan.failure(method, "Callable SQL markers must match every input and output declaration.");
+        }
+        List<Output> positioned = new ArrayList<>();
+        for (Output output : outputs) {
+            int index = markers.indexOf(output.name());
+            if (index < 0 || markers.lastIndexOf(output.name()) != index) {
+                throw JdbcMethodPlan.failure(method, "An OUT or INOUT marker must occur exactly once.");
+            }
+            positioned.add(new Output(output.name(), output.marker(), output.type(), output.typeName(), output.scale(),
+                                      index + 1, output.declaration(), output.valueType(), null));
+        }
+        List<JdbcSqlParameterPlan.Bind> binds = new ArrayList<>();
+        for (int index = 0; index < markers.size(); index++) {
+            TypedElementInfo input = inputNames.get(markers.get(index));
+            if (input != null) {
+                binds.add(JdbcSqlParameterPlan.binding(index + 1, input));
+            }
+        }
+        return new Parameters(new JdbcSqlParameterPlan(parsed.sql(), binds, markers.size()),
+                              List.copyOf(positioned), List.copyOf(names), namedOnly);
     }
 
     private static JdbcMethodPlan outputMapping(Output output, RoundContext context, TypeName type,
@@ -347,6 +384,9 @@ record JdbcCallablePlan(List<Output> outputs, List<Output> components, TypedElem
                     return builder.build();
                 })
                 .toList();
+    }
+
+    private record Parameters(JdbcSqlParameterPlan plan, List<Output> outputs, List<String> names, boolean namedOnly) {
     }
 
     record Output(String name, String marker, String type, String typeName, int scale, int index,

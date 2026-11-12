@@ -33,6 +33,8 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Calendar;
 import java.util.Optional;
 import java.util.Map;
@@ -40,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import javax.sql.DataSource;
 
@@ -52,18 +55,24 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -111,6 +120,184 @@ class JdbcCallTest {
     }
 
     @Test
+    void executesBothEscapeFormsWithoutClassifyingRoutineNames() throws Exception {
+        for (String routine : List.of("procedure", "function")) {
+            for (boolean leading : List.of(false, true)) {
+                for (int count = 0; count <= 2; count++) {
+                    clearInvocations(source, connection, statement);
+                    String arguments = switch (count) {
+                    case 0 -> "";
+                    case 1 -> "?";
+                    default -> "?, ?";
+                    };
+                    String sql = (leading ? "{? = call " : "{call ") + routine + "(" + arguments + ")}";
+                    JdbcClient.Statement stage = client.create(sql);
+                    for (int input = 1; input <= count; input++) {
+                        stage.bind(input + (leading ? 1 : 0), input);
+                    }
+                    JdbcClient.Call call = stage.call();
+                    if (leading) {
+                        call.returns(JDBCType.INTEGER);
+                    }
+                    verify(source, never()).getConnection();
+                    call.execute();
+
+                    var order = inOrder(connection, statement);
+                    order.verify(connection).prepareCall(sql);
+                    if (leading) {
+                        order.verify(statement).registerOutParameter(1, JDBCType.INTEGER.getVendorTypeNumber());
+                    }
+                    for (int input = 1; input <= count; input++) {
+                        order.verify(statement).setInt(input + (leading ? 1 : 0), input);
+                    }
+                    order.verify(statement).execute();
+                    order.verify(statement).close();
+                    order.verify(connection).close();
+                    verify(statement, never()).getInt(anyInt());
+                    verify(statement, never()).getObject(anyInt());
+                }
+            }
+        }
+    }
+
+    @Test
+    void rejectsMissingLeadingReturnRegistrationBeforeAcquisition() throws Exception {
+        for (String sql : List.of("{?=call routine(?)}", "{ ? = CALL routine(:input)}", "{? = call routine()}")) {
+            clearInvocations(source, connection, statement);
+            JdbcClient.Statement stage;
+            if (sql.contains(":input")) {
+                stage = client.prepare(sql).get().bind("input", 7);
+            } else {
+                stage = client.create(sql);
+                if (sql.contains("(?)")) {
+                    stage.bind(2, 7);
+                }
+            }
+            JdbcClient.Call call = stage.call();
+            assertThrows(IllegalStateException.class, call::execute);
+            verify(source, never()).getConnection();
+            call.returns(JDBCType.INTEGER).execute();
+            verify(connection).prepareCall(sql.replace(":input", "?"));
+            verify(statement).registerOutParameter(1, JDBCType.INTEGER.getVendorTypeNumber());
+            verify(statement).close();
+            verify(connection).close();
+        }
+    }
+
+    @Test
+    void rejectsCompiledReturnRoleMismatchesBeforeAcquisition() throws Exception {
+        for (String sql : List.of("{call private_routine(?, ?)}", "{call private_routine(:return, :input)}",
+                                  "{? = call private_routine(?)}", "{? = call private_routine(:input)}")) {
+            boolean expectedReturn = !sql.startsWith("{?");
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> GeneratedJdbcData.prepareCall(client, sql, List.of("return", "input"), false, expectedReturn));
+            assertThat(failure.getMessage(), containsString("leading return slot"));
+            assertThat(failure.getMessage(), not(containsString("private_routine")));
+        }
+        for (String sql : List.of("{call routine(?)}", "{call routine(:return)}")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> GeneratedJdbcData.prepareCall(client, sql, List.of("return"), false, true));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratedJdbcData.prepareCall(client, "{? = call routine(?)}",
+                                                   List.of("return", "input"), true, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratedJdbcData.prepareCall(client, "{? = call routine(:input)}",
+                                                   List.of("return", "input"), true, false));
+        verify(source, never()).getConnection();
+    }
+
+    @Test
+    void preparedCallContractsPreserveOrdinaryReturnNamesAndFreshStages() throws Exception {
+        when(statement.getInt(1)).thenReturn(42);
+        for (boolean leading : List.of(false, true)) {
+            clearInvocations(source, connection, statement);
+            List<String> names = new ArrayList<>(List.of("return", "input"));
+            String sql = leading ? "{? = call routine(:input)}" : "{call routine(:return, :input)}";
+            Supplier<JdbcClient.Statement> definition = GeneratedJdbcData.prepareCall(client, sql, names, true, leading);
+            names.clear();
+            JdbcClient.Statement first = definition.get().bind("input", 7);
+            JdbcClient.Statement second = definition.get().bind("input", 8);
+            verify(source, never()).getConnection();
+            for (JdbcClient.Statement stage : List.of(first, second)) {
+                JdbcClient.Call call = stage.call();
+                if (leading) {
+                    call.returns(JDBCType.INTEGER);
+                } else {
+                    call.out("return", JDBCType.INTEGER);
+                }
+                assertThat(call.outputs().get("return", Integer.class), is(42));
+            }
+            verify(statement).setInt(2, 7);
+            verify(statement).setInt(2, 8);
+            verify(statement, times(2)).registerOutParameter(1, JDBCType.INTEGER.getVendorTypeNumber());
+            verify(statement, times(2)).close();
+            verify(connection, times(2)).close();
+        }
+    }
+
+    @Test
+    void preparesZeroArgumentCallsWithAndWithoutReturns() throws Exception {
+        when(statement.getInt(1)).thenReturn(42);
+        GeneratedJdbcData.prepareCall(client, "{call routine()}", List.of(), false, false).get().call().execute();
+        assertThat(GeneratedJdbcData.prepareCall(client, "{?=call routine()}", List.of("return"), false, true)
+                           .get().call().returns(JDBCType.INTEGER).outputs().get("return", Integer.class), is(42));
+        verify(connection).prepareCall("{call routine()}");
+        verify(connection).prepareCall("{?=call routine()}");
+        verify(statement, times(2)).close();
+        verify(connection, times(2)).close();
+    }
+
+    @Test
+    void generatedCallReferencesAreValidatedBeforeContentOrProviderChecks() throws Exception {
+        JdbcClient alternate = mock(JdbcClient.class);
+        assertThrows(NullPointerException.class,
+                () -> GeneratedJdbcData.prepareCall(null, "", List.of(), true, true));
+        for (JdbcClient target : List.of(client, alternate)) {
+            assertThrows(NullPointerException.class,
+                    () -> GeneratedJdbcData.prepareCall(target, null, List.of(), true, true));
+            assertThrows(NullPointerException.class,
+                    () -> GeneratedJdbcData.prepareCall(target, "", null, true, true));
+            assertThrows(NullPointerException.class,
+                    () -> GeneratedJdbcData.prepareCall(target, "", Collections.singletonList(null), true, true));
+        }
+        verify(alternate, never()).prepare(anyString(), any());
+        verify(source, never()).getConnection();
+    }
+
+    @Test
+    void preservesAlternateCallPreparationAfterContractValidation() throws Exception {
+        JdbcClient alternate = mock(JdbcClient.class);
+        Supplier<JdbcClient.Statement> expected = () -> mock(JdbcClient.Statement.class);
+        String sql = "{? = call routine(?)}";
+        when(alternate.prepare(eq(sql), any())).thenReturn(expected);
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratedJdbcData.prepareCall(alternate, "{call routine(?, ?)}",
+                                                   List.of("return", "input"), false, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratedJdbcData.prepareCall(alternate, sql, List.of("return", "input"), false, false));
+        assertThrows(UnsupportedOperationException.class,
+                () -> GeneratedJdbcData.prepareCall(alternate, "{? = call routine(:input)}",
+                                                   List.of("return", "input"), true, true));
+        verify(alternate, never()).prepare(anyString(), any());
+        List<String> names = new ArrayList<>(List.of("return", "input"));
+        assertThat(GeneratedJdbcData.prepareCall(alternate, sql, names, false, true), sameInstance(expected));
+        names.clear();
+        verify(alternate).prepare(sql, List.of("return", "input"));
+        String ordinarySql = "{call routine(:return, :input)}";
+        when(alternate.prepare(eq(ordinarySql), any())).thenReturn(expected);
+        assertThat(GeneratedJdbcData.prepareCall(alternate, ordinarySql, List.of("return", "input"), false, false),
+                   sameInstance(expected));
+        verify(alternate).prepare(ordinarySql, List.of("return", "input"));
+        JdbcClient.Call ordinary = client.prepare("{call routine(:return, :input)}").get()
+                .bind("input", 7).call().out("return", JDBCType.INTEGER);
+        ordinary.execute();
+        verify(statement).registerOutParameter(1, JDBCType.INTEGER.getVendorTypeNumber());
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    @Test
     void bindsInputAndRegistersInoutWithScale() throws Exception {
         when(statement.getInt(1)).thenReturn(42);
         JdbcClient.OutParameters result = client.create("{call routine(?, ?)}").bind(1, 7).bind(2, "input")
@@ -142,13 +329,16 @@ class JdbcCallTest {
 
     @Test
     void copiesBinaryAtCaptureAndEveryRead() throws Exception {
-        byte[] bytes = {1, 2};
-        when(statement.getBytes(1)).thenReturn(bytes);
-        JdbcClient.OutParameters result = client.create("{call routine(?)}").call()
-                .out("value", 1, JDBCType.BINARY).outputs();
-        bytes[0] = 9;
-        result.get("value", byte[].class)[0] = 8;
-        assertThat(result.get("value", byte[].class)[0], is((byte) 1));
+        for (JDBCType type : List.of(JDBCType.BINARY, JDBCType.VARBINARY, JDBCType.LONGVARBINARY)) {
+            byte[] bytes = {1, 2};
+            when(statement.getBytes(1)).thenReturn(bytes);
+            JdbcClient.OutParameters result = client.create("{call routine(?)}").call()
+                    .out("value", 1, type).outputs();
+            bytes[0] = 9;
+            result.get("value", byte[].class)[0] = 8;
+            result.optional("value", byte[].class).orElseThrow()[1] = 7;
+            assertThat(type.name(), result.get("value", byte[].class), is(new byte[] {1, 2}));
+        }
     }
 
     @Test
@@ -311,6 +501,9 @@ class JdbcCallTest {
                 Map.entry(JDBCType.CHAR, "value"), Map.entry(JDBCType.VARCHAR, "value"),
                 Map.entry(JDBCType.LONGVARCHAR, "value"), Map.entry(JDBCType.NCHAR, "value"),
                 Map.entry(JDBCType.NVARCHAR, "value"), Map.entry(JDBCType.LONGNVARCHAR, "value"),
+                Map.entry(JDBCType.BINARY, new byte[] {0, 1, (byte) 255}),
+                Map.entry(JDBCType.VARBINARY, new byte[] {0, 1, (byte) 255}),
+                Map.entry(JDBCType.LONGVARBINARY, new byte[] {0, 1, (byte) 255}),
                 Map.entry(JDBCType.DATE, date), Map.entry(JDBCType.TIME, time), Map.entry(JDBCType.TIMESTAMP, timestamp));
         when(statement.getBoolean(1)).thenReturn(true);
         when(statement.getByte(1)).thenReturn((byte) 1);
@@ -321,6 +514,7 @@ class JdbcCallTest {
         when(statement.getDouble(1)).thenReturn(2.5D);
         when(statement.getBigDecimal(1)).thenReturn(new BigDecimal("1.234"));
         when(statement.getString(1)).thenReturn("value");
+        when(statement.getBytes(1)).thenReturn(new byte[] {0, 1, (byte) 255});
         when(statement.getDate(1)).thenReturn(Date.valueOf(date));
         when(statement.getObject(1, LocalTime.class)).thenReturn(time);
         when(statement.getTimestamp(1)).thenReturn(Timestamp.valueOf(timestamp));
@@ -330,6 +524,22 @@ class JdbcCallTest {
                     .out("value", 1, entry.getKey()).outputs();
             assertThat(result.get("value", entry.getValue().getClass()), is(entry.getValue()));
             assertThrows(IllegalArgumentException.class, () -> result.get("value", Object.class));
+        }
+        when(statement.wasNull()).thenReturn(true);
+        when(statement.getBigDecimal(1)).thenReturn(null);
+        when(statement.getString(1)).thenReturn(null);
+        when(statement.getBytes(1)).thenReturn(null);
+        when(statement.getDate(1)).thenReturn(null);
+        when(statement.getObject(1, LocalTime.class)).thenReturn(null);
+        when(statement.getTimestamp(eq(1), any(Calendar.class))).thenReturn(null);
+        for (Map.Entry<JDBCType, Object> entry : samples.entrySet()) {
+            JdbcClient.OutParameters result = client.create("{call routine(?)}").call()
+                    .out("value", 1, entry.getKey()).outputs();
+            Class<?> canonical = entry.getValue().getClass();
+            assertThat(entry.getKey().name(), result.optional("value", canonical), is(Optional.empty()));
+            assertThrows(IllegalArgumentException.class, () -> result.get("value", canonical));
+            assertThrows(IllegalArgumentException.class, () -> result.optional("value", Object.class));
+            assertThrows(IllegalArgumentException.class, () -> result.optional("missing", canonical));
         }
     }
 
@@ -349,8 +559,9 @@ class JdbcCallTest {
         manager.start("jdbc");
         manager.begin("call");
         when(statement.wasNull()).thenReturn(true);
-        assertThrows(IllegalArgumentException.class, () -> new JdbcStatement(runner, "{call routine(?)}", 1).call()
-                .out("value", 1, JDBCType.INTEGER).consume(result -> {
+        assertThrows(IllegalArgumentException.class, () ->
+                new JdbcStatement(runner, JdbcConfiguredStatement.create("{call routine(:value)}")).call()
+                .out("value", JDBCType.INTEGER).consume(result -> {
                     assertThrows(NullPointerException.class, () -> manager.acquire(null));
                     assertThrows(IllegalStateException.class, () -> manager.acquire(source));
                     assertThrows(IllegalStateException.class, () -> manager.suspend("call"));
@@ -475,8 +686,7 @@ class JdbcCallTest {
 
     @Test
     void rejectsInputInLeadingReturnSlotWithoutAcquisition() throws Exception {
-        JdbcClient.Call call = client.create("{? = call routine()}").bind(1, 1).call().out("return", 1, JDBCType.INTEGER);
-        assertThrows(IllegalStateException.class, call::execute);
+        assertThrows(IllegalArgumentException.class, () -> client.create("{? = call routine()}").bind(1, 1));
         verify(source, never()).getConnection();
     }
 
@@ -592,6 +802,147 @@ class JdbcCallTest {
         });
         JdbcClient.OutParameters empty = client.create("{call routine()}").call().outputs();
         assertThrows(IllegalArgumentException.class, () -> empty.optional("missing", Integer.class));
+    }
+
+    @Test
+    void resolvesConfiguredOutputsAndInoutByFullLayout() throws Exception {
+        for (String sql : List.of("{call routine(:output, :seed, :input)}", "{call routine(?, ?, ?)}")) {
+            setup();
+            when(statement.getInt(1)).thenReturn(41);
+            when(statement.getInt(2)).thenReturn(42);
+            JdbcClient.OutParameters values = client.prepare(sql, List.of("output", "seed", "input")).get()
+                    .bind("input", 7).bind("seed", 2).call()
+                    .out("seed", JDBCType.INTEGER).out("output", JDBCType.INTEGER).outputs();
+            assertThat(values.get("seed", Integer.class), is(42));
+            assertThat(values.get("output", Integer.class), is(41));
+            verify(statement).setInt(2, 2);
+            verify(statement).setInt(3, 7);
+            verify(statement).registerOutParameter(1, JDBCType.INTEGER.getVendorTypeNumber());
+            verify(statement).registerOutParameter(2, JDBCType.INTEGER.getVendorTypeNumber());
+            verify(statement).execute();
+            verify(statement).close();
+            verify(connection).close();
+        }
+    }
+
+    @Test
+    void resolvesReturnWithNamedArgumentsAndReorderedOutputs() throws Exception {
+        var definition = client.prepare("{? = call routine(:value, :input)}", List.of("return", "input", "value"));
+        JdbcClient.Statement stage = definition.get();
+        assertThrows(IllegalArgumentException.class, () -> stage.bind("return", 7));
+        assertThrows(IllegalArgumentException.class, () -> stage.bind(1, 7));
+        JdbcClient.Call call = stage.bind("input", 9).call();
+        assertThrows(IllegalArgumentException.class, () -> call.out("return", JDBCType.INTEGER));
+        assertThrows(NullPointerException.class, () -> call.out("return", JDBCType.INTEGER, (String) null));
+        assertThrows(NullPointerException.class, () -> call.returns(JDBCType.INTEGER, (String) null));
+        when(statement.getInt(1)).thenReturn(42);
+        when(statement.getInt(2)).thenReturn(43);
+        JdbcClient.OutParameters result = call.out("value", JDBCType.INTEGER).returns(JDBCType.INTEGER).outputs();
+        assertThat(result.get("return", Integer.class), is(42));
+        assertThat(result.get("value", Integer.class), is(43));
+        verify(statement).setInt(3, 9);
+        verify(connection).prepareCall("{? = call routine(?, ?)}");
+    }
+
+    @Test
+    void rejectsRepeatedOutputsWithoutChangingRegistration() throws Exception {
+        JdbcClient.Call call = client.prepare("{call routine(:value, :value, :output)}").get()
+                .bind("value", 7).call();
+        assertThrows(IllegalArgumentException.class, () -> call.out("value", JDBCType.INTEGER));
+        assertThrows(IllegalArgumentException.class, () -> call.out("other", 1, JDBCType.INTEGER));
+        assertThrows(IllegalArgumentException.class, () -> call.out("missing", JDBCType.INTEGER));
+        assertThrows(IllegalArgumentException.class, () -> call.returns(JDBCType.INTEGER));
+        verify(source, never()).getConnection();
+        call.out("output", JDBCType.INTEGER).execute();
+        verify(statement).setInt(1, 7);
+        verify(statement).setInt(2, 7);
+    }
+
+    @Test
+    void rejectsPositionalNamedOutputDefinitionsBeforeAcquisition() throws Exception {
+        assertThrows(IllegalArgumentException.class,
+                     () -> GeneratedJdbcData.prepareNamed(client, "{call routine(?)}", List.of("output")));
+        assertThrows(IllegalArgumentException.class,
+                     () -> GeneratedJdbcData.prepareNamed(client, "{call routine(?, ?)}", List.of("input", "output")));
+        for (String sql : List.of("{call routine(:input, ?)}", "{? = call routine(:input, ?)}")) {
+            assertThrows(IllegalArgumentException.class, () -> client.prepare(sql));
+        }
+        verify(source, never()).getConnection();
+
+        GeneratedJdbcData.prepareNamed(client, "{call routine(:input, :output)}", List.of("input", "output"))
+                .get().bind("input", 7).call().out("output", JDBCType.INTEGER).execute();
+        verify(statement).setInt(1, 7);
+        verify(statement).registerOutParameter(2, JDBCType.INTEGER.getVendorTypeNumber());
+        verify(statement).close();
+        verify(connection).close();
+    }
+
+    @Test
+    void rejectsMissingCoverageBeforeConsumingConfiguredCall() throws Exception {
+        JdbcClient.Statement stage = client.prepare("{call routine(?, ?)}", List.of("input", "output")).get();
+        JdbcClient.Call call = stage.call().out("output", JDBCType.INTEGER);
+        assertThrows(IllegalStateException.class, call::execute);
+        verify(source, never()).getConnection();
+        stage.bind("input", 7);
+        call.execute();
+        verify(statement).setInt(1, 7);
+    }
+
+    @Test
+    void restrictsMixedReturnDefinitionsToCallableExecution() throws Exception {
+        var definition = GeneratedJdbcData.prepareNamed(client, "{? = call routine(:value)}", List.of("return", "value"));
+        assertThrows(IllegalStateException.class, () -> definition.get().bind("value", 7).execute());
+        assertThrows(IllegalStateException.class, () -> definition.get().bind("value", 7).map(Integer.class).one());
+        assertThrows(IllegalStateException.class, () -> definition.get().bind("value", 7).generatedKeys()
+                .map(row -> row.get(1, Integer.class)).one());
+        assertThrows(IllegalArgumentException.class, () -> client.prepare("{? = call routine(:value, ?)}"));
+        assertThrows(IllegalArgumentException.class, () -> client.prepare("{? = call routine(:return)}"));
+        assertThrows(IllegalArgumentException.class, () -> client.prepare("{? = call routine(?)}", List.of("value", "return")));
+        verify(source, never()).getConnection();
+    }
+
+    @Test
+    void preservesLiteralIndexedRegistrationsAndRequiresReturnSyntax() throws Exception {
+        assertThrows(IllegalStateException.class, () -> client.create("{call routine(?)}").call()
+                .out("value", JDBCType.INTEGER));
+        JdbcClient.Call ordinary = client.prepare("{call routine(:return)}").get().call();
+        assertThrows(IllegalArgumentException.class, () -> ordinary.returns(JDBCType.INTEGER));
+        ordinary.out("return", JDBCType.INTEGER).execute();
+        client.create("{? = call routine()}").call().returns(JDBCType.DECIMAL, 2).execute();
+        client.create("{? = call routine()}").call().out("legacy", 1, JDBCType.INTEGER).execute();
+        verify(statement).registerOutParameter(1, JDBCType.DECIMAL.getVendorTypeNumber(), 2);
+    }
+
+    @Test
+    void preservesAlternateCallDefaultsAndNullPrecedence() {
+        JdbcClient.Call alternate = mock(JdbcClient.Call.class, CALLS_REAL_METHODS);
+        assertThrows(NullPointerException.class, () -> alternate.out(null, JDBCType.INTEGER));
+        assertThrows(NullPointerException.class, () -> alternate.out("value", null));
+        assertThrows(NullPointerException.class, () -> alternate.out("value", JDBCType.INTEGER, (String) null));
+        assertThrows(NullPointerException.class, () -> alternate.returns(null));
+        assertThrows(NullPointerException.class, () -> alternate.returns(JDBCType.INTEGER, (String) null));
+        assertThrows(UnsupportedOperationException.class, () -> alternate.out("value", JDBCType.INTEGER));
+        assertThrows(UnsupportedOperationException.class, () -> alternate.out("value", JDBCType.INTEGER, "TYPE"));
+        assertThrows(UnsupportedOperationException.class, () -> alternate.out("value", JDBCType.INTEGER, -1));
+        assertThrows(UnsupportedOperationException.class, () -> alternate.returns(JDBCType.INTEGER));
+        assertThrows(UnsupportedOperationException.class, () -> alternate.returns(JDBCType.INTEGER, "TYPE"));
+        assertThrows(UnsupportedOperationException.class, () -> alternate.returns(JDBCType.INTEGER, -1));
+    }
+
+    @Test
+    void registersLogicalTypesAndScalesWithoutJdbcWork() throws Exception {
+        JdbcClient.Call call = client.prepare("{? = call routine(:named, :scaled)}").get().call();
+        assertThrows(IllegalArgumentException.class, () -> call.out("named", JDBCType.VARCHAR, " "));
+        assertThrows(IllegalArgumentException.class, () -> call.out("scaled", JDBCType.INTEGER, 2));
+        call.out("named", JDBCType.STRUCT, "APP.VALUE").out("scaled", JDBCType.DECIMAL, 2)
+                .returns(JDBCType.STRUCT, "APP.RESULT");
+        verify(source, never()).getConnection();
+        call.execute();
+        assertThrows(NullPointerException.class, () -> call.out(null, JDBCType.INTEGER));
+        assertThrows(NullPointerException.class, () -> call.returns(null));
+        verify(statement).registerOutParameter(2, JDBCType.STRUCT.getVendorTypeNumber(), "APP.VALUE");
+        verify(statement).registerOutParameter(3, JDBCType.DECIMAL.getVendorTypeNumber(), 2);
+        verify(statement).registerOutParameter(1, JDBCType.STRUCT.getVendorTypeNumber(), "APP.RESULT");
     }
 
     private void rows(int size, int value) throws Exception {

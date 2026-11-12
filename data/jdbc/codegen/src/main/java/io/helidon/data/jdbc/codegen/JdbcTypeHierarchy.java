@@ -17,6 +17,7 @@ package io.helidon.data.jdbc.codegen;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 
@@ -139,9 +140,9 @@ final class JdbcTypeHierarchy {
         Optional<String> value = declarations.getFirst()
                 .findAnnotation(JdbcCodegenTypes.JDBC_STATEMENT).flatMap(Annotation::stringValue);
         if (value.isPresent() && JdbcSqlReference.parse(value.get(), declarations.getFirst()) != null) {
-            List<ConfiguredParameterBinding> bindings = configuredParameterBindings(declarations.getFirst());
+            List<ConfiguredParameterBinding> bindings = configuredParameterBindings(declarations.getFirst(), context);
             for (TypedElementInfo declaration : declarations) {
-                if (!bindings.equals(configuredParameterBindings(declaration))) {
+                if (!bindings.equals(configuredParameterBindings(declaration, context))) {
                     throw new CodegenException("Inherited configured statements have incompatible parameter names or types.",
                                                declaration.originatingElementValue());
                 }
@@ -170,8 +171,12 @@ final class JdbcTypeHierarchy {
         }
     }
 
-    private static List<ConfiguredParameterBinding> configuredParameterBindings(TypedElementInfo method) {
-        return method.parameterArguments().stream()
+    private static List<ConfiguredParameterBinding> configuredParameterBindings(TypedElementInfo method, RoundContext context) {
+        List<TypedElementInfo> inputs = JdbcCallablePlan.selected(method, context)
+                ? JdbcMethodPlan.create(method, context).parameterPlan().binds().stream()
+                        .map(JdbcSqlParameterPlan.Bind::parameter).toList()
+                : method.parameterArguments();
+        return inputs.stream()
                 .map(parameter -> new ConfiguredParameterBinding(JdbcSqlParameterPlan.effectiveName(parameter),
                                                                   parameter.typeName()))
                 .toList();
@@ -202,7 +207,36 @@ final class JdbcTypeHierarchy {
 
     private static boolean sameMethodAnnotations(TypedElementInfo first, TypedElementInfo second, RoundContext context) {
         for (TypeName annotation : EXACT_METHOD_ANNOTATIONS) {
-            if (!first.findAnnotation(annotation).equals(second.findAnnotation(annotation))) {
+            if (annotation.equals(JdbcCodegenTypes.JDBC_STATEMENT)) {
+                if (!first.findAnnotation(annotation).flatMap(Annotation::stringValue)
+                        .equals(second.findAnnotation(annotation).flatMap(Annotation::stringValue))) {
+                    return false;
+                }
+                if (JdbcCallablePlan.selected(first, context) && JdbcCallablePlan.selected(second, context)) {
+                    JdbcMethodPlan firstPlan = JdbcMethodPlan.create(first, context);
+                    JdbcMethodPlan secondPlan = JdbcMethodPlan.create(second, context);
+                    JdbcCallablePlan firstCall = firstPlan.callable();
+                    JdbcCallablePlan secondCall = secondPlan.callable();
+                    if (firstPlan.configured()) {
+                        boolean sameNames = firstCall.namedOnly() && secondCall.namedOnly()
+                                ? new HashSet<>(firstCall.names()).equals(new HashSet<>(secondCall.names()))
+                                : firstCall.names().equals(secondCall.names());
+                        if (!sameNames || firstCall.namedOnly() != secondCall.namedOnly()) {
+                            return false;
+                        }
+                    } else {
+                        List<Integer> firstPositions = firstCall.outputs().stream()
+                                .sorted(Comparator.comparing(JdbcCallablePlan.Output::name))
+                                .map(JdbcCallablePlan.Output::index).toList();
+                        List<Integer> secondPositions = secondCall.outputs().stream()
+                                .sorted(Comparator.comparing(JdbcCallablePlan.Output::name))
+                                .map(JdbcCallablePlan.Output::index).toList();
+                        if (!firstPositions.equals(secondPositions)) {
+                            return false;
+                        }
+                    }
+                }
+            } else if (!first.findAnnotation(annotation).equals(second.findAnnotation(annotation))) {
                 return false;
             }
         }

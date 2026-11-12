@@ -136,7 +136,7 @@ record JdbcSqlParameterPlan(String sql, List<Bind> binds, int parameterCount) {
      * @param parameters repository parameters
      * @param method enclosing method
      */
-    private static void validateParameters(List<TypedElementInfo> parameters, TypedElementInfo method) {
+    static void validateParameters(List<TypedElementInfo> parameters, TypedElementInfo method) {
         Set<String> names = new HashSet<>();
         for (TypedElementInfo parameter : parameters) {
             String name = effectiveName(parameter);

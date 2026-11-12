@@ -192,14 +192,15 @@ public final class CallableFailureFixture implements AutoCloseable {
         if (generated) {
             CallableRoutineRepository repository = manager.registry().get(CallableRoutineRepository.class);
             if (direct) {
-                repository.consumeDirect(action);
+                repository.configuredDirect(action);
             } else {
-                repository.consumeCursor(1, action);
+                repository.configuredCursorCallback(1, action);
             }
         } else if (direct) {
-            client.create("{call sp_direct()}").call().consume(action);
+            client.prepare("{call sp_direct()}").get().call().consume(action);
         } else {
-            client.create("{? = call sp_cursor(?)}").bind(2, 1).call().out("return", 1, JDBCType.REF_CURSOR).consume(action);
+            client.prepare("{? = call sp_cursor(:input)}").get().bind("input", 1).call()
+                    .returns(JDBCType.REF_CURSOR).consume(action);
         }
     }
 
